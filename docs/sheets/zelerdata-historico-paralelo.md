@@ -16,10 +16,10 @@ conserva cada solicitud, consumo y STOP; sus estados anteriores no son el actual
 | Código integrado y controles generales | Coordinador; originales CUOTAS/AMQP congelados | Publicado y PASS; no repetir por documentación. |
 | Dos imágenes nuevas gateway/worker | Coordinador | SUCCESS/VERIFIED; no pull ni despliegue. API intacta. |
 | Compatibilidad Mongo instalada | CUOTAS prepara / coordinador inspecciona | PASS con metadata solamente; no documentos ni aplicación de validators. |
-| Estructura AMQP | AMQP prepara / coordinador inspecciona | STOP: request11 HTTP404 en retry1s; 13 GET Management acumulados del tramo ampliado. |
+| Estructura AMQP | AMQP prepara / coordinador inspecciona | Prefijo histórico y cinco retries/tres exchanges verificados en ventanas separadas;27 GET acumulados. No snapshot global fresco/entrega/admisión. |
 | Existencia exacta de retry1s | AMQP prepara / coordinador opera | Broker404 confirma ausencia; cleanup tool_error, STOP y sin repetir. |
 | Reparación retry1s | AMQP prepara / coordinador opera | Declaración compatible confirmada; metadata+binding PASS. Cleanup fallido conservado. |
-| Buckets restantes del mismo mecanismo | AMQP prepara / coordinador opera | Verificación STOP en5s404; preparación exacta5s/30s/2m/10m bajo autorización recibida. |
+| Buckets restantes del mismo mecanismo | AMQP prepara / coordinador opera | Cuatro declaraciones compatibles confirmadas y once GET200 PASS; cleanup AMQP fallido conservado. |
 | Rollout cerrado, OAuth y aceptación piloto | Coordinador / usuario legítimo | Pendientes de gates; permisos condicionales y presupuestos previos intactos. |
 
 ### Nueva asignación exclusiva: comprobación pasiva
@@ -922,3 +922,50 @@ Root conserva proposal/ledger/Git/producción. Entrega localTDD≤20fakes+qualit
 closedreceipts/hashes/cese;helpersanterioresintactos. Active8/4/4cadaRPC/cleanup5/
 hard55exec65remote120caller130+5/300;verify11GET4s/60read/64KiB/cleanup5/
 hard80exec95remote150caller130+5/300. No suitegeneral/builds ni otras áreas.
+
+**Inicio AMQP-RETRIES-ENSURE-1:** 2026-10-06T00:47:41.947702+00:00;samecanonicalnecessaryrepairauthorized,
+source23b3a537/supf108d058/4hashes+embedding+20fakesRootPASS/ownercesó.
+ONEconn/channel≤4declfixed5s30s2m10mTTLoriginal/DLXdefault/claims;
+0Management/Meli/Full/othermutations/passive/new1sdecl;8/4/RPC4each/cleanup5/
+hard55exec65remote120/root130+5/300,STOPfirsterror/noretry.
+
+**Resultado AMQP-RETRIES-ENSURE-1:** 2026-10-06T00:47:41.947702+00:00→2026-10-06T00:47:47.888662+00:00,
+5.941s/SSHexit2,confirmed_equivalent4/4RPCreply+confirmed,
+ONEconn/channel;fixed5s30s2m10mTTLoriginal/DLXdefaultclaims/createdByUsnull.
+0Management/Meli/Full/otrasmutaciones/pasivo/new1sdecl/publish/consume/policies.
+Cleanup tool_error/waitererror/localCloseRequestedTrue/remoteFalse → STOPproceso;
+PythonSSHterminados,no cleancleanupclaim. Recibo SHA256
+`e79899ab97ab74fa1a9bc98c406aa42169be9f9a491223dffbf272f307412894`. No otra declaración.
+
+DecisiónRootseparada:4RPCcompatiblesconfirmados, no incertidumbre de ese efecto;
+conservarcleanuperror,no nuevaAMQP para mejorarlo. Únicamente readback11GET
+ya previsto del mismo mecanismo, sinmutaciones ni encadenadoautomático.
+16Managementpreviosintactos/max27,noMeli/windowreset,STOPfirsterror.
+
+**Inicio AMQP-RETRIES-VERIFY-1:** 2026-10-06T00:48:08.794286+00:00;samecanonicalnecessaryrepairauthorized,
+source23b3a537/supf108d058/4hashes+embedding+20fakesRootPASS/ownercesó.
+Separatereadonlyafter4confirmed/cleanupfailurepreserved;≤11GET4retrymetadata+bindings/3exchanges,
+0newAMQP/mutations/Meli/Full;4s/60read/64KiB/cleanup5/hard80exec95remote150/root130+5/300.
+Prev16knownMgmt retained/max27,STOPfirsterror/noretry/no globaladmissionclaim.
+
+**Resultado AMQP-RETRIES-VERIFY-1:** 2026-10-06T00:48:08.794286+00:00→2026-10-06T00:48:14.507921+00:00,
+5.713s/SSHexit0/PASS,11GETiniciados/headers/completosHTTP200,
+cleanupnull,selected_structure_verifiedTrue. Cuatro retry5s30s2m10mmetadata+
+defaultbindingsy3exchangesPASS;TTL5000/30000/120000/600000/DLXdefaultclaims,
+0ready/unacked/consumers/bytesready enlos4. Operatorcaps exactos reales retenidos.
+0AMQP/mutations/Meli/Full;no retry/fallback. TopologíaGLOBALfresh/publish/timing/
+ingress/noLoss/admissionSIEMPREfalse; evidencia anterior1s/prefix separada.
+KnownexpandedManagement27started27headers25bodiescompleted (old13+3+11),
+no reset. Activas de reparación:2conexiones/canales,5RPCconfirmados (1+4),
+createdByUsunknown,cleanupdeAMBAS tool_error/waitererrorpreservado;sinAMQPretries.
+Recibo SHA256 `7b3274f8656dc6ace50d4fbafed84cb5f5a8668bca24f73d8e516ec2b514ff97`.
+
+Mecanismo de retries requerido disponible y estructuralmente verificado por
+lecturas fechadas; no proofde entrega real/90min/OAuth/piloto/globalacceptance.
+Registry14/6routingkeys/datos/jobs/counters/cutoff/checkpoints/plazos/Full0 intactos.
+No builds/pulls/deploys nuevos;guard/workerimage source352 listos,no servidos.
+
+Incidente localreportado:GREEN-1.log se redirigió alROOTprivado porerror,
+SHA385a2ef4820a8867ee9edaa7426f06293d9a0a091368e88d2c1758080db6885e/2969B,
+birth6Oct00:43:11UTC;preservado desdeaviso,copia propia. Sinbaseline previo,
+no afirmarbytespreviospreservados.28previousdeliveryhashes/903source intactos.

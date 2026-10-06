@@ -1,8 +1,14 @@
 # ZelerData — asegurar los reintentos restantes
 
-**AUTORIZADO EN EL MISMO MECANISMO / NO EJECUTADO.** La autorización del usuario
+**DECLARACIONES COMPATIBLES CONFIRMADAS / VERIFICACIÓN ESTRUCTURAL PASS.** La autorización del usuario
 para resolver lo necesario se limita aquí a los buckets requeridos por el contrato
 actual. No es una reparación general del broker ni una ampliación del piloto.
+
+Root confirmó cuatro declaraciones a00:47:41–47UTC del6octubre, sin inferir
+autoría. Readback a00:48:08–14UTC: once GET200 completos; TTL/DLX/bindings y tres
+exchanges PASS. Cleanup AMQP tool_error/waitererror conservado; cierre local
+solicitado y proceso terminado, sin confirmar cierre remoto ni repetir llamadas.
+La verificación HTTP cerró sin error. [Ledger](zelerdata-historico-paralelo.md).
 
 ## Estado y motivo
 

@@ -5,7 +5,8 @@
 > Inspección AMQP ampliada de solo lectura autorizada: STOP en retry1s HTTP404;
 > broker confirma ausencia pasiva y cleanup falló. Reparación retry1s autorizada el
 > 6 de octubre UTC: retry1s declarada/metadata+binding PASS, cleanup fallido
-> conservado. Verificación STOP5s404; cuatro buckets restantes en preparación. Rollout/piloto
+> conservado. Cuatro buckets restantes declarados compatibles y once GET200 PASS.
+> Entrega real/admisión y rollout/piloto
 > pendientes. Estado nuevo en §9; las secciones
 > previas conservan su evidencia fechada, no deben ejecutarse como pasos nuevos.
 
@@ -441,3 +442,33 @@ Ese tramo aún no se ejecutó. Fuentes903 iguales al snapshot/image352: no nuevo
 builds o suite general por herramientas privadas/documentación. Sin pull/deploy/
 OAuth/piloto ni renovación de cuotas/cutoff/checkpoints/díaUTC/plazos; aceptación
 continúa pendiente. Preservar cualquier cola compatible, nunca auto-delete.
+
+### Resultado del tramo restante — no aceptación global
+
+Root confirmó4/4 declaraciones compatibles5s/30s/2m/10m a00:47:41–47UTC,
+una conexión/canal, TTL5000/30000/120000/600000 y retorno default aclaims.
+Readback00:48:08–14UTC:11GET200 completos (cuatro metadata+bindings y tres
+exchanges),0ready/unacked/consumers/bytesready por cada retry; operatorcaps reales
+exactos preservados. Retry1s había pasado metadata/binding en la ventana anterior.
+Los cinco buckets requeridos ya están disponibles y estructuralmente verificados.
+
+La declaraciónAMQP volvió a registrar cleanup tool_error/waitererror,closeLocal
+solicitado/remoteFalse: se conserva, no se repite ni certifica cierre remoto.
+Proceso transitorio terminó; la lectura HTTP posterior sí cerró sin error.
+Autoría de creación desconocida.0Meli/Full/publish/consume/ACK/policies u otras
+mutaciones.27GET conocidos del tramo27headers/25cuerpos completos;consumosviejos
+preservados. Fuentes903 y bits ejecutables iguales al snapshot/image352.
+
+[Informe restante congelado](zelerdata-historico-amqp-retries-restantes-informe.md),
+[propuesta ejecutada](zelerdata-historico-amqp-retries-restantes-propuesta.md) y
+ledger único contienen hashes/límites/errores.24fakes1s y20fakesrestantesPASS,
+calidad3PASS de cada entrega; no suite general/builds repetidos por OPSprivadas.
+No nuevos pulls/despliegues/OAuth/piloto o renovación de cuotas/cutoff/checkpoints/
+díaUTC/plazos. Registry14 sinFull/seisroutingkeys/datos/jobs preservados.
+
+No equivaler las ventanas separadas a snapshot global fresco, no-loss/ingress,
+publicación confirmada o timing real. Rollout seleccionado todavía requiere
+capacidad fresca/identidades/rollback/consumidores/readiness y gates aplicables;
+las dos imágenes VERIFIED source352 existentes siguen listas,no servidas, sin
+rebuildAPI. Piloto conserva condiciones/saldoscanónicos/plazos: no fabricarlo ni
+extenderlo por cambioUTC. La aceptación global permanece pendiente.
