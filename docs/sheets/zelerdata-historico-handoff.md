@@ -1,15 +1,15 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia operativa: 2026-10-06T19:10:52.186947Z; objetivo abierto.**
-> Gateway `c905f4…`/sourcebc93, worker `7709d7…`/source76e50, API3f7 preservada.
-> PAUSED92 cargos/89reservas/66inicial/26mantenimiento/HISTORYOFF/Full0;
-> mismos datos,cutoff,cuotas,EID y techo20:32:58 UTC, sin refund/reset.
-> Questions descubrió50: archivados p2 íntegros tras TTLcanónico0HTTP;
-> p3gen1/rev6/globalSeq4 pendiente,attempt1/cooldown19:23preservados.
-> La capacidad fue rechazo local de OTRO jobincremental despuésdelavance;
-> corrección acotada probada6702PASS/20SKIP+19protectores/0SKIP, aúnno desplegada.
-> Reclamos conserva dos ventanas fallidas sin prueba, no certificar desde readyobs.
-> Cinco fuentes/12meses,lectores/nativo y dos incrementales genuinos siguenpendientes.
+> **Última evidencia operativa: 2026-10-06T19:37:22.486967Z; objetivo abierto.**
+> Gateway `c905f4…`/source bc93, worker `1681e6…`/source c5378c9, API3f7 preservada.
+> PAUSED, HISTORY OFF; 368 cargos/365 envíos, 340 iniciales/28 mantenimiento,
+> Full=0. Mismos datos, cutoff, cuotas, EID y techo 20:32:58 UTC; sin refund/reset.
+> Questions p3/gen1/rev6/globalSeq4 sin nueva adquisición; p2/50 archivado intacto.
+> Corrección capacity desplegada; controles 6702 PASS/20 SKIP +19 protectores PASS.
+> Mon5 encontró dos 429 remotos y cuatro 404 RETURNS; hubo retry interno antes de
+> la pausa externa. Shipments inicial 250/250 agotado; Claims tres unidades fallidas.
+> No continuar proveedor ni ampliar Shipments; fail-fast local aún en elaboración.
+> Cinco fuentes/12 meses, lectores/nativo y dos incrementales genuinos pendientes.
 > Ver [ledger único](zelerdata-historico-paralelo.md); no repetir pasos históricos.
 
 
@@ -139,7 +139,11 @@ jobs productivos ahora ni selección correcta del gateway antiguo. Drivers propi
 previos terminaron y la revisión local de procesos no dejó operaciones propias
 pendientes; no implica inspección de procesos/jobs remotos actuales.
 
-## 5. Gates bloqueantes y aceptación pendiente
+## 5. Gates del handoff inicial — contexto histórico
+
+Esta lista conserva los bloqueos iniciales del 5 de octubre. No es el estado
+vigente ni revoca autorizaciones posteriores. Consultar §14 y la última entrada
+del ledger para la pausa, límites y aceptación actuales.
 
 1. **AMQP:** una ejecución productiva de lectura a 17:57 UTC terminó
    `management_http_404`, primer error STOP, sin retries/mutaciones de colas/Meli.
@@ -168,7 +172,13 @@ borrado, takeover, reset o upgrade manual de plan legacy. API d78 no contiene el
 nuevo CLI: solo fuente congelada por stdin en runtime Python3.11 legítimo, cuando
 haya autorización/gates; no fingir un módulo instalado ni copiar credenciales.
 
-## 6. Autoridad, presupuestos y ledger — pausa actual prevalece
+## 6. Autoridad inicial y presupuestos — contexto histórico
+
+La tabla describe permisos y STOP del handoff inicial, no la autorización más
+reciente. El goal posterior concedió hasta cinco horas desde 15:32:58 UTC hasta
+20:32:58 UTC del 6 de octubre, sin ampliar los presupuestos fuente/fase ni Full.
+El STOP Mon5 y cierre de §14 prevalecen actualmente; esa prórroga no autoriza
+repetir fallos de proveedor ni ampliar Shipments después de agotar250.
 
 | Autoridad / ejecución histórica | Alcance y saldo de autoridad |
 | --- | --- |
@@ -657,3 +667,48 @@ Pendiente aceptación original: cinco fuentes recuperables/certificados independ
 API ORDERSpartialnormal (no Sheets), recálculo nativo fresco y dos incrementales
 reales. Existing4×4cache/salud/6453tests/builds no sustituyen esos gates. Conservar
 claimsDLQoriginal1 yeventsDLQ315; no replay ciego ni extensión implícita.
+
+
+## 14. Mon5: worker desplegado, fallo remoto y cierre seguro
+
+Esta sección y la cabecera prevalecen sobre estados operativos históricos de las
+secciones anteriores. No prueba salud posterior a su fecha ni aceptación global.
+
+- **Publicación y validación:** main/remote `c5378c99a81bb68933e5ea03ed76e1f095328030`,
+  último checkout limpio confirmado 19:51:16 UTC. Ocho controles completos PASS:
+  6,702 pruebas/20 skips, 19 protectores sin skips, 364 enfocadas; Ruff, formato,
+  mypy (689 archivos), direct-Meli y schemas. Snapshot 1,140 paths preservado.
+- **Único build nuevo:** Cloud Build `ff58fb55-5120-42e3-bc21-73ff927f5655`,
+  SUCCESS/VERIFIED del commit exacto conectado a main. Worker
+  `us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:1681e6c34a2d328f860417decbc513121dc5cab482baec142d1000249bd2fc01`.
+  Gateway y API no reconstruidos. Deploy acotado PASS 19:21:54.282373 UTC:
+  una imagen/un pull, readiness inicial y +60 s, cero restarts/OOM; rollback7709
+  conservado, sin cleanup, migración, validators ni cambios de scopes/topología.
+- **Mon5 real:** resume 19:28:56.861152 UTC; STOP `fresh_source_failure`
+  19:31:02.441020 y pausa 19:31:02.495475. PIN de pausa
+  `3d994f3f3f575eeebd9771da311e3fb29e9478dfceb81abbcab10363352872b3`.
+  La auditoría del intervalo registró 276 envíos: 270 HTTP200, cuatro HTTP404
+  y dos HTTP429 remotos en RETURNS (19:30:37.960 y 19:30:44.700 UTC).
+  El collector reintentó internamente después del primero: **la parada inmediata
+  no se cumplió**. Warning tipado `safe_404_precondition_failure`: no ignorar
+  la precondición ni certificar ausencia de devolución. Sin más proveedor tras
+  reconocer los 429; leer metadata/logs del intento no constituye otro diagnóstico.
+- **Consumo preservado:** 368 cargos/365 envíos; deuda previa de tres sin refund;
+  inicial340 (O0/Q5/S250/M4/C81), mantenimiento28 (O14/Q3/S1/M4/C6), Full0.
+  Shipments inicial250/250 agotado, pendientes cuatro unidades. Claims conserva
+  tres unidades fallidas/cero completas; `ready_with_observations` no certifica
+  cobertura. Q p3 aún pending con discovered/fetched/published0, sin readmit nuevo.
+- **Quiescencia cerrada:** PASS 19:37:22.486967 UTC/92.204 s/SSH0.
+  HISTORY OFF, 22 capas Compose, mismo worker1681/noPull/noDeps/downloads0;
+  readiness inicial y +60 s, restarts0/OOMfalse. Gatewayc905/API3f7 intactos.
+  Tres vistas iguales del plan PAUSED368/365/340/28/fence2/Full0 y plazo original;
+  SHA `42a3dd0321d7520fe18ed8c35cf7bc1ddc77b02d371b905cd43ba4caa01216aa`.
+  Libre raíz31,937,114,112 bytes; Mongo47,400,800,256; RAM disponible1,749,721,088.
+
+**Trabajo pendiente, no autorización nueva:** CUOTAS tiene exclusivamente la
+corrección local fail-fast de piloto429 y sus pruebas/informe, delimitados en
+el ledger. No altera ordinary retries, cuotas, origen90, datos, deadlines o Full.
+La cuota Shipments agotada no equivale a cobertura ni autoriza ampliación;
+`allow_partial` aprobado sigue siendo sólo ORDENES. Faltan pruebas independientes
+de histórico requerido por las cinco fuentes, lectura API/Sheet y dos incrementos
+con cambios reales. Objetivo NO completado; no usar tests/deploy para certificarlo.

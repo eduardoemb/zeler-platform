@@ -5,7 +5,13 @@ con archivos exclusivos; el coordinador integra y es el único operador de Git y
 producción. El usuario reanudó trabajo local y coordinación el 5 de octubre de
 2026. Los permisos productivos previos siguen condicionados; Full sigue excluido.
 
-## Estado vigente de la continuación AMQP
+> **Estado más reciente (2026-10-06T19:37:22Z):** piloto PAUSED/HISTORY OFF,
+> worker1681 desplegado, 368 cargos/365 envíos, Full0; Shipments inicial agotado.
+> STOP Mon5 por fallo de fuente con 429 remotos; sin proveedor adicional.
+> La tabla AMQP siguiente es histórica. Ver el ledger Mon5 al final y
+> [handoff §14](zelerdata-historico-handoff.md#14-mon5-worker-desplegado-fallo-remoto-y-cierre-seguro).
+
+## Estado histórico de la continuación AMQP
 
 El usuario autorizó la inspección necesaria, incluida su ampliación de solo
 lectura. La reparación del broker **no** está incluida. El historial de abajo
@@ -2617,3 +2623,47 @@ plan/GW/APIpreservados. LuegoRootpause/consumption92genuinos; monitor utiliza
 original90privadod792+manifest/pause5fa/quiescence489 intactos ypreviousp3actual
 ligadoalPINfijo. No nuevoorigin92 ni absorción deunknownerrors. Snapshot50archivado
 p2 ycooldownp3 conservados. SourceH1enabletrasgates,lateMeliwait/caps/Full/clockSTOP.
+
+## Continuación 2026-10-06: parada inmediata ante 429 del piloto
+
+Estado inicial: checkout `main` limpio en
+`c5378c99a81bb68933e5ea03ed76e1f095328030` (HEAD y origin/main local iguales).
+La última quiescencia productiva verificada fue 19:37:22 UTC: HISTORY OFF,
+PAUSED, 368 cargos/365 envíos, 340 iniciales/28 mantenimiento y Full=0.
+Mon5 observó dos 429 remotos; el collector RETURNS reintentó internamente.
+Preservar todos los datos, archivos, pruebas anteriores, imágenes, counters,
+checkpoint, EID, cutoff y techo 20:32:58 UTC. Shipments inicial 250/250 agotado.
+No autorización para continuar al proveedor, ni para ampliar ese presupuesto.
+
+| Responsable | Archivos exclusivos | Entrega/dependencia/estado |
+| --- | --- | --- |
+| CUOTAS | `modules/sheets/src/zeler_sheets/history_onboarding.py`; `modules/sheets/src/zeler_sheets/devoluciones_runner.py`; nuevo `modules/sheets/src/zeler_sheets/history_pilot_stop.py` | Un único escritor para fail-fast opt-in del piloto en ambas interfaces GET, incluidas cinco fuentes. Ordinary retries intactos. TDD antes del cambio, CAS sólo EID capturado, ningún refund. En preparación; requiere cese antes de integración. |
+| CUOTAS | Nuevos `modules/sheets/tests/test_history_pilot_rate_limit_stop.py`; `modules/sheets/tests/test_history_pilot_returns_rate_limit_stop.py`; `docs/sheets/zelerdata-historico-cuotas-rate-limit-informe.md` | RED/GREEN offline con fakes sin DB/red/puertos. Prueba un envío y pausa antes del retry RETURNS; procedencia remota, EID, carreras y contadores conservados. |
+| AMQP | Ninguno adicional | Entregado/congelado; no reasignación de cuotas ni pruebas compartidas. |
+| Coordinador | Documentos centrales, `docs/lessons/README.md`, Git, core/gateway/config/dependencias/lockfiles, herramientas operativas y controles finales | Integra tras cese, verifica todos los gates aislados; único operador productivo. No edita archivos de CUOTAS durante propiedad activa. |
+
+Alcance: sólo la ejecución acotada legitimada en persistencia; un header arbitrario
+no crea piloto. `GatewayRateLimitError` remoto exige status 429 y metadata de
+un intento upstream. El stop debe atravesar el abortado del collector y después
+convertirse en WAIT, nunca `physical_budget_exceeded` ni una ventana failed
+artificial. Las llamadas ordinarias sin piloto conservan su conducta. Si hacen
+falta otros archivos, CUOTAS entrega propuesta sin editarlos. No producción,
+Git mutante, builds, suite general, agentes adicionales ni reanudación. Pruebas
+locales sin recursos compartidos; congelación explícita antes de controles finales.
+La corrección no certifica cobertura, Sheet, aceptación ni dos incrementos reales.
+
+
+### Ledger productivo Mon5 (intentos ya terminados)
+
+| Intento | Resultado y consumo | Estado |
+| --- | --- | --- |
+| WORKER-QUESTION-CAPACITY-DEPLOY1 | PASS 19:21:54 UTC; sólo worker1681/sourcec5378c9, un pull; ready inicial/+60 s, rollback7709 preservado | Terminado, no repetir |
+| CURRENT92BASELINEPAUSE4 / FLAGENABLE4 | Pausa genuina92/89/66/26, origen90 inmutable separado; H1 habilitado sin pull y sin nuevo presupuesto | Históricos, sustituidos por cierre Mon5 |
+| OWNEDMONITOR90-5 | 19:28:56 resume →19:31:02 STOP/pausa; 276 envíos auditados (270x200/4x404/2x429); total368/365/340/28, Full0 | Terminado; retry interno tras429 es defecto, no ejecución exitosa |
+| MON5STOPSTATE1 / TYPEDLOGMETA1 | Sólo metadata/logs, sin nuevo proveedor; `safe_404_precondition_failure`, Ship250/250, Claims3failed/0complete | Terminado; no ausencia ni cobertura certificadas |
+| MON5CLOSEDQUIESCENCE1 | PASS19:37:22 UTC; PAUSED/HISTORYOFF22layers, mismo1681, noPull; plan3vistas SHA42a3dd0321d7520fe18ed8c35cf7bc1ddc77b02d371b905cd43ba4caa01216aa | Último estado productivo verificado; no operadores vivos |
+
+Los intentos, tiempos, recibos y salidas sanitizadas originales se conservan en
+el root privado `rollout-preflight-20261006`, sin reemplazar fallos por mocks.
+Presupuesto/plazo/EID/cutoff no reiniciados. No nuevos GET del proveedor después
+del 429 reconocido. Preparar un arreglo local no autoriza reanudar el piloto.
