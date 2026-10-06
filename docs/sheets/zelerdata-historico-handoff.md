@@ -5,8 +5,11 @@
 > fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`; Gateway/API preservados.
 > Ocho controles finales PASS: 6608 pruebas/20 SKIP y 19 protectores/0 SKIP.
 > Plan PAUSED, HISTORY OFF, 81 cargos/79 envíos/24 mantenimiento, Full0.
-> La ventana08:17:23 UTC expiró; nueva pasada Questions/prórroga concreta pendiente
-> de respuesta humana. Cobertura independiente de cinco fuentes/12 meses y dos
+> La ventana anterior08:17:23 UTC expiró. Nueva autorización humana recibida
+> 15:32:58 UTC: hasta cinco horas (techo20:32:58), misma ejecución/cuotas/cutoff,
+> pasada prospectiva Questions con checkpoint original preservado. El operador
+> requiere opt-in validado antes de aplicar esa ventana; piloto aún cerrado.
+> Cobertura independiente de cinco fuentes/12 meses y dos
 > incrementales con cambios reales todavía no acreditadas. Esta evidencia fechada
 > no implica salud continua ni aceptación. Ver el [ledger único actualizado](zelerdata-historico-paralelo.md)
 > para identidades completas, límites y recibos; no repetir los pasos históricos.

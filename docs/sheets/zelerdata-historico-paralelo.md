@@ -2152,3 +2152,51 @@ respuesta humana concreta para nueva pasada Questions/prórroga desde su recepci
 08:17 expirado no se renueva solo por tests/build/rollout. Cinco fuentes/12meses,
 lecturas independientes y dos ciclos de cambios genuinos aún no acreditados:
 objetivo activo, no completado.
+
+### Reanudación autorizada — hasta cinco horas, sin crédito nuevo
+
+Nuevo objetivo humano: «Te autorizo hasta 5 horas en caso de ser necesario.
+Avanza y termina.» Registro de recepción: nueva creación del goal
+`1791300778` =2026-10-06T15:32:58Z; techo20:32:58Z del mismo día UTC.
+No reinicia reloj al terminar preparación ni cambia seller/EID/cutoff/81/79/24,
+cuotas, datos, checkpoints o Full excluido. Revoca bloqueo temporal previo y
+autoriza la pasada prospectiva Questions solicitada, conservando original.
+
+El operador publicado admite solo7200s. Preparar opt-in explícito para18000s
+con autoridad/recibos pinados y defaults legacy2h intactos; no cambiar Core,
+validators, fuente Questions, dependencias ni límites de crédito.
+CUOTAS único escritor de dos paths nuevos exactos:
+`tests/test_zelerdata_history_pilot_extension_five_hour.py` y
+`docs/sheets/zelerdata-historico-cuotas-five-hour-informe.md`.
+Entrega RED/propuesta/GREEN y cese; solo fakes, sockets prohibidos; sin prod,
+Git/build/suite general/otros agentes. Canonical OPS, ledger/Git y operación
+siguen exclusivos Root. AMQP congelado. Congelar antes de validar conjunto.
+
+**Entrega five-hour congelada:** CUOTAS26GREEN/124legacyGREEN/ruff/formato/mypy1
+PASS y cese confirmado; testSHA7b9afbbd8fed9574a37efec0d985b3036c199ce1dcb24af5ebd0e860512f6ecf,
+informeSHA6406df984ebe435d69038fecf3a434bca5a11cb233bd7a3d03b5951f6d17d255.
+RED24 observado10FAIL14PASS antes OPS; guard adicional missinglatestWitnessPIN
+RED1FAIL1PASS antes fix de binding,26GREEN final. Root canonical único escritor.
+Flag exacto `five_hour_extension_authorized:true` y latestceiling18000 opt-in;
+legacy/padre7200 permanecen, no crédito nuevo. Pausa fresh posterior al consentimiento
+exige witness aplicado previo con wholeplanSHA idéntico y PIN ligado al latest;
+post-readmisión compara witness con previousPlanSHA, no con nuevo fence.
+
+**Preflight readonly real:** FIVE-HOUR-READ-PREFLIGHT-1 PASS15:40:58.825202 UTC/
+10.845s/SSH0; PRIMARY2reads, gatewayready2/workerready2/closed flags,81/79/24/Full0.
+Hasta08:17 todavía expirado, no mutación/GET. PlanSHA153a6fd318b9cb7804f84b12b61841a101a21deeda068ea0a5bcbf9e49163a91
+coincide exactamente con witness aplicado07:47:53.844043 UTC, anterior a15:32:58;
+PIN47ba2f0637d49f12b8f8cdcb370d91fd2b5b72120afe8504b613e4fcc51a1848.
+Prepare/origin/padre auténticos recuperados del API preservado, sin reconstruirlos.
+OPS-only: ningún servicio importa este operador en su flujo servido; no rebuild de
+imágenes. Aplicación futura por proceso operador exclusivo con source publicado
+pinado; no reemplazar archivos del servicio ni fingir que la imagen contiene el patch.
+
+**Finales five-hour completos PASS:**1131 paths, tar
+`586ede788da639dba57e0bff6bc83a0ff705ff0c9c845019ae8f61b06ae9c71b`;
+150focused, Ruff/formato/mypy682/direct-Meli/schema PASS; full6634 PASS/20 SKIP,
+436.436s y protectores19 PASS/0 SKIP,5.783s. Snapshotbefore/after y bytes/modos
+actuales completos verificados antes de esta anotación documental. Publicar solo
+OPS/test/informe y dos documentos centrales asignados. Ventana no aplicada aún;
+seguir con baseline/pausa genuinos, extensión deadline-only, wirepins nuevos y
+readmisión con archivo original exacto, misma identidad/contador/globalSeq.
