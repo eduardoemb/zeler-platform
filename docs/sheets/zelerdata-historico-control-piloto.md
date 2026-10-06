@@ -279,3 +279,67 @@ ni inventar evidencia humana; conservar pausa y límites hasta cerrar esos gates
 
 Continuar con gates de [rollout/piloto](zelerdata-historico-publicacion-piloto-propuesta.md#5-despliegue-y-rollback-seleccionados)
 y evidenciar ventana/cobertura parcial real. Full permanece fuera de alcance.
+
+
+## 6. Reanudar la MISMA ejecución después de un STOP (continuación 6 octubre)
+
+`resume` es un control OPS nuevo, no otra preparación ni una autorización de
+cuota. **Aún requiere publicación, gates finales y runtime compatible**. La
+única ventana preparada empezó `2026-10-06T04:22:57.845386Z` y termina en BSON
+`2026-10-06T05:52:57.845Z`; no cambiar ID/día/deadline aunque la corrección o los
+builds consuman tiempo. El primer STOP conservó **69 cargos/67 envíos**,
+56 iniciales +13 de mantenimiento, Full0. Esos saldos no se reembolsan.
+
+El operador requiere simultáneamente:
+
+1. Recibo **prepare aplicado original**, fijado por SHA.
+2. Recibo **pause aplicado del snapshot actual completo**, fijado por SHA,
+   obtenido después de quiescencia graceful y aprobación independiente del estado.
+3. Runtime actualizado/compatible, flags, scope seller-only, capacidad y controles
+   verificados; sin lease vivo. El CLI no verifica esos controles por sí solo.
+4. Mismo execution ID/día, plazo aún futuro y no posterior a la hora original de
+   preparación +90 minutos ni medianoche UTC. Caps actuales no superiores a los
+   saldos originales del recibo, máximo2500/daily500/source300 y sin crédito Full.
+
+La CAS escribe **únicamente `state: active`**. Conserva documento completo,
+consumos, ledger, checkpoints, cutoff, jobs, leases y plazo. No llama `prepare`,
+no admite otra policy, no reconstruye un recibo original perdido y no hace retry.
+Los recibos antiguos con crédito diario no determinable se rechazan de forma
+conservadora: no inferir saldo ni fabricar permiso para eludir ese gate.
+
+```bash
+# Fuente OPS congelada por stdin al Python del runtime API aprobado.
+# Preview: 0 escrituras; ambos recibos aplicados y hashes siguen siendo requeridos.
+docker exec -i '<API_RUNTIME_APROBADO>' /app/.venv/bin/python - resume \
+  --receipt-in '<RECIBO_PREPARE_ORIGINAL>' --receipt-sha256 '<SHA_PREPARE>' \
+  --paused-receipt-in '<RECIBO_PAUSE_ACTUAL>' --paused-receipt-sha256 '<SHA_PAUSE>' \
+  --runtime-controls-verified < '<FUENTE_OPS_CONGELADA>'
+
+# Apply exclusivo: una CAS; no se extiende ni reinicia la ventana.
+docker exec -i '<API_RUNTIME_APROBADO>' /app/.venv/bin/python - resume \
+  --receipt-in '<RECIBO_PREPARE_ORIGINAL>' --receipt-sha256 '<SHA_PREPARE>' \
+  --paused-receipt-in '<RECIBO_PAUSE_ACTUAL>' --paused-receipt-sha256 '<SHA_PAUSE>' \
+  --runtime-controls-verified --apply \
+  --confirm-approved-runtime --confirm-pilot-authorization \
+  --receipt-out '<RECIBO_RESUME_EXCLUSIVO>' < '<FUENTE_OPS_CONGELADA>'
+```
+
+Si el snapshot cambió desde el pause, la ventana venció, un cap/counter es inválido
+o hay lease vivo, STOP; no reprepare, otro UUID, refund ni restore. Resolver la
+causa localmente y conservar pendientes. `pause` no demuestra quiescencia por sí
+solo; apagar el poller/recrear exclusivamente worker con gracia y comprobar su
+asentamiento antes de fijar un nuevo snapshot, sin modificar leases/jobs.
+
+Pruebas enfocadas Root:18 nuevas +29 existentes =47PASS, Ruff/formato/mypy2PASS;
+los gates conjuntos siguen pendientes mientras CUOTAS escribe. El error real de
+mensajes se atribuyó mediante lectura readonly: BSON guardó sweep_end
+`.407000`, mientras el checkpoint ISO preservó `.407414`, mismo milisegundo.
+No repetir el endpoint fallido para diagnosticarlo ni debilitar la identidad del
+collector; preservar el checkpoint original y corregir el caller.
+
+
+### Controles conjuntos de esta corrección, 2026-10-06T04:56:13.345519+00:00
+
+Freeze1104/tar`76db7abc2647614cd9c13512af4a96c5f3e7f2207959b915b587d29b1e71d10b`: **full6446PASS/20SKIP**, protected19PASS, enfocadas109PASS; Ruff/formato/mypy669/direct-Meli/schemaPASS. Ocho exit0 y snapshotantes/despuésintacto;907codebytes+modos delcheckout coinciden. Full402.282s/protected5.666s. Colisión inicial de importtests en focusedLinux conservada; solo fixture independiente corregida, sin excluir controles ni cambiar runtimecode. Ambos especialistas habían cesado antes de suite.
+
+Imagen afectada: **solo Sheets worker** por caller de mensajes; OPSresume via stdin, Gateway/API sin comportamiento servido afectado. Sourcebuild exactmain pendiente de publicar/verificar; no reconstruir imágenes no afectadas. El piloto siguePAUSED69/67/Full0 y hasta05:52:57.845UTC original; gates verdes no son despliegue, reanudación ni aceptación. Native reentrada mismafórmula16celdas no produjo rutaAPI observada en readlogacotado: no afirmar recálculo fresco.

@@ -542,3 +542,64 @@ Root deberá verificar el entrypoint normal desde el contexto autenticado real,
 sin force, reasignación manual ni callback sintético. El plan legacy mantiene
 cutoff/progress; campos canónicos genuinamente ausentes permiten únicamente seed
 prospectivo pausado dentro de ese OAuth, no saldo histórico ni ventana renovada.
+
+
+## 12. Continuación real: OAuth, primera ventana y STOP conservado
+
+**Snapshot 2026-10-06T04:39:18Z; objetivo NO completado.** Detalles/consumos y cada
+intento están en el [ledger único](zelerdata-historico-paralelo.md). Los snapshots
+anteriores son históricos, no estado actual.
+
+- Gateway `4f90ba7c48fd2258f35cb4b80a2ab3d8eb93d30786ce761d32a6b6a3475e8268`,
+  fuente `a10e31496c408f9ab321196fc5ad27f2cc6a10b8`, build VERIFIED
+  `121b3b08-3d3f-4b12-b40c-2a4f2ba7d590`, servido/asentado.
+- Worker `69d9da8d5e57c93868844349c489b33d0bf743612e718616d282a7ff6fe64a79`,
+  fuente `352f3bd6f42c89929bb37006c04385a9492d3031`, build VERIFIED previo
+  `4a4c14a8-bb83-4aab-87f6-b1bb2be1389d`, reutilizado/servido. API3f7 sin rebuild.
+- HOPEMOB real verificado en MercadoLibre; OAuth normal desde el enlace visible
+  de Accounts, paísMéxico, sinforce/nuevosgrants/copia de tokens ni callbacks
+  fabricados. App mostró «Cuenta MercadoLibre conectada». No frontend fix/build.
+- Readback PRIMARY: plan PAUSED5/noFull, cutoffSep24/rango anual/progress.size4,
+  caps800/150/250/300/500/total2000/daily500300; registry14/6/fingerprint704afe y
+  bootstrap13 observables anteriores intactos. No afirmar digest retroactivo de
+  contenido de checkpoints: la evidencia anterior era metadata/cardinalidad.
+- Primera preparación y activación canónicas, recibos aplicados/fijados,
+  hasta **05:52:57.845UTC del6Oct**, no90min adicionales desde activate. El
+  monitor detectó ValueError de mensajes y pausó canónicamente al primer error.
+  Estado final leído: **69 cargos/67 envíos, 56initial+13maintenance, Full0**.
+  Los cargos sin envío no se reembolsan. Mensajes genuine changed0, no aceptación.
+- Forward cerrado después del STOP: historiaOFF/HOLDtrue/recoveryrefreshOFF;
+  worker/Gateway actuales, no downgrade ni otros servicios reiniciados. Settling
+  PASS36:19UTC, rootfree35665088512,0pulls. API3f7/registro14/datos/jobs conservados.
+- Causa demostrada con3RED BSON offline +2reads productivas sin provider: top
+  sweep_end04:30:45.407000UTC vs checkpoint ISO04:30:45.407414UTC, mismo BSONms,
+  mismo seller/source/start. CUOTAS corrige solo caller y entrega test/informe;
+  strictcollector/checkpoint/consumos no se reescriben ni se resetean.
+- Root agregó OPS `resume` con dos recibos fijados/stateONLY/samewindow/caps
+  conservadores;47 enfocadas PASS. Todavía no gates finales conjuntos ni build/
+  despliegue del fix o resume productivo. No iniciar suitegeneral antes de cese.
+
+Composición actual seleccionada, en este orden (archivos anteriores preservados):
+
+```text
+/opt/zeler-platform/docker-compose.yml
+/var/lib/zeler-platform/.history-rollout-20261004T022714Z/interlocked-override-b867b27.yml
+/var/lib/zeler-platform/.history-closed-rollout-20261006T033918Z-a10e314/closed-overlay.json
+/var/lib/zeler-platform/.history-closed-rollout-20261006T033918Z-a10e314/admission-overlay.json
+/var/lib/zeler-platform/.history-closed-rollout-20261006T033918Z-a10e314/history-overlay.json
+/var/lib/zeler-platform/.history-closed-rollout-20261006T033918Z-a10e314/forward-close-overlay.json
+```
+
+Root sigue único productor/Git/build/config. No reprepare/otroUUID/extensión ni
+repetición ciega del endpoint; después de fix/gates/worker compatible, considerar
+solo saldo/plazo original restante con snapshotpause quiescente/recibos pinned.
+Si vence, conservar pendientes y no crear otra ventana bajo esta autorización.
+La aceptación5fuentes/certificados/APIpartial/nativa fresca/dos incrementales reales
+sigue pendiente; readiness, órdenes12jobs reutilizados o cache16celdas no la sustituyen.
+
+
+### Controles conjuntos de esta corrección, 2026-10-06T04:56:13.345519+00:00
+
+Freeze1104/tar`76db7abc2647614cd9c13512af4a96c5f3e7f2207959b915b587d29b1e71d10b`: **full6446PASS/20SKIP**, protected19PASS, enfocadas109PASS; Ruff/formato/mypy669/direct-Meli/schemaPASS. Ocho exit0 y snapshotantes/despuésintacto;907codebytes+modos delcheckout coinciden. Full402.282s/protected5.666s. Colisión inicial de importtests en focusedLinux conservada; solo fixture independiente corregida, sin excluir controles ni cambiar runtimecode. Ambos especialistas habían cesado antes de suite.
+
+Imagen afectada: **solo Sheets worker** por caller de mensajes; OPSresume via stdin, Gateway/API sin comportamiento servido afectado. Sourcebuild exactmain pendiente de publicar/verificar; no reconstruir imágenes no afectadas. El piloto siguePAUSED69/67/Full0 y hasta05:52:57.845UTC original; gates verdes no son despliegue, reanudación ni aceptación. Native reentrada mismafórmula16celdas no produjo rutaAPI observada en readlogacotado: no afirmar recálculo fresco.

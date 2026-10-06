@@ -267,6 +267,124 @@ def _activate(
     return {"state": "active"}
 
 
+def _pinned_receipt(raw: bytes | None, pin: str | None, action: str) -> dict[str, Any]:
+    if (
+        not isinstance(raw, bytes)
+        or len(raw) > 1048576
+        or not isinstance(pin, str)
+        or re.fullmatch("[a-f0-9]{64}", pin) is None
+        or receipt_sha256(raw) != pin
+    ):
+        raise PilotControlError("resume_receipt_pin")
+    try:
+        receipt = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise PilotControlError("resume_receipt_invalid") from None
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("action") != action
+        or receipt.get("applied") is not True
+        or receipt.get("seller_id") != SELLER
+        or receipt.get("policy_version") != POLICY_VERSION
+    ):
+        raise PilotControlError("resume_receipt_invalid")
+    return receipt
+
+
+def _resume(
+    plan: Mapping[str, Any],
+    now: datetime,
+    prepared: bytes | None,
+    prepare_pin: str | None,
+    paused: bytes | None,
+    pause_pin: str | None,
+    runtime_verified: bool,
+) -> dict[str, Any]:
+    """Resume only the original fresh pilot; no new grant, range or clock.
+
+    Older receipts lack absolute starting counters. Bound caps by the original
+    remaining amounts instead: conservative rejection is safer than inferring
+    historical credit. The current applied pause binds the entire finalized
+    snapshot, independently approved after process quiescence.
+    """
+    if not runtime_verified:
+        raise PilotControlError("runtime_controls_unverified")
+    original = _pinned_receipt(prepared, prepare_pin, "prepare")
+    stopped = _pinned_receipt(paused, pause_pin, "pause")
+    execution = plan.get("execution_id")
+    if (
+        not isinstance(execution, str)
+        or re.fullmatch("[a-f0-9]{32}", execution) is None
+        or original.get("execution_id") != execution
+        or stopped.get("execution_id") != execution
+        or stopped.get("resulting_plan_sha256") != _plan_hash(plan)
+        or plan.get("state") != "paused"
+        or plan.get("eligible") is not True
+        or plan.get("sources") != list(INITIAL)
+    ):
+        raise PilotControlError("resume_snapshot_or_identity")
+    try:
+        started = _utc(datetime.fromisoformat(original["observed_utc"]))
+        stopped_at = _utc(datetime.fromisoformat(stopped["observed_utc"]))
+    except (KeyError, TypeError, ValueError):
+        raise PilotControlError("resume_receipt_clock") from None
+    end = min(
+        started + timedelta(minutes=90),
+        started.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1),
+    )
+    if (
+        not started <= stopped_at <= now < end
+        or now.date() != started.date()
+        or plan.get("execution_utc_day") != started.date().isoformat()
+        or not now < _utc(plan.get("execution_until"), bson_date=True) <= end
+        or not history_execution_allowed(plan, now=now)
+    ):
+        raise PilotControlError("execution_window_or_limit")
+    remaining = original.get("initial_remaining")
+    daily = original.get("natural_rollover_limits")
+    if (
+        not isinstance(remaining, Mapping)
+        or set(remaining) != set(INITIAL)
+        or original.get("daily_rollover_pending") is not True
+        or not isinstance(daily, Mapping)
+    ):
+        raise PilotControlError("resume_starting_credit_unknown")
+    for source, ceiling in INITIAL.items():
+        previous = _integer(remaining[source])
+        entry = plan["budget"][source]
+        limit = _integer(entry["physical_attempts"])
+        if previous > ceiling or limit > previous or _integer(entry.get("consumed", 0)) > limit:
+            raise PilotControlError("resume_caps_invalid")
+    full = plan["budget"]["full_withdrawals"]
+    if _integer(full["physical_attempts"]) > _integer(full.get("consumed", 0)):
+        raise PilotControlError("resume_caps_invalid")
+    total = _integer(plan.get("total_budget"))
+    attempts = _integer(plan.get("execution_attempt_limit"))
+    consumed = _integer(plan.get("execution_consumed", 0))
+    if (
+        total > sum(_integer(value) for value in remaining.values())
+        or _integer(plan.get("total_consumed", 0)) > total
+        or attempts > 2500
+        or consumed >= attempts
+        or _integer(plan.get("execution_sent", 0)) > consumed
+    ):
+        raise PilotControlError("resume_caps_invalid")
+    limit, source_limit, _, _, _ = _maintenance(plan, now)
+    if (
+        limit > _integer(daily.get("total"))
+        or limit > 500
+        or source_limit > _integer(daily.get("per_source"))
+        or source_limit > 300
+    ):
+        raise PilotControlError("resume_caps_invalid")
+    if "lease_until" in plan:
+        if _utc(plan["lease_until"], bson_date=True) > now:
+            raise PilotControlError("active_lease")
+    elif plan.get("lease_token"):
+        raise PilotControlError("lease_without_expiry")
+    return {"state": "active"}
+
+
 async def control_pilot(
     db: Any,
     action: str,
@@ -276,6 +394,8 @@ async def control_pilot(
     apply: bool = False,
     prepared_receipt: bytes | None = None,
     prepared_receipt_sha256: str | None = None,
+    paused_receipt: bytes | None = None,
+    paused_receipt_sha256: str | None = None,
     runtime_controls_verified: bool = False,
 ) -> dict[str, Any]:
     now = _utc(now)
@@ -293,6 +413,16 @@ async def control_pilot(
     elif action == "activate":
         patch = _activate(
             plan, now, prepared_receipt, prepared_receipt_sha256, runtime_controls_verified
+        )
+    elif action == "resume":
+        patch = _resume(
+            plan,
+            now,
+            prepared_receipt,
+            prepared_receipt_sha256,
+            paused_receipt,
+            paused_receipt_sha256,
+            runtime_controls_verified,
         )
     else:
         raise PilotControlError("invalid_action")
@@ -328,7 +458,7 @@ async def control_pilot(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "pause", "activate"))
+    parser.add_argument("action", choices=("prepare", "pause", "activate", "resume"))
     parser.add_argument("--execution-id")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-approved-runtime", action="store_true")
@@ -336,6 +466,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runtime-controls-verified", action="store_true")
     parser.add_argument("--receipt-in", type=Path)
     parser.add_argument("--receipt-sha256")
+    parser.add_argument("--paused-receipt-in", type=Path)
+    parser.add_argument("--paused-receipt-sha256")
     parser.add_argument("--receipt-out", type=Path)
     return parser
 
@@ -354,6 +486,11 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
         if args.receipt_in.is_symlink() or args.receipt_in.stat().st_size > 1048576:
             raise PilotControlError("receipt_path_invalid")
         raw = args.receipt_in.read_bytes()
+    paused_raw = None
+    if args.paused_receipt_in is not None:
+        if args.paused_receipt_in.is_symlink() or args.paused_receipt_in.stat().st_size > 1048576:
+            raise PilotControlError("receipt_path_invalid")
+        paused_raw = args.paused_receipt_in.read_bytes()
     if not os.environ.get("MONGO_URI") or not os.environ.get("MONGO_DB"):
         raise PilotControlError("runtime_configuration_required")
     from infra.operations.zelerdata_read_model_reconcile import create_runtime_db
@@ -373,6 +510,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
             apply=args.apply,
             prepared_receipt=raw,
             prepared_receipt_sha256=args.receipt_sha256,
+            paused_receipt=paused_raw,
+            paused_receipt_sha256=args.paused_receipt_sha256,
             runtime_controls_verified=args.runtime_controls_verified,
         )
         if stream is not None:
