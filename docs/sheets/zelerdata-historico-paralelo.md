@@ -1817,3 +1817,13 @@ exacto PASS; mensaje original CLAIMS completado por consumidor PASS (cierre del
 relay sigue ambiguo, no repetir). Cinco fuentes/calendario anual legible y **dos
 ciclos incrementales genuinamente cambiados NO acreditados**. Objetivo NO completo;
 no degradar estos gates a health, colas vacías, contadores o pruebas unitarias.
+
+**CUOTAS readonly entregado/cese:** existe `cursor_expired→HistoryContinuation.release`
+(`history_questions.py:437–442`), pero no es una recuperación compatible con las
+condiciones actuales: reemplaza el head, pone page_sequence0/cursorNone y reinicia
+contadores de staging sin archivar el checkpoint original; también ajusta attempts
+del job. Conserva receipts/datos/identidad/presupuesto, pero exige lease vivo y
+binding actual, ausentes en este job terminal. **No se invocó ni reabrió el job.**
+Falta una continuación prospectiva que preserve el checkpoint original inmutable
+y la autoridad/consumo; no sustituirla por un reset ni por más cuota. El trabajo
+local puede continuar después del plazo; producción permanece detenida.
