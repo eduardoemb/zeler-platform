@@ -2365,3 +2365,140 @@ no altera esquema de audit ni campos de consumo; Core/eventos/workrefs permanece
 Después de despliegue PASS obtener nuevos pause/consumption genuinos83/80,
 rehabilitar solo HISTORY y ejecutar el monitor propio con origen/deuda/PINs fijos.
 La ventana20:32:58 no se reinicia y no acredita cobertura ni incrementales reales.
+
+
+### Publicación, gateway seleccionado y segunda ejecución real
+
+Unidad propia seis paths publicada main/remoto exacto
+bc93e48080a2042c996bbe4ebb15d0e739a6fbaf, árbol limpio en publicación.
+Cloud Build único8a097757-3424-4e15-8651-9556c8633bdb SUCCESS/VERIFIED,
+repositorio conectado/sourcebc93 exacto/provenance canónica PASS17:51:59.544648 UTC;
+gateway@sha256:c905f416af85e9c08c0451ae63e50470a4fa4a68c10c788fe9ebd420113cd221.
+No build worker/API ni deploy inferido desde build.
+
+GW-SHIPMENT-RELATIONSHIP-DEPLOY1 real PASS17:55:16.650178 UTC/174.324s/SSH0;
+solo gateway, fourteen layers, un pull autorizado, selecteddigestdryrun,
+delta de una imagen. Gatewayready2 inicial+60s/healthy0restart/OOMfalse;
+worker a28 y API3f7 preservados, workerready2. PRIMARYPAUSED83/80/25/fence1/Full0
+antes/después/settled. Rootfree33,367,334,912 antespull/33,043,804,160 después/
+33,046,499,328 settled. Rollback4f90 actualimageIDidéntico preservado local/retrievable,
+sin cleanup/migraciones/registro/topología/counters. Overlay propio
+/var/lib/zeler-platform/.history-shipment-relationship-20261006T175159Z-bc93e48/gateway-image-overlay.json.
+
+DEBT-BASELINE-PAUSE2 real PASS17:56:41.950866 UTC/7.222s/SSH0:
+dos pausas idempotentes genuinas,0proveedor, preview resume válido NOapply.
+**Error del wrapper preservado:** out.update todavía mostró81/79/24 por clone;
+no tomar esos campos como counters reales. El beforeguard y consumo raw sí83/80/25.
+No repetir CAS ni alterar el recibo. PIN-VERIFY1 independiente HOST PASS2.524s/SSH0/
+0mutaciones confirmó consumo83/80/25 SHA98e464d99c7c295e83c3094f6e2aa5a1140a95aa4c6d5751a7b9d379bcb5dbc4,
+pause aplicado SHA51c3db4debdd2c961d778d8839277b10d536f4a5ea6c0a6984943a94c68e3b0b,
+wholeplanSHAa1b3f5b9b43d8d1f3470b7d942277c4938dfbc3beb992ce2dd587aabb898002d,
+y quiescenceSHA706d6b78… auténtico. Metadata privada persistida antes de recreate.
+
+DEBT-FLAG-ENABLE2 PASS17:59:43.122020 UTC/88.823s/SSH0:
+solo HISTORYfalse→true, quince capas reales, solo worker/sameimagea28/noDeps/noPull/
+downloads0, oldworker fuera de ejecución; ready3 inicial+60s. PlanPAUSED83/80/25/
+fence1/Full0 y wholehasha1b3… idénticos tres veces; Gatewayc905/API3f7 preservados.
+Rootfree33,045,635,072→33,051,779,072, rootinodes6,166,044;
+Mongofree47,453,786,112/inodes3,276,150; RAMavailable1,863,303,168/total4,103,168,000.
+Son mediciones, no umbral Mongo inventado ni salud continua.
+
+MONITOR-DEBT2 real resume18:00:22.275503 UTC,
+receiptSHA1136eebb9a95daaa8de198f5055a9afd434a5efca4d4cfeea1d7028ecf3fc747;
+primer83/80/58/25 RUNNING, M/Qerror histórico visible. Nueve inputs wirepinados,
+OPS230…/guard5f2… publicados cargados solo en proceso operador exclusivo.
+Origin83 fijo y previous observado con el now exacto; timer fijo, sin baseline móvil.
+**STOPsource_error_changed18:00:37.335156**, pausa genuina18:00:37.383841,
+SHAc738141a35caccdbaab6da30cce1beb3e0fad37b7cec5ce21f705af0c6e055aa;
+90cargos/87reservas/65inicial/25mantenimiento/deuda3/Full0, Qpendingp2/discover.
+20lecturasDB totales. SSH0/22.597s; client cerrado y terminalmetadata preservada HOST.
+No resume automático ni devolución de crédito.
+
+STOP-STATE1 readonly real PASS6.554s/SSH0/PRIMARY5reads/0mutaciones/Meli:
+siete GET previos auditados, messages2x200, claimssearch2x200, detail200,
+returns404, otrodetail200. No repetir esos GET como diagnóstico. Messages pasó
+ValueError histórico→running/issue0/persisted0 con progreso, no tokenrepair.
+Claims ready_with_observations cambió a reason exact_source_proof_unavailable,
+pending37→36; no inferir cobertura ni adjudicar causa solo al404.
+CLAIMS-FAILED-PROOF-META1 PASS5.516s/SSH0/4reads exactos/cap1: runSHA
+342c231b5038e6db44d15f1a9abe5b5cb7c03b15a464adefa483f8af5ae2ca75,
+2025-10-04T05:36:28Z→2025-10-14T05:36:28Z, failed/index0/window_count1;
+ventana prepared sinproof/sourceproof/counts/diagnostic. Claimscompleted0/failed2.
+Campos ausentes son desconocidos. La razón genérica captura cualquier excepción;
+un404 seguro exige8invariantes concordantes y upstreamattempt1. No ignorar el gate,
+reabrir run terminal ni certificar año. Qpass2gen1rev4seq3 continúa pendiente.
+
+MONITOR2-CLOSED-QUIESCENCE1 PASS18:05:39.663166 UTC/SSH0,
+solo HISTORYtrue→false, dieciséis capas, sameworker/noPull/noDeps/downloads0,
+oldworker removido/no ejecución; readiness2 inicial+60s. PRIMARYPAUSED90/87/65/25,
+fence1/Full0/hasta20:32:58 y wholeplanSHA
+160133bb7b0ed16474da4cd6628fec60559b68bc1c02505404c5291bfdf7a153 idéntico tres veces.
+Gatewayc905/API3f7 preservados, rootfree33,050,345,472→33,051,205,632;
+Mongofree47,450,771,456/RAMavailable1,776,238,592. Pausa de autoridad y quiescence
+se probaron por separado. No publisher/broker nuevo. Origin83 del monitor quedó
+solo RAM y no se serializó: no reconstruirlo para otro episodio.
+
+Estado actual fechado: PAUSED90/87/HISTORYOFF. Objetivo abierto: faltan cinco
+fuentes/12meses con cobertura independiente/lectores, nativo y dos incrementales
+con cambios reales. La autoridad amplia del cierre sigue vigente dentro de sus
+presupuestos y techo20:32:58; no nuevo reloj, refund, Full ni aceptación ficticia.
+
+
+### Prospección controlada — observabilidad, no reabrir el fallo anterior
+
+Se acepta implementación directa acotada, sin SDD ni permisos nuevos/credits:
+- Root único escritor de modules/sheets/src/zeler_sheets/devoluciones_runner.py:
+  warning fijo best-effort con diagnóstico tipado cerrado existente ante exception;
+  mantener reason/raise/retries/proofs/resultados. Sin str(error)/exc_info/trace/
+  payload/IDs, DBcampos/schema/core ni reinterpretar404. La ventana previa siguefailed.
+- Root único escritor de infra/operations/zelerdata_pilot_monitor_guard.py:
+  permitir únicamente origen adicional realPAUSED90/87/65/25 pinado además del83
+  existente; fijo por episodio, misma deuda3/cuotas/EID/día/techo. Vigilar contador
+  superior claims_failed_units contra origen/previous:2→3 STOP aunreasonidéntico;
+  ningún baseline móvil/absorción/error ignorado. Claimscompleted ofrece progreso,
+  no cobertura. Guard original y todos sus26tests existentes se preservan.
+- CUOTAS único escritor de dos tests NUEVOS exactos:
+  modules/sheets/tests/test_devoluciones_onboarding_diagnostic.py (≤8fakes)
+  y tests/test_zelerdata_pilot_monitor_origin_episodes.py (≤12fakes), más informe
+  propio docs/sheets/zelerdata-historico-cuotas-prospectivo-informe.md.
+  RED antes de cada patchRoot; luego GREEN y cese. Solo fakes sin sockets/BD/puertos/
+  creds, nadaotrafuente/Git/build/prod/suitegeneral/agentes. AMQP sigue congelado.
+Root espera RED, congela su source antesGREEN y conjunto despuéscese para ocho
+controles. Ningún agente edita los archivos Root. Antes de otro episodio, Root
+captura nuevos pause/consumption genuinos y snapshot original privado persistido
+con PIN para no perder RAM; solo Root autentica recibos/quiescencia. No reconstruir83.
+Un futuro incidente conservaSTOP y se leerán metadatos/logtipado sin proveedor.
+La autoridad de cierre amplia no permite inventar safe404/certificados ni cambiar
+Full/registro14/ventana original. Estado actualPAUSED90/87/HISTORYOFF hasta gates.
+
+
+**Entrega prospectiva congelada:** CUOTAS cese; REDdiag6FAIL2PASS/episodios6FAIL6PASS;
+GREEN46PASS0.49s =8diag+12episodios+26originalesbyteexact. Ruff/formato/mypy2testsPASS.
+RunnerRootSHA578a0c320a13a0b55ab7e385ce3f95ec844ed606f17af7b6a50273796c369405;
+guardRootSHAedd58f9f5c13e69440d0241a3225c811656039d0ef8112f1892a47de021ed093.
+Previous.origin_receipt_sha256 obligatorio solo90, origen fijo83/90 únicamente;
+crecimiento de claims_failed_units2→3 STOP aun firma igual. No exactness ni bypass404.
+Informe propio SHA36c4cdaebcc952a7e2a17386a1bc94d3163f747390a2dc426dccd85d9e706d2b;
+8diagSHA1838ca98cfa99eb8c86d7b02a0135d186bf1c9bab1d9ad9e66a5913ee7cc4f11;
+12episodiosSHAfb0beb61e83febf2296f4c7578e99ccb46f6c9856d20e07b504a68d86037c8d0.
+
+**Ocho controles finales prospectivos PASS18:30:03 UTC:**1137paths/tar
+c4232b0f6a62e204965d2f2f3c6682f72a285f6671b37295955ac985d0b0ad34;
+351focused, Ruff/formato/mypy687/direct-Meli/schema PASS; full6690 PASS/20 SKIP
+444.102s, protectores19 PASS/0 SKIP5.886s. Todos los bytes/modos iguales antes
+esta anotación documental; no source cambiado después. No proveedor ni salud
+productiva inferidos de Linux aislado. Publicar únicamente siete paths propios.
+
+**Build/despliegue seleccionado siguiente:** solo sheets-worker para el warning
+servido. Guard OPS no es importado por servicio y se compila publicado únicamente
+en proceso operador; gatewayc905 y API3f7 no reconstruir/cambiar. Único Cloud Build
+conectado/VERIFIED desde commit de unidad publicado exacto, digest por fijar;
+previo actuala28/ID verificable y source5b953/build e209f2d9-a7e6-47b9-b343-bd85bd7db734
+rollback compatible **cerrado**, sin reset/registro/schemas/topología/cleanup.
+EstadoPAUSED90/87/HISTORYOFF, dieciséis capas más un overlay de imagenworker;
+preflightbytes/inodes/Mongo/RAM y root>=5GiB antes de único pull y recheck,
+selecteddigestbinding, up solo worker/noDeps/noPull. Outerstop mayor que grace
+real. Digest/healthy0restart/OOMfalse/readiness inicial+60s, GW/API/plan preservados.
+Despuésgates, pausa/consumo90 genuinos y snapshot privado original persistido
+antes de transporte; mismo EID/plazo20:32:58, ninguna reactivación del run fallido.
+El siguiente periodo pendiente conserva alcance original y STOP a nuevoincidente.

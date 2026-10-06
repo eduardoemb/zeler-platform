@@ -1,18 +1,18 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia operativa: 2026-10-06T17:19:29.729173Z; objetivo abierto.**
-> Worker sameimage `a28cb5…`, fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`;
-> Gateway4f90/API3f7 preservados. Plan PAUSED, HISTORY OFF, 83 cargos/80 reservas,
-> inicial58/mantenimiento25, Full0. La reserva no acredita transporte/entrega.
-> Conjunto guard+relación h1 validado con ocho controles: 6670 PASS/20 SKIP,
-> 19 protectores/0 SKIP, sin imagen afectada. Un rechazo local h1 para
-> `/shipments/{id}/orders` anterior a la pausa fue localizado; su arreglo acotado
-> está implementado/probado, aún no desplegado, e impide reanudar. No ampliar registro14 ni contratos de eventos.
-> Autorización15:32:58 UTC hasta cinco horas: techo20:32:58, mismos
-> ejecución/cuotas/cutoff/datos. No iniciar otro reloj ni devolver cargos.
-> Cobertura independiente de cinco fuentes/12 meses y dos incrementales
-> con cambios reales aún pendientes; pruebas y salud no sustituyen aceptación.
-> Ver [ledger único](zelerdata-historico-paralelo.md) para entregas e intentos.
+> **Última evidencia operativa: 2026-10-06T18:05:39.663166Z; objetivo abierto.**
+> Gateway corregido `c905f4…`/source `bc93e48080a2042c996bbe4ebb15d0e739a6fbaf`,
+> worker `a28cb5…`/source `5b9538b2415a9db9031b0125331478adf65b2cd4`, API3f7 preservada.
+> Plan PAUSED, HISTORY OFF, 90 cargos/87 reservas, inicial65/mantenimiento25,
+> Full0. Misma ejecución/cuotas/cutoff y techo20:32:58 UTC; no refund/reset.
+> Conjunto local: 6690 PASS/20 SKIP y 19 protectores/0 SKIP; único gateway build/
+> despliegue verificados. El monitor reanudó y se pausó automáticamente por nuevo
+> error de prueba claims: run2025-10-04→14 failed, ventana prepared sin proof.
+> `ready_with_observations` y pending37→36 no acreditan cobertura adquirida.
+> No repetir proveedor ni ignorar un404 sin sus ocho invariantes; la causa exacta
+> no quedó durable; warning prospectivo y guard90 ya validados, aún no desplegados. Messages despejó su ValueError histórico con progreso real;
+> Questions p2 sigue pending. Cinco fuentes/12meses, lectores/nativo y dos
+> incrementales genuinos todavía pendientes. Ver [ledger único](zelerdata-historico-paralelo.md).
 
 
 

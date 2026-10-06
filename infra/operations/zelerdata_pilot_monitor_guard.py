@@ -33,6 +33,8 @@ def classify(
     ``origin_receipt_sha256``, ``quiescence_receipt_sha256``, ``previous`` snapshots
     with ``observed_at`` and ``debt_first_seen``. Root MUST authenticate the receipt
     pins and bind the original/quiescence facts first: flags/hashes are NOT proof.
+    Only the recorded83/90 episodes are admitted. Episode90 also binds the previous
+    origin pin and watches durable claims failure/completion counters separately.
     ``previous.observed_at`` equals the exact ``now`` passed for that snapshot.
     Persist the returned first-seen clock externally; never roll/absorb the origin.
     """
@@ -86,7 +88,7 @@ def classify(
             else {}
         )
         periodic_checkpoint = section(periodic, "checkpoint", nullable=True)
-        return tuple(
+        values = tuple(
             optional_count(row, field)
             for row, field in (
                 (state, "completed_units"),
@@ -100,6 +102,11 @@ def classify(
                 (periodic_checkpoint, "target_index"),
                 (periodic_checkpoint, "offset"),
             )
+        )
+        return values + (
+            (optional_count(document, "claims_completed_units"),)
+            if source == "claims_returns"
+            else ()
         )
 
     def issues(document: dict[str, Any], source: str) -> tuple[int, int, int]:
@@ -133,6 +140,7 @@ def classify(
             )
         )
         old_plan, old_job, old_head = origin_plan, origin_job, origin_head
+        episode90 = False
         previous_observed: datetime | None = None
         debt_first_seen: datetime | None = None
         if additive:
@@ -145,22 +153,29 @@ def classify(
                 ),
                 "origin_authentication_invalid",
             )
+            origin_counts = tuple(
+                count(origin_plan[field])
+                for field in (
+                    "execution_consumed",
+                    "execution_sent",
+                    "total_consumed",
+                    "incremental_consumed",
+                )
+            )
             require(
                 origin_plan["state"] == "paused"
                 and origin_plan["eligible"] is True
-                and tuple(
-                    count(origin_plan[field])
-                    for field in (
-                        "execution_consumed",
-                        "execution_sent",
-                        "total_consumed",
-                        "incremental_consumed",
-                    )
-                )
-                == (83, 80, 58, 25),
+                and origin_counts in {(83, 80, 58, 25), (90, 87, 65, 25)},
                 "origin_policy_invalid",
             )
+            episode90 = origin_counts == (90, 87, 65, 25)
             previous_snapshot = section(baseline, "previous")
+            if episode90:
+                require(
+                    previous_snapshot.get("origin_receipt_sha256")
+                    == baseline["origin_receipt_sha256"],
+                    "origin_authentication_invalid",
+                )
             old_plan, old_job, old_head = (
                 previous_snapshot["plan"],
                 previous_snapshot["qjob"],
@@ -456,6 +471,18 @@ def classify(
                     isinstance(targets, list) and checked["target_index"] <= len(targets),
                     "checkpoint_invalid",
                 )
+        if episode90:
+            for field in ("claims_failed_units", "claims_completed_units"):
+                require(
+                    max(optional_count(origin_plan, field), optional_count(old_plan, field))
+                    <= optional_count(plan, field),
+                    "checkpoint_regression",
+                )
+            require(
+                optional_count(plan, "claims_failed_units")
+                <= optional_count(old_plan, "claims_failed_units"),
+                "fresh_source_failure",
+            )
         labels: dict[str, str] = {}
         for source in caps:
             previous = old_plan.get("onboarding_sources", {}).get(source, {})
@@ -510,6 +537,9 @@ def classify(
             "sources": labels,
             "snapshot_proven": False,
         }
+        if episode90:
+            result["claims_failed_units"] = optional_count(plan, "claims_failed_units")
+            result["claims_completed_units"] = optional_count(plan, "claims_completed_units")
         if additive:
             result["debt_first_seen"] = None
             if debt_first_seen is not None:

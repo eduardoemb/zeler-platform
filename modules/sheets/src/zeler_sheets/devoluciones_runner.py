@@ -972,7 +972,10 @@ async def advance_onboarding_devoluciones(
         new_devoluciones_attempt_token,
         stable_devoluciones_operation_id,
     )
-    from zeler_sheets.devoluciones_reconciliation import GatewayDevolucionesSource
+    from zeler_sheets.devoluciones_reconciliation import (
+        GatewayDevolucionesSource,
+        _private_focused_devoluciones_diagnostic,
+    )
 
     if charge is None:
         charge = getattr(gateway, "charge", None)
@@ -1031,8 +1034,17 @@ async def advance_onboarding_devoluciones(
         except SourceCallBudgetError:
             failure_reason = "physical_budget_exceeded"
             raise
-        except Exception:
+        except Exception as error:
             failure_reason = "exact_source_proof_unavailable"
+            # Preserve the original source failure even if logging is unavailable.
+            # Only the existing closed, typed diagnostic crosses this boundary.
+            try:
+                logger.warning(
+                    "sheets.devoluciones_onboarding_source_proof_unavailable",
+                    **_private_focused_devoluciones_diagnostic(error),
+                )
+            except Exception:  # noqa: BLE001 - best-effort observability must not replace the cause.
+                pass
             raise
 
     try:
