@@ -1769,3 +1769,51 @@ Ambos especialistas+código Root congelados. FINAL1113 paths/tar
 full**6504PASS/20SKIP** 07:34:27→07:41:09UTC/401.232s; protected19PASS/0SKIP5.899s;
 ruff/formato/mypy/direct-Meli/schemas PASS. No skipscomoaceptación. UnidadOPS-only,
 ninguna imagen nueva/pull/deploy para este delta.
+
+### Continuación 6 octubre — histórico detenido por Questions 410
+
+Publicación OPS verificada: `main`/remoto
+`861f6c81621424334ae98138955e85619c2fe57c`; árbol limpio antes de este apéndice.
+No nuevos builds: solo cambió la herramienta del operador, no las imágenes.
+
+| Intento Root | Evidencia / resultado / consumo |
+| --- | --- |
+| Arming local inicial | Import `datetime.UTC` no disponible en Python 3.10 del host; fallo antes de funciones/red/Compose. Se conservó STOP y se corrigió solo el alias privado a `timezone.utc`. |
+| Arming real 07:46:47.429727 UTC | PASS, 84.99 s/SSH0. Exclusivamente worker HISTORY false→true, misma imagen `0df26cd…`; cero pulls. API/Gateway/env restantes intactos; HOLD=true, recovery/refresh=false. Tres componentes saludables, restart0/OOM=false y comprobación tras 60 s. Plan todavía PAUSED75/73. |
+| Resume3 07:47:38.702423 UTC | Un CAS state-only real, misma ejecución/caps/cutoff/deadline. Recibo `12756846e7de1600d70ab0c62793a434bfa90e687d6778dbe22fde4b8ef308d1`. |
+| Monitor3 STOP 07:47:53.844043 UTC | Questions failed_units1; pausa canónica inmediata. **81 cargos / 79 envíos**, 24 maintenance + 57 iniciales, Full0. Un CAS real, sin reset/refund/checkpoint edit. Monitor terminal07:47:54.375936 UTC/6 lecturas/cleanup cerrado/SSH0. |
+| QUESTIONS-FAILED-JOB-SHAPE-1 | STOP por forma/cap; no inferencia de ausencia ni repetición del proveedor. Recibo original preservado. |
+| QUESTIONS-FAILED-SCOPED-COHORT-1 | PASS07:52:13.258522 UTC, PRIMARY/2 comandos/1 job. `source_rejected`, attempts1, updated07:47:51.508, available08:02:51.508, lease=null. Rango original 2025-09-24→2026-09-24 retenido. |
+| QUESTIONS-EXISTING-FAILURE-LOG-1 | STOP por límite30 del selector de logs existente. No nuevos requests Meli; ninguna ausencia global inferida. |
+| QUESTIONS-EXACT-PROXY-REJECTION-1 | Una fila exacta existente `proxy.call`: 07:47:51.503777056 UTC, `/questions/search`, upstream HTTP410; correlación con el job, no causa inventada. |
+| QUESTIONS-CHECKPOINT-SHAPE-1 | PASS08:14:30.779453 UTC/4.936 s/PRIMARY4 comandos/cleanup cerrado/SSH0. Mismo job hash `c300216c…`, acquisition_id==job_id; **discover / page_sequence3 / next_cursor_present=true**. Plan sigue PAUSED81/79/24. Cero writes/Meli/AMQP/getMore; cursor literal nunca emitido. |
+
+Pausa final `monitor3-pause.json`, SHA256
+`47ba2f0637d49f12b8f8cdcb370d91fd2b5b72120afe8504b613e4fcc51a1848`;
+plan completo
+`153a6fd318b9cb7804f84b12b61841a101a21deeda068ea0a5bcbf9e49163a91`.
+Mismo execution_id y límite absoluto **08:17:23 UTC / 02:17:23 Monterrey**.
+HISTORY está ON, pero la autoridad presupuestal está **PAUSED**; no confundir
+flag habilitado con permiso para enviar. No nuevos sends/replay tras el STOP.
+
+Ruta histórica real `HistoryQuestionsWorker→QuestionScanStaging` ya envía
+`api_version=4`, `search_type=scan` y, al continuar, `scroll_id`; el proxy conserva
+`query_params.multi_items()`. Añadir v4 no sería un fix. La
+[documentación primaria de scan](https://developers.mercadolibre.com.mx/en_us/manage-questions-answers/items-and-searches)
+indexada establece expiración de scroll_id de cinco minutos (apertura directa
+403). La pausa anterior superó tres horas: **caducidad es una explicación
+compatible**, no prueba del cuerpo/causa exacta de ese410. No se reseteó cursor,
+checkpoint, generación, job, datos, plazo o cuotas para comprobarla.
+
+CUOTAS recibe únicamente exploración local readonly de lifecycle en tres archivos
+exactos: `modules/sheets/src/zeler_sheets/history_questions.py`,
+`modules/sheets/src/zeler_sheets/history_continuation.py` y
+`modules/sheets/src/zeler_sheets/history_acquisition.py`. Sin escritura, pruebas,
+red, producción ni agentes adicionales; propuesta de preservación, no permiso de
+reinicio. AMQP continúa entregado/cese. Root conserva todos los documentos/Git.
+
+**Aceptación actual:** Sheet nativa PASS; API normal parcial28 órdenes + guard
+exacto PASS; mensaje original CLAIMS completado por consumidor PASS (cierre del
+relay sigue ambiguo, no repetir). Cinco fuentes/calendario anual legible y **dos
+ciclos incrementales genuinamente cambiados NO acreditados**. Objetivo NO completo;
+no degradar estos gates a health, colas vacías, contadores o pruebas unitarias.
