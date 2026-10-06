@@ -10,6 +10,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
+from pymongo.errors import OperationFailure
+
 DEVOLUCIONES_LEASE_DURATION = timedelta(seconds=120)
 DEVOLUCIONES_HEARTBEAT_INTERVAL = timedelta(seconds=30)
 DEVOLUCIONES_READ_MODEL = "devoluciones"
@@ -103,6 +105,43 @@ def takeover_checkpoint(
 
 
 async def acquire_devoluciones_operation(
+    *,
+    db: Any,
+    seller_id: str,
+    scope: str,
+    operation_id: str,
+    attempt_token: str,
+    source_fingerprint: str | None = None,
+    invalidate_readiness: bool = True,
+    require_coverage_compatible: bool = False,
+) -> DevolucionesOperationContext:
+    # Retry only a known-aborted database transaction, never business transport
+    # or an uncertain commit. Identity/token and caller authority stay unchanged.
+    for attempt in range(3):
+        try:
+            return await _acquire_devoluciones_operation_once(
+                db=db,
+                seller_id=seller_id,
+                scope=scope,
+                operation_id=operation_id,
+                attempt_token=attempt_token,
+                source_fingerprint=source_fingerprint,
+                invalidate_readiness=invalidate_readiness,
+                require_coverage_compatible=require_coverage_compatible,
+            )
+        except OperationFailure as error:
+            if (
+                attempt == 2
+                or error.code != 112
+                or not error.has_error_label("TransientTransactionError")
+                or error.has_error_label("UnknownTransactionCommitResult")
+            ):
+                raise
+            await asyncio.sleep(0)
+    raise AssertionError("unreachable bounded transaction retry")
+
+
+async def _acquire_devoluciones_operation_once(
     *,
     db: Any,
     seller_id: str,
