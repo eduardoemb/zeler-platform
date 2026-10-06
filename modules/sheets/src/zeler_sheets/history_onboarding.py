@@ -105,6 +105,25 @@ async def seller_eligible(db: Any, seller: str) -> bool:
     return account is not None
 
 
+def _message_checkpoint_bound(value: Any, stored: Any) -> datetime:
+    """Recover the frozen ISO bound, not a new window, after BSON date truncation."""
+    if not isinstance(value, str) or not isinstance(stored, datetime):
+        raise ValueError("periodic message checkpoint range is invalid")
+    original = datetime.fromisoformat(value)
+    if original.tzinfo is None:
+        raise ValueError("periodic message checkpoint requires an aware range")
+    stored_utc = stored.replace(tzinfo=UTC) if stored.tzinfo is None else stored.astimezone(UTC)
+    original_utc = original.astimezone(UTC)
+    # BSON dates preserve milliseconds, while the collector's durable strings
+    # preserve the exact first-call ISO identity. Never rewrite those strings or
+    # accept an actual interval change to hide an identity failure.
+    if original_utc.replace(
+        microsecond=(original_utc.microsecond // 1000) * 1000
+    ) != stored_utc.replace(microsecond=(stored_utc.microsecond // 1000) * 1000):
+        raise ValueError("periodic message checkpoint range mismatch")
+    return original
+
+
 class PlanBudgetGateway(PacedMeliGateway):
     """Charge each physical attempt atomically BEFORE dispatch, including failures."""
 
@@ -747,14 +766,18 @@ class HistoryOnboardingWorker:
             state.pop("checkpoint", None)
         else:
             detail.incremental = True
+            start, end = state["sweep_start"], state["sweep_end"]
+            if checkpoint:
+                start = _message_checkpoint_bound(checkpoint.get("start"), start)
+                end = _message_checkpoint_bound(checkpoint.get("end"), end)
             try:
                 result = await collect_pack_messages(
                     db=self.db,
                     gateway=detail,
                     seller_id=plan["seller_id"],
                     targets=tuple(remaining[:MESSAGE_PERIODIC_BATCH]),
-                    start=state["sweep_start"],
-                    end=state["sweep_end"],
+                    start=start,
+                    end=end,
                     max_requests=MESSAGE_PERIODIC_REQUESTS,
                     checkpoint=checkpoint,
                 )
