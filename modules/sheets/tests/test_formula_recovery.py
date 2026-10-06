@@ -4979,12 +4979,20 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
     partial_fields = failure in {"foreign_cost", "cost_error", "hidden_address", "cached_fields"}
     if failure and not partial_fields:
         assert job["state"] != "completed"
-        assert await recovery_db.shipments.count_documents({}) == (1 if prior else 0)
-        if prior:
-            assert await recovery_db.shipments.find_one({"_id": "3002"}) == prior
+        # Atomicity is per identity: valid first publication survives failure of
+        # the second; that failed/current resource and its cursor do not advance.
+        assert job["shipment_offset"] == 1
+        assert await recovery_db.shipments.count_documents({}) == 1 + (1 if prior else 0)
+        first = await recovery_db.shipments.find_one({"_id": "3001"})
+        assert first["seller_id"] == "pilot" and first["order_id"] == "42"
+        assert first["real_shipping_cost"]["seller_cost"] == Decimal128("12.5")
+        assert first["receiver_address"]["name"] == "Synthetic Receiver"
+        assert "MUST_NOT_PERSIST" not in repr(first)
+        assert await recovery_db.shipments.find_one({"_id": "3002"}) == prior
     else:
         expected_state = "pending" if failure in {"cost_error", "cached_fields"} else "completed"
         assert job["state"] == expected_state, job.get("failure_reason")
+        assert job["shipment_offset"] == (1 if failure in {"cost_error", "cached_fields"} else 2)
         stored = await recovery_db.shipments.find({}).to_list(None)
         assert len(stored) == 2
         assert all(row["seller_id"] == "pilot" and row["order_id"] == "42" for row in stored)
@@ -5021,7 +5029,8 @@ async def test_shipment_id_recovery_publishes_owned_detail_and_costs_atomically(
         failure = None
         await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
         retried = await queue.collection.find_one({"_id": requested.key})
-        assert retried["state"] == "completed"
+        assert retried["state"] == "completed" and retried["shipment_offset"] == 2
+        assert calls[6:] == ["/shipments/3002/orders", "/shipments/3002", "/shipments/3002/costs"]
         recovered = await recovery_db.shipments.find_one({"_id": "3002"})
         assert not recovered.get("unavailable_fields")
         assert recovered["real_shipping_cost"]["seller_cost"] == Decimal128("12.5")

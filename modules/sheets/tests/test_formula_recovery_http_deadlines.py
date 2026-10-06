@@ -220,7 +220,11 @@ async def test_worker_keeps_quota_classification_when_outer_deadline_interrupts_
     original_timeout = asyncio.timeout
     original_quota = pacing.recovery_quota_deadline
     monkeypatch.setattr(
-        asyncio, "timeout", lambda seconds: original_timeout(0.04 if seconds == 240 else seconds)
+        asyncio,
+        "timeout",
+        lambda seconds: original_timeout(
+            (0.5 if external_cancel else 0.04) if seconds == 240 else seconds
+        ),
     )
     monkeypatch.setattr(
         recovery_worker,
@@ -280,7 +284,9 @@ async def test_worker_keeps_quota_classification_when_outer_deadline_interrupts_
     worker = Worker(db=None, gateway=None, queue=Queue())  # type: ignore[arg-type]
     if external_cancel:
         task = asyncio.create_task(worker.process_one())
-        await quota_expired.wait()
+        # Manual cancellation must not race the unrelated outer 40ms timer.
+        # Bound the harness signal wait so a failed worker cannot hang the suite.
+        await asyncio.wait_for(quota_expired.wait(), timeout=1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

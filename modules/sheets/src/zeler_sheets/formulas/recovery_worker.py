@@ -15,6 +15,8 @@ from urllib.parse import urlencode
 import httpx
 from bson import BSON
 from pymongo.errors import DuplicateKeyError, PyMongoError
+from pymongo.read_concern import ReadConcern
+from pymongo.write_concern import WriteConcern
 
 from zeler_platform_core.clients.meli_gateway_client import GatewayRateLimitError
 from zeler_platform_core.devoluciones_readiness import (
@@ -740,9 +742,13 @@ class FormulaRecoveryWorker:
 
     async def _shipments(self, job: dict[str, Any]) -> None:
         requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))
-        resources: list[dict[str, Any]] = []
-        retry_partial = False
-        for identity in requested.shipment_ids:
+        offset = await self.queue.initialize_shipment_cursor(job)
+        if offset == len(requested.shipment_ids):
+            await self.queue.finish(job, succeeded=True)
+            return
+        for index, identity in enumerate(requested.shipment_ids[offset:], start=offset):
+            retry_partial = False
+            quota_error: Exception | None = None
             relation_response = await self.detail_gateway.request(
                 method="GET",
                 seller_id=requested.seller_id,
@@ -802,6 +808,9 @@ class FormulaRecoveryWorker:
                     )
                 elif cost_response.status_code == 429 or cost_response.status_code >= 500:
                     retry_partial = True
+            except LocalQuotaTimeoutError as error:
+                retry_partial = True
+                quota_error = error
             except httpx.HTTPStatusError as exc:
                 retry_partial |= exc.response.status_code == 429 or exc.response.status_code >= 500
             except (httpx.TransportError, TimeoutError, GatewayRateLimitError):
@@ -815,33 +824,23 @@ class FormulaRecoveryWorker:
                 unavailable.append("real_shipping_cost")
             if _receiver_address_snapshot(detail) is None:
                 unavailable.append("receiver_address")
-            resources.append(
-                {
-                    **detail,
-                    "order_id": owned_orders[0],
-                    "real_shipping_cost": cost.model_dump(mode="python", exclude_none=True)
-                    if cost
-                    else None,
-                    "formula_observed_at": observed_at,
-                    "unavailable_fields": sorted(unavailable),
-                }
-            )
-        # Explicit IDs do not prove a historical inventory. Publish only these
-        # normalized documents and the live job's completion, not a range marker.
-        async with (
-            await self.db.client.start_session() as session,
-            session.start_transaction(),
-        ):
-            if not await self.queue.finish(
-                job,
-                succeeded=not retry_partial,
-                retryable=retry_partial,
-                failure_reason="source_temporarily_unavailable",
-                session=session,
+            resource = {
+                **detail,
+                "order_id": owned_orders[0],
+                "real_shipping_cost": cost.model_dump(mode="python", exclude_none=True)
+                if cost
+                else None,
+                "formula_observed_at": observed_at,
+                "unavailable_fields": sorted(unavailable),
+            }
+            # Commit one identity, not an all-or-nothing batch. No range marker.
+            async with (
+                await self.db.client.start_session() as session,
+                session.start_transaction(
+                    read_concern=ReadConcern("snapshot"), write_concern=WriteConcern("majority")
+                ),
             ):
-                raise ValueError("shipment recovery lease lost before publication")
-            writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
-            for resource in resources:
+                writer = SheetsEventPersistence(db=self.db, clock=self.queue.now)
                 prior = await self.db["shipments"].find_one(
                     {"_id": str(resource["id"]), "seller_id": requested.seller_id}, session=session
                 )
@@ -851,8 +850,6 @@ class FormulaRecoveryWorker:
                         if field == "receiver_address":
                             resource.pop("destination", None)
                         elif isinstance(resource[field].get("synced_at"), datetime):
-                            # Default Mongo decoding omits tzinfo; do not change
-                            # the cached observation time while normalizing it.
                             resource[field]["synced_at"] = _utc(resource[field]["synced_at"])
                 await writer.persist(
                     event_type="shipments.updated",
@@ -866,6 +863,25 @@ class FormulaRecoveryWorker:
                 expected = _canonical_shipment_document(resource, seller_id=requested.seller_id)
                 if stored is None or BSON.encode(stored).decode() != BSON.encode(expected).decode():
                     raise ValueError("shipment changed during acquisition")
+                following = index if retry_partial else index + 1
+                if not await self.queue.checkpoint_shipment_cursor(
+                    job, expected_offset=index, next_offset=following, session=session
+                ):
+                    raise ValueError("shipment cursor lost ownership before publication")
+                if (
+                    retry_partial or following == len(requested.shipment_ids)
+                ) and not await self.queue.finish(
+                    job,
+                    succeeded=not retry_partial,
+                    retryable=retry_partial,
+                    failure_reason="source_temporarily_unavailable",
+                    session=session,
+                ):
+                    raise ValueError("shipment recovery lease lost before publication")
+            if retry_partial:
+                if quota_error is not None:
+                    raise quota_error
+                return
 
     async def _locate_orders(self, job: dict[str, Any]) -> dict[str, Any]:
         requested = OrderIdsRecoveryRequest(job["seller_id"], tuple(job["order_ids"]))

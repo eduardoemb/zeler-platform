@@ -808,3 +808,79 @@ La solución futura no recupera por sí misma los payloads perdidos ni crédito2
 **Aceptación global sigue abierta:** anual legible cinco fuentes y dos ciclos con
 cambios empresariales reales. Muestra nativa/API parcial/OAuth previos preservados;
 ni este despliegue ni las6,725 pruebas reemplazan los gates faltantes.
+
+
+## 17. Cursor durable de envíos — unidad local, sin rollout
+
+Usuario autorizó45min locales20:46:13→21:31:13 y, posteriormente, tiempo necesario
+para terminar controles/documentación. Esto no modifica el piloto vencido,
+PAUSED/HISTORY OFF, sus250 créditos de envíos consumidos, Full0 ni los permisos
+productivos. Runtime sigue siendo el registrado en §16; no inspección nueva.
+
+CUOTAS entregó cinco archivos exclusivos y cesó. Queue y worker conservan los
+100IDs/key originales, validan cursor/owner/state/lease/seller/model/list antes
+RPC, inicializan únicamente ausencia genuina a0 y publican **una identidad +
+cursor + readback** en transacción snapshot/majority. Un fallo/CAS perdido de la
+siguiente unidad no borra la anterior. Costos transitorios conservan campos
+independientes pero no concluyen unidad/costo ni renuevan la frescura del caché.
+Nunca seed del cursor desde250 cargos, timestamps o documentos preexistentes.
+
+Refresh ordinario legítimo de COMPLETED archiva su checkpoint real compacto y
+abre un ciclo nuevo0; el parcial/failed no pierde offset ni attempts. H1 con
+`reopen_terminal=False` y pending/running permanecen intactos. El archivo de un
+checkpoint no prueba contenido empresarial cambiado ni dos incrementales reales.
+
+### Evidencia local — clases separadas
+
+- CUOTAS: RED10 antesfuentes y REDlifecycle3/1 antesenqueue;16new +101regresiones
+  fake=117PASS, cuatro sentinels antiguos PASS y Ruff/formato/mypy4targetsPASS.
+- Root: cuatro pruebas reales rs0 PASS y después23 protectores sin skips,
+  incluidos snapshot/majority, budgetstop2units, validatorrechazo0RPC,
+  rollbackunidadactual y reanudación sólo despuésdelcursor concluido.
+- Root enfocadas940PASS y Ruff/formato/mypy694/direct-Meli/schema PASS.
+  Snapshot1,147paths
+  `dd56ef8cdb03f339a3a385eceaac1ecb7ecb3d4319af86c551e036271a5a6034`.
+  Suite general del conjunto **6,741 PASS/24 SKIP,415.80s** (control418.574s).
+  Ocho controles finales completos PASS. Cuatro skips nuevos de la suite general
+  por rechazo del Mongo ambiental no sustituyen los cuatro positivos reales
+  ejecutados aparte; protected23PASS/0SKIP. No reducción del alcance requerido.
+- Primer control enfocado agotó600s por un harness previo de cancelación que
+  esperaba una señal sin límite. Catalog/process/pacing no cambiaron por el fix
+  de envíos; Root acotó la espera y separó cancelación manual de timer externo,
+  sin quitar assertions. Un standalone40s y logs originales conservados.
+- Siete assertions antiguas de rollback del lote completo fueron RED al cambiar
+  la unidad durable; ahora exigen primer envío válido/costo/address preservados,
+  cursor1, segundo fallido/prior sin alteración y retry sólo segundo. No relajar
+  propiedad, lease, sourceproof, PII ni prohibición de marker histórico.
+- El último control de la ventana45 acabó18.877s después del plazo debidoalrunner;
+  quedó registrado, sin iniciar full hasta nueva autorización. No operación
+  productiva, build, despliegue, sourceGET, reset o publicaciónGit todavía.
+
+### Drift y gates futuros — no permiso de ejecutar
+
+Se afectan **sheets-api** (enqueue/reopen) y **sheets-worker** (pub/cursor).
+El runtime anterior be4/sourceed271 y API3f7 no contiene esta unidad. Una vez
+publicada y validada, se requieren builds Cloud Build VERIFIED separados de
+ambas imágenes afectadas; no reconstruir gateway ni otras imágenes.
+Orden compatible futuro: API nueva primero y worker después, antesdehabilitar
+la adquisición; API vieja+worker nuevo puede dejaroffsetlen trasreopen y fingir
+una renovación sinGET. Rollback anterior sólocompatible **CLOSED**, no ordinary
+activo ni borrado de cursores. Preparar rollback que entienda el nuevo contrato.
+
+La colección recovery_jobs es raw de producto; el schema hipotético no existe
+localmente. Eso no prueba ausencia de validator productivo. Antesdecualquier
+rollout, inspeccionar metadata real de validator para cursor/history, proponer
+aplicación separada sólo si necesaria; un matched no-op no demuestra compatibilidad.
+No aplicar validators por inferencia ni por el grant local.
+
+Este arreglo no recupera payloads perdidos ni reembolsaS250. Siguen pendientes
+anual legiblecincofuentes ydosincrementales con cambios empresariales reales;
+OAuth/muestra nativa/API parcial previos conservan su alcance aprobado.
+
+
+**Cierre local validado:** source/lockfile/dependencias/modos coinciden con el
+snapshot; sólo estos documentos/lessons anotados después. La unidad se publica
+con código, tests, informe y fixtures de control actualizados. No build, deploy,
+validator, proveedor o reinicio productivo desde esta autorización local.
+Para servir la nueva unidad siguen pendientes imágenes API+worker y sus gates
+separados; el piloto vencido/S250 agotado no se reabre por este resultado.

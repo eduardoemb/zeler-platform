@@ -2757,3 +2757,77 @@ Rootdebeverificar; propuestaNO implementada, no nuevosfiles/tests/sourceGET.
 No recuperaroffset/payloaddesde250cargos o documentos actuales, nofragmentación
 retroactiva/relabelmaintenance. Ese déficit también queda pendiente, sin olvidar
 los otros gates de aceptación originales.
+
+## Unidad local autorizada: cursor durable por envío
+
+Usuario concedió45min **sólo locales**, recibidos20:46:13 UTC del6Oct;
+techo fijo21:31:13 UTC, sin reiniciar por preparación. Checkout maina6409c5 limpio
+al inicio; preservar fix429/sourceed271/runtimebe4 y todo el trabajo anterior.
+Originalpilotuntil20:32:58 siguevencido/PAUSED, S250 agotado/Full0; no producción,
+builds, despliegues, Meli, máscuota, keysnuevas ni reconstrucción de payloads.
+
+| Responsable | Archivos exclusivos | Entrega / dependencia |
+| --- | --- | --- |
+| CUOTAS, único escritor | `modules/sheets/src/zeler_sheets/formulas/recovery.py`; `modules/sheets/src/zeler_sheets/formulas/recovery_worker.py` | Avance por identidad con cursor estricto y publicación/CAS atómicos; solicitud/lista/key originales; owner/state/lease/seller/model/offset previo; sin nuevos créditos/interval markers. TDD antes fuente, entregar/cese antesRootgates. |
+| CUOTAS | Nuevos `modules/sheets/tests/test_shipment_recovery_durable_cursor.py`; `tests/integration/test_shipment_cursor_publication_rs0.py`; `docs/sheets/zelerdata-historico-cuotas-shipment-cursor-informe.md` | Fakes sin sockets/DB para RED/GREEN; test real preparado sin ejecutar por especialista. Root ejecuta sólo rs0 local propio y rechaza skips como aceptación. Entrega meta21:07 UTC. |
+| AMQP | Ninguno adicional | Congelado; no asumir cuotas/código. |
+| Coordinador | Documentos centrales/lessons, Git, Core/modelos/schemas/config/deps/lockfiles y controles conjuntos | No edita los5paths deCUOTAS hasta cese. Verifica modelo/schema sólo si existe necesidad real; ocho controles trasfreeze, no suite general con escritor activo. |
+
+El schema hipotético `infra/mongo/schemas/sheets_formula_recovery_jobs.json` no
+existe en checkout; queue usa colección raw de producto y `ensure_indexes`.
+Eso no demuestra ausencia de validator productivo: compatibilidad runtime futura
+requiere evidencia propia; no inventar Core/modelo/schema ni aplicar validators.
+API enqueue deberá permanecer compatible con jobs legacy sin cursor (ausencia
+verdadera=sin avance conocido, nunca seed desde docs/cargos/timestamps).
+
+Pruebas exigidas: presupuesto250 y lista100 conservan primeras identidades
+concluidas aun cuando la siguiente queda WAIT; reanudación sólo después del cursor,
+sin refund/duplicar concluidas. Metadatos inválidos, cambios de key/lista/seller,
+lease perdida y conflicto CAS rechazan publicación y cursor juntos. Costo
+transitorio puede guardar campos independientes pero no resolver unidad/costo;
+no frescura/cero inventados para caché previo. Validación de cursor/storage antes
+de primerRPC; si validator rechaza campos nuevos, cero solicitudes. Transacciones
+reales prueban commit/rollback y majority/snapshot, no transporte productivo.
+La corrección no recupera lo perdido ni certifica anual cincofuentes/2genuine.
+
+
+### Entrega local durable y controles — sin producción
+
+CUOTAS5paths ENTREGADO/cese y hashesverificadosRoot;16new/101regresiones117PASS,
+4sentinels antiguosPASS, quality4PASS. No nuevos agentes/sourcefiles/Core/schema.
+Root fue único escritor adicional de los dos fixtures antiguos: harness de
+cancelación bounded1s/outermanual0.5, y assertions peridentidad fortalecidas tras
+RED7. Sus cambios no alteran APIs de producto ni el número de GET autorizados.
+
+Rootrs0propio cuatroPASS y protected23PASS0skip; focused940PASS, quality694/
+RuffformatdirectschemaPASS. Round3frozen1147tar
+dd56ef8cdb03f339a3a385eceaac1ecb7ecb3d4319af86c551e036271a5a6034.
+Primerfocused600timeout y standalone40 conservados, exactownedtestPIDsalive
+confirmados luego terminados; nunca reiniciar por mero observationtimeout.
+Round2RED7/933PASS y round3PASS originales retenidos; ningún resultado sustituido.
+Actualend21:31:31.876909 excedióceil21:31:13 por18.877s; Rootregistro/stopinspect
+hallóningúnproceso. No full iniciada hasta nuevo grant de tiempo necesario SOLO
+controleslocales/documentación, recibido22:10:08UTC. Fullúnica corrida sobremismo
+snapshot despuésverificarcero testPIDs; resultadofinal6,741PASS/24SKIP,415.80s
+(control418.574s), snapshotbyte/modeigual. Ocho controles completos PASS, sin
+repetirlos7previos ya válidos.
+
+Runtime be4/API3f7 sin cambios. Más tiempo local no compra créditos/fuente/Full.
+FutureAPI+worker builds/deploy/validators necesitanautorización independiente y
+rollbackcompatible; no ejecutar por tener calidadverde. Objetivo global no completo.
+
+
+### Cierre de la unidad local durable (sin aceptación global)
+
+FullPASS6,741/24SKIP, focused940/0SKIP, protected23/0SKIP, Ruff/formato/mypy694/
+direct-Meli/schema: ocho controles finales del mismo snapshot. Sourcebytes ymodos
+actuales iguales;3documentosRoot anotados después, sin cambios ejecutables nuevos.
+Preservados fallos de harness y RED7 de contrato anterior; no resultados borrados.
+Publicación propia incluye2sources/2tests nuevos/informeCUOTAS/2fixtures antiguos
+Root/3centraleslessons. Sin Core/model/schema/config/deps/lock cambios.
+
+Runtime API3f7/workerbe4/sourceed271 no actualizado por grantlocal. Nuevasimágenes
+necesarias sóloAPI+worker acommitpublicado exacto, CloudBuildVERIFIED y rollout
+ordenAPI→worker trasvalidatorread real/rollback compatible, con permisos separados.
+No construir ni desplegar por calidadverde. No calendario/anual5fuentes o2genuine
+certificados; no nuevo presupuestoEID/plazo, reembolsos ni Full.

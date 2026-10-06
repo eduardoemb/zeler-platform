@@ -90,6 +90,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-031 | Isolated restore | Operator UID/tmp, actual CLI libc ABI and PRIMARY gate | active |
 | L-032 | ZelerData | Durable work authority and non-fungible physical credit | active |
 | L-033 | ZelerData | Abort bounded 429 before collector retries | active |
+| L-034 | ZelerData | Commit one shipment and its cursor atomically | active |
+| L-035 | Tests | Bound cancellation harness signals | active |
 
 ## Cloud Build and VM deployment
 
@@ -550,4 +552,29 @@ repeat failures, and promote stable knowledge to its proper operational form.
   not prove two genuinely changed incremental cycles.
 - verification/source: `modules/sheets/tests/test_history_pilot_rate_limit_stop.py`,
   `modules/sheets/tests/test_history_pilot_returns_rate_limit_stop.py`; Mon5 ledger.
+- status: active
+
+
+### L-034 — Commit one shipment and its cursor atomically
+- area: ZelerData shipment acquisition/recovery
+- proven path: Keep immutable request IDs/key, verify live ownership and strict
+  cursor before RPC, then commit each validated resource/readback/cursor together
+  with snapshot/majority. Resume only concluded units; archive a completed cursor
+  before a legitimate new refresh. Preserve partial cost/cache provenance.
+- failed path: Buffer100×3 requests before one commit under a250 request cap,
+  seed progress from consumed calls, or reopen a completed cursorlen without a
+  new cycle. API/worker changes need compatible ordering and rollback.
+- verification/source: `modules/sheets/tests/test_shipment_recovery_durable_cursor.py`,
+  `tests/integration/test_shipment_cursor_publication_rs0.py`; future runtime
+  validator inspection remains required, not proven by a matching no-op.
+- status: active
+
+### L-035 — Bound every cancellation-test signal wait
+- area: Async test harness/worker deadline classification
+- proven path: Bound the harness event wait and separate manually triggered
+  cancellation from an unrelated short outer timer, preserving source/quota
+  outcome assertions. Inspect live owned PIDs after a Docker exec caller timeout.
+- failed path: Await a signal forever after its worker can already terminate;
+  confuse caller termination with child termination, or drop the test to pass.
+- verification/source: `modules/sheets/tests/test_formula_recovery_http_deadlines.py`.
 - status: active

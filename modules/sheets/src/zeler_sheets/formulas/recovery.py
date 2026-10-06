@@ -274,6 +274,18 @@ class ShipmentIdsRecoveryRequest:
             "\0".join((self.seller_id, self.read_model, "ids", *self.shipment_ids)).encode()
         ).hexdigest()
 
+    def validate_existing(self, job: dict[str, Any] | None) -> None:
+        if job is not None and any(
+            job.get(field) != value
+            for field, value in {
+                "_id": self.key,
+                "seller_id": self.seller_id,
+                "read_model": "shipments",
+                "shipment_ids": list(self.shipment_ids),
+            }.items()
+        ):
+            raise ValueError("shipment request identity changed")
+
 
 @dataclass(frozen=True)
 class ItemIdsRecoveryRequest:
@@ -458,10 +470,20 @@ class FormulaRecoveryQueue:
                 "state": {"$in": ["pending", "running"]},
             },
             None
-            if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest))
+            if isinstance(
+                request,
+                (
+                    QuestionScanRecoveryRequest,
+                    OrderHistoryRecoveryRequest,
+                    ShipmentIdsRecoveryRequest,
+                ),
+            )
             else {"_id": 1},
         )
-        if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
+        if isinstance(
+            request,
+            (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest, ShipmentIdsRecoveryRequest),
+        ):
             request.validate_existing(active_job)
         if active_job is not None:
             return request.key
@@ -576,7 +598,14 @@ class FormulaRecoveryQueue:
                 # Coalesce another authority's unit without resetting, taking
                 # over or reopening it. Only its owning workers can execute it.
                 return
-            if isinstance(request, (QuestionScanRecoveryRequest, OrderHistoryRecoveryRequest)):
+            if isinstance(
+                request,
+                (
+                    QuestionScanRecoveryRequest,
+                    OrderHistoryRecoveryRequest,
+                    ShipmentIdsRecoveryRequest,
+                ),
+            ):
                 request.validate_existing(existing)
             if existing is not None and (
                 isinstance(
@@ -617,12 +646,54 @@ class FormulaRecoveryQueue:
             else:
                 # Cooldown is not advanced by a new request. Reopening consumes
                 # capacity, but completing a job frees it without a second counter.
-                await self.collection.update_one(
-                    {"_id": admitted_key},
+                cursor_update: dict[str, Any] = {}
+                attempts = 0
+                if (
+                    isinstance(request, ShipmentIdsRecoveryRequest)
+                    and "shipment_offset" in existing
+                ):
+                    offset = existing["shipment_offset"]
+                    if (
+                        not isinstance(offset, int)
+                        or isinstance(offset, bool)
+                        or not 0 <= offset <= len(request.shipment_ids)
+                    ):
+                        raise ValueError("shipment cursor malformed during reopen")
+                    if existing["state"] == "completed" and offset == len(request.shipment_ids):
+                        if not isinstance(existing.get("updated_at"), datetime):
+                            raise ValueError("completed shipment checkpoint time unavailable")
+                        cursor_update = {
+                            "$push": {
+                                "shipment_cursor_history": {
+                                    "offset": offset,
+                                    "completed_at": existing["updated_at"],
+                                    "request_key": request.key,
+                                    "seller_id": request.seller_id,
+                                    "read_model": "shipments",
+                                }
+                            }
+                        }
+                    else:
+                        attempts = existing["attempts"]
+                reopened = await self.collection.update_one(
+                    {
+                        "_id": admitted_key,
+                        **(
+                            {
+                                "shipment_ids": list(request.shipment_ids),
+                                "state": existing["state"],
+                                "shipment_offset": existing.get("shipment_offset"),
+                            }
+                            if isinstance(request, ShipmentIdsRecoveryRequest)
+                            and "shipment_offset" in existing
+                            else {}
+                        ),
+                    },
                     {
                         "$set": {
                             "state": "pending",
-                            "attempts": 0,
+                            "attempts": attempts,
+                            **({"shipment_offset": 0} if cursor_update else {}),
                             "updated_at": now,
                             **(
                                 {"catalog_offset": 0}
@@ -630,6 +701,7 @@ class FormulaRecoveryQueue:
                                 else {}
                             ),
                         },
+                        **cursor_update,
                         **(
                             {
                                 "$unset": {
@@ -650,6 +722,8 @@ class FormulaRecoveryQueue:
                     },
                     session=session,
                 )
+                if isinstance(request, ShipmentIdsRecoveryRequest) and reopened.matched_count != 1:
+                    raise ValueError("shipment reopen identity changed")
 
         async with await self.collection.database.client.start_session() as session:
             await session.with_transaction(
@@ -853,6 +927,72 @@ class FormulaRecoveryQueue:
                 return_document=ReturnDocument.AFTER,
             )
         return dict(claimed) if claimed is not None else None
+
+    def _shipment_cursor_binding(self, job: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))
+        if (
+            job.get("_id") != requested.key
+            or job.get("read_model") != "shipments"
+            or job["shipment_ids"] != list(requested.shipment_ids)
+            or "shipments" not in self.enabled_models
+            or self.allowed_sellers is not None
+            and requested.seller_id not in self.allowed_sellers
+            or job.get("policy_authority") != self.policy_authority
+        ):
+            raise ValueError("shipment cursor identity unavailable")
+        query = {
+            **self._owned(job, self.now()),
+            "seller_id": requested.seller_id,
+            "read_model": "shipments",
+            "shipment_ids": job["shipment_ids"],
+            "policy_authority": self.policy_authority
+            if self.policy_authority is not None
+            else {"$exists": False},
+        }
+        return query, len(requested.shipment_ids)
+
+    async def initialize_shipment_cursor(self, job: dict[str, Any]) -> int:
+        """Probe storage before RPC; absent legacy cursor asserts no past progress.
+
+        Existing no-op matching is NOT future validator compatibility proof.
+        Runtime validator inspection remains a rollout gate, not a repair here.
+        """
+        query, size = self._shipment_cursor_binding(job)
+        offset = job.get("shipment_offset", 0)
+        if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= size:
+            raise ValueError("shipment cursor malformed")
+        query["shipment_offset"] = offset if "shipment_offset" in job else {"$exists": False}
+        result = await self.collection.update_one(query, {"$set": {"shipment_offset": offset}})
+        if result.matched_count != 1:
+            raise ValueError("shipment cursor initialization lost ownership")
+        return offset
+
+    async def checkpoint_shipment_cursor(
+        self,
+        job: dict[str, Any],
+        *,
+        expected_offset: int,
+        next_offset: int,
+        session: Any,
+    ) -> bool:
+        """Fence the same immutable job inside the resource publication transaction."""
+        if not session.in_transaction:
+            raise ValueError("shipment cursor requires publication transaction")
+        query, size = self._shipment_cursor_binding(job)
+        if (
+            not isinstance(expected_offset, int)
+            or isinstance(expected_offset, bool)
+            or not isinstance(next_offset, int)
+            or isinstance(next_offset, bool)
+            or not 0 <= expected_offset <= next_offset <= size
+            or next_offset not in {expected_offset, expected_offset + 1}
+        ):
+            raise ValueError("shipment cursor transition malformed")
+        query["shipment_offset"] = expected_offset
+        result = await self.collection.update_one(
+            query, {"$set": {"shipment_offset": next_offset}}, session=session
+        )
+        return bool(result.matched_count)
 
     async def defer_quota(self, job: dict[str, Any]) -> bool:
         """Release an owned attempt after local backpressure, preserving checkpoints."""
