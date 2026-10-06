@@ -915,12 +915,24 @@ class HistoryOnboardingWorker:
                 else:
                     watermark = plan.get("question_watermark", cutoff)
                     end = min(self.now(), watermark + timedelta(days=1))
-                    await live_queue.enqueue(
-                        RecoveryRequest(
-                            seller, "questions", max(start, watermark - timedelta(minutes=5)), end
-                        ),
-                        reopen_terminal=False,
-                    )
+                    try:
+                        await live_queue.enqueue(
+                            RecoveryRequest(
+                                seller,
+                                "questions",
+                                max(start, watermark - timedelta(minutes=5)),
+                                end,
+                            ),
+                            reopen_terminal=False,
+                        )
+                    except RecoveryCapacityError:
+                        # Maintenance saturation cannot erase an admitted history page.
+                        # No new job, watermark or incremental source read was admitted.
+                        return {
+                            **result,
+                            "incremental_state": "pending",
+                            "incremental_reason": "capacity",
+                        }
                     await self.db[PLAN_COLLECTION].update_one(
                         {**self._owned(plan), "question_watermark": plan.get("question_watermark")},
                         {"$set": {"question_watermark": end}},

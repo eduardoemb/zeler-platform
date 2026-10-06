@@ -2502,3 +2502,118 @@ real. Digest/healthy0restart/OOMfalse/readiness inicial+60s, GW/API/plan preserv
 Despuésgates, pausa/consumo90 genuinos y snapshot privado original persistido
 antes de transporte; mismo EID/plazo20:32:58, ninguna reactivación del run fallido.
 El siguiente periodo pendiente conserva alcance original y STOP a nuevoincidente.
+
+
+### Capacidad incremental Q — separar espera local de avance histórico
+
+MON4 real resume18:46:56.262575 UTC, previo original90BSON persistidoSHA
+d792b208bec68ab0c5912cde353397abaa74ab79eb041f93f3a81cc2efec8f2e;
+STOP18:47:06.314058 source_error_changed y pause18:47:06.398221,
+SHA33aa136580aef5d2681c3cae800f241e5c10e7018b99cd81352038ad55e126a6.
+92cargos/89reservas/66inicial/26mantenimiento/deuda3/Full0. Qdiscover50,
+p2/gen1/rev5/seq4/0fetched/0published; no aceptación desde descubrimiento.
+
+Readonly STOP-STATE1 PASS6.837s/SSH0/PRIMARY5reads/0GET confirmó originald792,
+solo dos GET previos200: orders/search maintenance yquestions/search initial.
+Qsource pasó readyobs/fail1/reasonNone→pending/capacity sinfailure/blocked/cf/error;
+claimfailed2/completed0 y demás fuentes intactas. CAPACITY-CURSOR-META1 PASS7.811s/
+SSH0/PRIMARY6reads/cap4: activos>=4 (consulta limitada, no conteo global exacto),
+keyincremental ausente, watermark existente, plan_id/key coincidejob/head.
+Cursor real observado18:47:02.852 UTC, edad525.830908s a18:55:48.682908;
+nextcursor presente, jobpending/attempt0/sinowner. No inferir TTL desde audit.
+
+Causa local exacta: enqueue del jobincremental distinto después de avanzarhistórico
+lanza RecoveryCapacityError; handler externo reemplaza todo el resultado porcapacity.
+Reutilizar ownQjob sí ocurre antes del conteo, no doublecount. No aumentarcap4,
+rekey, borrar/mover jobs ni ignorar genéricamente errores.
+
+Nueva asignación cerrada:
+- Root único writer modules/sheets/src/zeler_sheets/history_onboarding.py:
+  catch SOLO RecoveryCapacityError alrededor enqueueincremental Q; preservar
+  resultadohistórico, señalar incremental_state pending/incremental_reason capacity,
+  no watermark/admisión/reapertura/GET incremental en ese camino.
+- Root único writer infra/operations/zelerdata_pilot_monitor_guard.py:
+  reconocer progreso durable del Qhead ya ligado y sinfailure como progreso para
+  transición cleared de firma anterior. No certificado ni tolerancia a nuevos
+  códigos/errores/counters. Origen90 fijo/PIN sigue intacto, no admitir92nuevo.
+- CUOTAS único writer NUEVOS modules/sheets/tests/test_history_question_incremental_capacity.py,
+  tests/test_zelerdata_pilot_monitor_question_progress.py (hasta6fakes cadauno),
+  docs/sheets/zelerdata-historico-cuotas-capacity-informe.md. REDantespatchRoot,
+  GREEN/cese/26+12previos intactos; no sockets/BD/puertos/Git/prod/build/agentes/general.
+Root todoGit/centralconfig/deps y operación; AMQP congelado. Congelar antesall8.
+El cursor ya expiró durante pausa: arreglo local NO lo renueva ni autoriza un GET
+con cursor viejo. Antes de otra ejecución, Root verificará el camino canónico de
+fallo por TTL antes de charge/GET y conservación/archive de50; ningún reset/fake
+failure/readmission se aplica desde un plan. Misma hasta20:32:58 y datos intactos.
+
+
+**Bookkeeping Q expirado seleccionado, antes de cualquier nueva fuente:**
+Root único operador sobre worker7709 ya verificado y PAUSED92/HISTORYOFF;
+real HistoryQuestionsWorker.process_one con queue.collection limitada por
+conjunción `_id` a un único Qjob exacto en todos read/write/cleanup métodos.
+NoHTTP anti-transporte falla si se toca; no respuesta fake/RootplanACTIVE.
+TDDprivado13RED(missingadapter)→13GREEN0.02s, fakes sinDB/red: seis métodos
+conjoin sinmutarquery y seis operaciones destructivas/unfenceables rechazadas,
+request/fetch blockers. El TTL>=300 se detecta en fetch_and_stage antescharge/GET.
+Precondiciones live PRIMARY/plan92/89/66/26/seller/EID, pendingattempt0/sinowner/
+p2gen1rev5seq4/50discover/0fetch/0publish/cursorExpired y firma de identidad.
+Capturar beforeBSONs privados íntegros, ejecutar UNA llamada canónica hasta30s
+(outer60/SSH120), exigeNoHTTP0/plan+head byteexact/head50/seq4preservados;
+jobFAILEDsource_cursor_expired/attempt1/cooldown>=14min, sinreset. Guardasrechazadas
+STOPsinrepetición. Esta fase usa código servido original ya validado; la nueva
+corrección de capacidad aún bajo all8 aislados y no se ejecuta en producción.
+No source GET/replay/readmission/archivado desde este anuncio. Nueva readmisión
+solo tras pinswire frescos y camino autorizado conservando originales.
+
+
+Q-EXPIRE-EXACT1 real PASS19:08:20.791158 UTC/9.227s/SSH0/NoHTTP0:
+plan/head wire iguales,50/seq4preservados, jobcanónico FAILEDsource_cursor_expired,
+attempt0→1, cooldown19:23:20.722. Originales privados before/after conservados.
+POSTEXPIRY-PINS1 readonlyPASS7.293s/SSH0/4reads: blockers[], remainingQ145,
+planBSONb004525e11b6752c2c4bef4ea728c4cab8c20cb8c5dddf683a6fae67c05d3367;
+headBSONc0d7d547e1fe7359649431ad475bf340ab4999165b2da4bb7ab2f91b132de578;
+jobBSON1e24745bca40235fd75a0b32fcccec8f053d9b79eca3a7f2927334faff5d2cdd.
+Root selecciona UNA readmisión canónica metadata-only del siguiente pase prospectivo
+con esos pins, optinTRUE/allowedSeller82/policyauthority/maxActive4; archivo exacto
+head+jobp2/50, p3gen1/rev6/globalSeq4, attempts1/cooldown intactos, plan solo fence2.
+Mismo cutoff/92/89/66/26/cuotas20:32:58;0source GET/transportauthority. No reabrir
+claimrun ni borrarprevios50 ni volveratokenvencido; nueva fuente solo después
+controlesfinales/despliegue y monitor propio. Scope está bajo cierre autorizado
+amplio vigente, no crea nueva ventana ni presupuesto y no es replay fallido Meli.
+
+
+**Capacidad/Qprogress entrega y finales:** CUOTAS cese,50GREEN0.49s (6+6+38
+previosbyteexact), RED2FAIL4PASS cadauno, Ruff/formato/mypy2testsPASS. Rootsource
+SHA61ddc934263aef42679a97ac293c71470c2b83cf54932f0ff6c5f229d3dfe529/guard
+7c18958a8f5cf1fb8796296688d16276389a476e96c7de3c4ee4b375485f5454.
+Ocho finales PASS19:15:24 UTC,1140paths/tar
+742a53741c38a4d04d8ce87b8bea207467346053a897db1f1e0d570510fc4435;
+focused y mypy exactos en recibos privados, Ruff/formato/direct-Meli/schemaPASS;
+full6702 PASS/20 SKIP418.634s, protegidos19 PASS/0 SKIP6.906s. Sourcebytes/modos
+actuales coinciden salvo anotaciones documentalesRoot posteriores registradas;
+no cambios ejecutables despuésfreeze. No proveedor o aceptación inferidos.
+
+READMIT3 real PASS19:10:52.186947 UTC/10.395s/SSH0/0GET:
+archivo1cce90f2221b506b836722cd6f0a66cc63e1f7f2d68c2a977e951461977513ca conserva
+head/jobp2BSONexactos y50IDs previos sin publicación. P3gen1/rev6/globalSeq4,
+attempt1 ycooldown19:23:20.722 intactos, pending. Plan cambia sólofence2;
+92/89/66/26/cuotas/cutoff/20:32/Full0 sin cambios, no authority transporte.
+No checkpoints antiguos borrados ni cursorvencido reenviado.
+
+MON4-CLOSED-QUIESCENCE1 real PASS19:00:05.248760 UTC/90.36s/SSH0:
+HISTORYOFF19layers,sameworker7709/noPull/noDeps/downloads0/oldworkerfuera;
+ready2 inicial+60s/GWc905/API3f7preservados. PAUSED92/89/66/26/fence1 antes
+readmit3, wholeplan7f42… igualtresveces; Rootfree32,486,055,936→32,489,922,560,
+Mongofree47,451,660,288/RAMavail1,846,853,632. Pausa yquiescence separados.
+
+Seleccionado traspublicación: únicobuild/rolloutworker para catchenqueueQ,
+VERIFIEDrepositorio conectado exactomain; gatewayc905/API3f7 no rebuild/cambio.
+Previoactualworker7709/source76e50/build57f838cc-b506-4cdf-91b5-ce9bb5824c9e,
+rollbackcompatiblecerrado preservadolocal/retrievable. Current19capas másimagen20;
+HISTORYOFF/PAUSED92/fence2, selecteddigestdryrun,root>=5GiBantesúnicopull,
+medirMongo/inodos/RAMyafter/settle,nostash/reset/cleanup/validator/scopes/topology.
+Outerstop120>grace60 real, solo upworker/noDeps/noPull; digestready2inicial+60s,
+plan/GW/APIpreservados. LuegoRootpause/consumption92genuinos; monitor utiliza
+original90privadod792+manifest/pause5fa/quiescence489 intactos ypreviousp3actual
+ligadoalPINfijo. No nuevoorigin92 ni absorción deunknownerrors. Snapshot50archivado
+p2 ycooldownp3 conservados. SourceH1enabletrasgates,lateMeliwait/caps/Full/clockSTOP.

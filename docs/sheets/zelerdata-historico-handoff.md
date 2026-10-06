@@ -1,18 +1,16 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Última evidencia operativa: 2026-10-06T18:05:39.663166Z; objetivo abierto.**
-> Gateway corregido `c905f4…`/source `bc93e48080a2042c996bbe4ebb15d0e739a6fbaf`,
-> worker `a28cb5…`/source `5b9538b2415a9db9031b0125331478adf65b2cd4`, API3f7 preservada.
-> Plan PAUSED, HISTORY OFF, 90 cargos/87 reservas, inicial65/mantenimiento25,
-> Full0. Misma ejecución/cuotas/cutoff y techo20:32:58 UTC; no refund/reset.
-> Conjunto local: 6690 PASS/20 SKIP y 19 protectores/0 SKIP; único gateway build/
-> despliegue verificados. El monitor reanudó y se pausó automáticamente por nuevo
-> error de prueba claims: run2025-10-04→14 failed, ventana prepared sin proof.
-> `ready_with_observations` y pending37→36 no acreditan cobertura adquirida.
-> No repetir proveedor ni ignorar un404 sin sus ocho invariantes; la causa exacta
-> no quedó durable; warning prospectivo y guard90 ya validados, aún no desplegados. Messages despejó su ValueError histórico con progreso real;
-> Questions p2 sigue pending. Cinco fuentes/12meses, lectores/nativo y dos
-> incrementales genuinos todavía pendientes. Ver [ledger único](zelerdata-historico-paralelo.md).
+> **Última evidencia operativa: 2026-10-06T19:10:52.186947Z; objetivo abierto.**
+> Gateway `c905f4…`/sourcebc93, worker `7709d7…`/source76e50, API3f7 preservada.
+> PAUSED92 cargos/89reservas/66inicial/26mantenimiento/HISTORYOFF/Full0;
+> mismos datos,cutoff,cuotas,EID y techo20:32:58 UTC, sin refund/reset.
+> Questions descubrió50: archivados p2 íntegros tras TTLcanónico0HTTP;
+> p3gen1/rev6/globalSeq4 pendiente,attempt1/cooldown19:23preservados.
+> La capacidad fue rechazo local de OTRO jobincremental despuésdelavance;
+> corrección acotada probada6702PASS/20SKIP+19protectores/0SKIP, aúnno desplegada.
+> Reclamos conserva dos ventanas fallidas sin prueba, no certificar desde readyobs.
+> Cinco fuentes/12meses,lectores/nativo y dos incrementales genuinos siguenpendientes.
+> Ver [ledger único](zelerdata-historico-paralelo.md); no repetir pasos históricos.
 
 
 

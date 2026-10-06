@@ -507,6 +507,13 @@ def classify(
                 x > y
                 for x, y in zip(progress(plan, source), progress(old_plan, source), strict=True)
             )
+            if source == "questions":
+                # Bindings, ownership and monotonic counters were checked above.
+                # A staged page is progress, never a calendar/reader certificate.
+                progressed = progressed or any(
+                    count(qhead[field]) > count(old_head[field])
+                    for field in ("discovered_count", "fetched_count", "published_count")
+                )
             terminal = (
                 completed
                 if source == "questions"
