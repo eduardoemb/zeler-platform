@@ -18,7 +18,8 @@ conserva cada solicitud, consumo y STOP; sus estados anteriores no son el actual
 | Compatibilidad Mongo instalada | CUOTAS prepara / coordinador inspecciona | PASS con metadata solamente; no documentos ni aplicación de validators. |
 | Estructura AMQP | AMQP prepara / coordinador inspecciona | STOP: request11 HTTP404 en retry1s; 13 GET Management acumulados del tramo ampliado. |
 | Existencia exacta de retry1s | AMQP prepara / coordinador opera | Broker404 confirma ausencia; cleanup tool_error, STOP y sin repetir. |
-| Reparación puntual condicional | Coordinador | Propuesta preparada; NO autorizada ni ejecutada. |
+| Reparación retry1s | AMQP prepara / coordinador opera | Declaración compatible confirmada; metadata+binding PASS. Cleanup fallido conservado. |
+| Buckets restantes del mismo mecanismo | AMQP prepara / coordinador opera | Verificación STOP en5s404; preparación exacta5s/30s/2m/10m bajo autorización recibida. |
 | Rollout cerrado, OAuth y aceptación piloto | Coordinador / usuario legítimo | Pendientes de gates; permisos condicionales y presupuestos previos intactos. |
 
 ### Nueva asignación exclusiva: comprobación pasiva
@@ -45,7 +46,7 @@ ENTREGADO/cese. CUOTAS continúa congelado.
 La declaración pasiva verifica existencia, no prueba entrega ni crea la cola.
 Su conexión/RPC se registran separados de los 13 GET ya consumidos; no reinicia
 ningún presupuesto. [Propuesta de reparación](zelerdata-historico-amqp-reparacion-propuesta.md)
-condicionada a `NOT_FOUND` ya confirmado, todavía NO autorizada.
+condicionada a `NOT_FOUND` ya confirmado, ahora autorizada; todavía NO ejecutada.
 
 ## 1. Punto de partida y preservación
 
@@ -824,3 +825,100 @@ Recibo SHA256 `1dd9998c235674c76691aeb84d88ca1e220a1b07647319c6280faf36d22c25a7`
 Reparación condicional solicitada sigue NO recibida/NO ejecutada. Analizar
 cleanup solo offline antes de preparar una herramienta futura; no más pruebas
 contra producción para mejorar el recibo. No rollout/OAuth/piloto ni resetplazos.
+
+### Reparación retry1s autorizada — 2026-10-06T00:10:46.561432+00:00
+
+Usuario: **«Bien, resuelve la cola de reintento que hace falta, te autorizo lo
+que necesites»**. Autoridad recibida para la reparación puntual propuesta:
+una declaración activa compatible retry1s/una conexión/≤5min y hasta13GET
+posteriores del inventario pendiente. Sin nueva comprobación pasiva/reintentos.
+No otras colas/policies/drain/delete/consume/publish/testmessages/config/IAM/
+capacidad ni datos. Registro14/Full0/presupuestos/cutoff/checkpoints/plazos intactos.
+El día UTC cambió: esto NO renueva la ventana ni habilita piloto con día/deadline
+expirados. Cero Meli en esta reparación. No re-pedir permisos condicionales.
+
+**Asignación nueva exacta — único escritor AMQP:**
+
+1. `ROOT/amqp-retry1s-repair-20261006/repair.py`
+2. `ROOT/amqp-retry1s-repair-20261006/repair_supervisor.py`
+3. `ROOT/amqp-retry1s-repair-20261006/test_repair.py`
+4. `docs/sheets/zelerdata-historico-amqp-reparacion-informe.md`
+
+ROOT privado definido arriba. Entrega dual con acciones explícitas separadas:
+`--repair-retry1s` declara únicamente el recurso compatible;
+`--verify-remaining` soloGET13: cinco retries metadata+bindings y tres exchanges.
+No ejecutar verificación automáticamente tras mutación: Root decide por el recibo.
+Fijar perfiles/identidad, preservar helpers/reports anteriores, resolver cleanup
+solo offline con TDD y recibos honestos (close solicitado/waiter/cancelación/error,
+no prueba remota inventada). AMQP prepara/no producción/Git/build/sharededits/
+subagentes; CUOTAS congelado; Root único operador. No suite general necesaria
+porque código publicado no cambia; tests locales privados fakes/transport aislado.
+Estado: ASIGNADO/PREPARACIÓN, no operación productiva nueva iniciada.
+
+**Inicio AMQP-RETRY1S-REPAIR-1:** 2026-10-06T00:35:27.499625+00:00; autoridadrepairrecibida6Oct,
+1conexión/canal/Queue.Declareactivo exactretry1s durableTTL1000/DLXdefault/claims,
+fuente8b34b81a/sup472c2398/4hashes+embedding+24fakesRootPASS/ownercesó.
+0pasivo/Mgmt/Meli/Full;oneallowedentitydeclare,nootrasmutations.
+8/4/cleanupTOTAL5/hard55exec65/remoto120/caller130+5/300total;STOP/sinretry.
+SincreatedByUsinference/autoDelete/consume/publish/bind/policies/config/Data;
+verificaciónhasta13GET esdecisiónposterior separada, noautomática.
+
+**Resultado AMQP-RETRY1S-REPAIR-1:** 2026-10-06T00:35:27.499625+00:00→2026-10-06T00:35:35.019008+00:00,
+7.519s/SSHexit2/`confirmed`/effectconfirmed_equivalent;
+1conexión/1canal/1declaraciónactiva iniciados y completados/confirmados.
+Vector exactdurableTTL1000/DLXdefault/routingclaims;created_by_usnull (concurrencia).
+0Management/Meli/Full;nootrasmutaciones,pasivo/retry/publish/consume/policies.
+Cleanup tool_error/waiter_stateerror/local_close_requestedTrue/remoteCloseFalse:
+STOP del proceso, no cierre limpio acreditado ni segunda declaración.
+Pythontransitorio y SSH terminaron. Recibo SHA256
+`8801704c458cab51674fde029211913c8ba6b871dcb2498c54a3c747f301f6a9`.
+
+**Decisión separada del coordinador:** la declaración compatible está confirmada,
+no hay incertidumbre de ese RPC. El fallo de cleanup permanece registrado;
+no se intenta mejorarlo con otra conexión AMQP. Ejecutar solamente la verificación
+Management hasta13GET ya aprobada, como operación distinta de sololectura para
+comprobar el recurso. No encadenado automático, no retry de mutación ni nueva
+AMQP; STOPprimererror de esa lectura. No afirmar cleanupserver-side o admisión.
+Consumo anterior13 se conserva;scope nuevo≤13, máximo conocido del tramo≤26,
+no reinicio del antiguo techo25 ni permisoMeli/Full/pilot/window nuevo.
+
+**Inicio AMQP-RETRY1S-VERIFY-1:** 2026-10-06T00:36:45.250555+00:00;verificaciónreadonly aprobada
+separada de declaraciónconfirmada/cleanupfallido preservado;sup472c2398/
+source8b34b81a/ownercongelado.≤13GET5retriesmetadata+bindings/3exchanges,
+4sreq/60sread/64KiB/cleanup5/hard80exec95/remoto150/caller130+5/300total.
+0nuevaAMQP/mutations/Meli/Full,STOPprimererror/noretry/nofallback.
+13GETpreviosintactos,scopeextra13explicit no globaltopology/admissionclaim.
+
+**Resultado AMQP-RETRY1S-VERIFY-1:** 2026-10-06T00:36:45.250555+00:00→2026-10-06T00:36:50.813547+00:00,
+5.563s/SSHexit2/STOP management_http_404 request3metadata5s.
+Retry1smetadata+defaultbindingHTTP200 completos: TTL/DLX/identidad/lifecycle/counts
+compatibles con el vector aprobado;operatorcaps reales exactos preservados.
+3GETiniciados/3headers/2completos,cleanupnull,0AMQP/mutations/Meli/Full.
+No request4/retry/fallback. Acumulado conocidoManagement16iniciados/16headers/
+14completos;old13 sepreserva. Subset/global/admissionfalse. Recibo SHA256
+`c4fec2305f1d8d269789ee072e7a5a2d9369231f66191b79fe7b16bc541b9488`.
+HTTP4045s NO prueba ausencia; 1s sí quedó reparada/verificada.
+
+### Continuación necesaria del mismo mecanismo autorizado
+
+«Te autorizo lo que necesites» cubre resolver los buckets requeridos restantes
+del contrato de retries, no otros recursos del broker ni piloto. Ante el nuevo
+4045s, asegurar **solo5s/30s/2m/10m** por declaraciones compatibles (sin afirmar
+ausencia o autoría), TTL5000/30000/120000/600000, mismoDLXdefault/routingclaims.
+Una conexión/canal y máximo4RPCactivos secuenciales, STOPprimeroerror sin retry.
+No nuevo pasivo, no duplicar declaración1s. Leer después solo4metadata+bindings
+y3exchanges=≤11GET separados. Esta lectura ocurre tras cambio confirmado, no
+repetición ciega del404. Máximo conocido nuevo16+11=27, countersanteriores
+intactos; NO nuevo presupuestoMeli/Full ni ventana/checkpoint/plazo.
+
+**Asignación nueva cerrada — único escritor AMQP:**
+
+1. `ROOT/amqp-retries-restantes-20261006/ensure_retries.py`
+2. `ROOT/amqp-retries-restantes-20261006/ensure_supervisor.py`
+3. `ROOT/amqp-retries-restantes-20261006/test_ensure_retries.py`
+4. `docs/sheets/zelerdata-historico-amqp-retries-restantes-informe.md`
+
+Root conserva proposal/ledger/Git/producción. Entrega localTDD≤20fakes+quality3/
+closedreceipts/hashes/cese;helpersanterioresintactos. Active8/4/4cadaRPC/cleanup5/
+hard55exec65remote120caller130+5/300;verify11GET4s/60read/64KiB/cleanup5/
+hard80exec95remote150caller130+5/300. No suitegeneral/builds ni otras áreas.

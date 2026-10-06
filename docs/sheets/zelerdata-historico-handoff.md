@@ -3,7 +3,9 @@
 > **Actualización de continuación:** trabajo local reanudado por el usuario,
 > integrado directamente sin SDD y publicado; dos imágenes nuevas VERIFIED.
 > Inspección AMQP ampliada de solo lectura autorizada: STOP en retry1s HTTP404;
-> broker confirma ausencia pasiva, cleanup falló y reparación NO autorizada. Rollout/piloto
+> broker confirma ausencia pasiva y cleanup falló. Reparación retry1s autorizada el
+> 6 de octubre UTC: retry1s declarada/metadata+binding PASS, cleanup fallido
+> conservado. Verificación STOP5s404; cuatro buckets restantes en preparación. Rollout/piloto
 > pendientes. Estado nuevo en §9; las secciones
 > previas conservan su evidencia fechada, no deben ejecutarse como pasos nuevos.
 
@@ -415,3 +417,27 @@ Ausencia confirmada; aprobación solicitada solo para esa creación concreta,
 todavía NO recibida/NO ejecutada. No re-pedir autoridad
 condicional vigente. Sin pull/deploy/OAuth/piloto nuevo ni reset de cuotas,
 checkpoint/cutoff/díaUTC/plazos; aceptación §1 todavía pendiente.
+
+### Reparación del mecanismo — 6 de octubre UTC
+
+El usuario autorizó resolver la cola y lo necesario del mismo mecanismo. Root
+confirmó una declaración compatible retry1s a00:35:27–35UTC, con vector durable/
+TTL1000/DLXdefault/routingclaims exacto. El cleanup reportó tool_error/waitererror;
+close solicitado localmente, proceso terminado, sin afirmar cierre remoto limpio
+ni repetir la declaración. Autoría de creación desconocida (`created_by_us=null`).
+
+La lectura Management separada a00:36:45–50UTC verificó retry1s metadata+binding
+HTTP200, después STOP request3HTTP404retry5s, sin request4/retry/fallback. Consumo
+nuevo3iniciados/3headers/2completos; acumulado del tramo16/16/14. Cero Meli/Full,
+otras mutaciones o nueva AMQP en esa lectura. Queue1s reparada/verificada;
+HTTP4045s no demuestra ausencia ni topología global/admisión.
+
+Preparación acotada de los cuatro buckets restantes5s/30s/2m/10m por declaraciones
+compatibles secuenciales, no inferencia de ausencia: una conexión/canal/≤4RPC y
+posterior verificación≤11GET separada. No declarar1s otra vez ni ejecutar prestart
+general. [Propuesta restante](zelerdata-historico-amqp-retries-restantes-propuesta.md),
+[informe1s congelado](zelerdata-historico-amqp-reparacion-informe.md) y ledger único.
+Ese tramo aún no se ejecutó. Fuentes903 iguales al snapshot/image352: no nuevos
+builds o suite general por herramientas privadas/documentación. Sin pull/deploy/
+OAuth/piloto ni renovación de cuotas/cutoff/checkpoints/díaUTC/plazos; aceptación
+continúa pendiente. Preservar cualquier cola compatible, nunca auto-delete.

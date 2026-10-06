@@ -1,7 +1,12 @@
 # ZelerData — propuesta condicional: retry de un segundo
 
-**NO AUTORIZADA / NO EJECUTADA.** La autorización actual permite inspección,
-no modificación del broker. Esta propuesta no solicita de nuevo despliegue/piloto.
+**DECLARACIÓN CONFIRMADA / METADATA Y BINDING VERIFICADOS.** El usuario autorizó resolver la cola faltante:
+«Bien, resuelve la cola de reintento que hace falta, te autorizo lo que necesites».
+Aplicar únicamente la reparación y verificación acotadas descritas aquí; no
+convertirla en permiso de expansión del piloto o cambios generales al broker.
+Esta propuesta no solicita de nuevo despliegue/piloto. El cleanup AMQP falló y se
+conserva sin repetir la declaración. La lectura posterior se detuvo en retry5s;
+la continuación necesaria está en [buckets restantes](zelerdata-historico-amqp-retries-restantes-propuesta.md).
 
 ## Motivo y condición
 
@@ -61,5 +66,8 @@ Cualquier acción distinta requerirá una propuesta y autoridad separadas.
 [Ledger único](zelerdata-historico-paralelo.md),
 [inspección revisada](zelerdata-historico-amqp-revisado-informe.md).
 La comprobación pasiva ya confirmó ausencia; su fallo de cleanup se conserva.
-La aprobación fue solicitada específicamente, todavía NO recibida/NO ejecutada.
+La declaración compatible fue confirmada a00:35:27–35UTC del6octubre y su metadata/
+bindingHTTP200 se verificaron a00:36:45–50UTC. `created_by_us=null`: no inferir
+autoría por una declaración equivalente. Cleanup tool_error/waitererror,
+close solicitado localmente; no cierre remoto probado. Preservar ese resultado.
 No consumir presupuesto productivo adicional para repetir/mejorar ese recibo.
