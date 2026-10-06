@@ -2116,3 +2116,39 @@ Unidad publicable: solo los cuatro paths declarados. Rebuild necesario únicamen
 para sheets-worker; rollback cerrado al de632a existente, manteniendo HISTORY OFF,
 HOLD=true/PAUSED81/79/24, datos/head/archive y presupuestos intactos. Build y rollout
 cerrado no son autorización temporal para una nueva pasada ni prueba de cobertura.
+
+**Publicación y propuesta cerrada BANNED:** main/remoto exactos
+`5b9538b2415a9db9031b0125331478adf65b2cd4`, solo4paths propios, árbol limpio al publicar.
+Build `e209f2d9-a7e6-47b9-b343-bd85bd7db734` SUCCESS11:00:21.100682 UTC,
+connected repo/commit/VERIFIED y procedencia canónica PASS. Target único worker
+`us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker@sha256:a28cb5f397a04443ec2980f67bdbd10817d05c40f2b095cd1fbb907095c18000`.
+Rollback cerrado worker de632a/sourcec1, existente/verificado; no restaurar head ni
+counters. API3f7/Gateway4f90 no afectados ni reconstruidos. Preflight readonly
+11:02:47.442292 UTC PASS/SSH0:10layers reales, root33,853,878,272 bytes libres,
+Mongo47,452,282,880/ext4/devsdb, memoria1,785,072 KiB; todos healthy/restart0/OOMfalse.
+Rollout seleccionado conserva esos10layers y añade overlay privado: delta efectivo
+solo imagen de sheets-worker, HISTORY ya false/HOLDtrue/recovery y refresh OFF.
+Recheck>=5GiB antes de pull único y después; no limpieza/otras imágenes/servicios.
+Recreate solo worker/no-deps; comprobar digest/readiness y otra vez tras60s,
+PRIMARY PAUSED81/79/24/Full0 antes/después/settled. STOP ante fallo, sin retry ciego.
+Autorizaciones condicionales existentes cubren build/rollout cerrado; esta propuesta
+no extiende08:17 ni readmite Questions. Primera verificación local con Python del
+sistema careció de yaml antes del verificador; mismos JSON guardados verificados
+offline con uv workspace --no-sync PASS, sin repetir build ni diagnóstico proveedor.
+
+**Rollout BANNED cerrado real PASS:** BANNED-CLOSED-WORKER-DEPLOY-1 termina
+11:05:19.674168 UTC/112.435s/SSH0. Solo worker a28cb5/source5b9538b recreado,
+delta efectivo solo imagen sobre10layers+overlay nuevo (11total), no-deps.
+Readiness2components OK inicial+60s, healthy/restart0/OOMfalse; Gateway readiness2
+deps y API salud preservados. PRIMARY before/after/settled PAUSED81 cargos/79
+envíos/24mantenimiento/Full0; HISTORY OFF/HOLDtrue/recovery y refresh OFF,0Meli.
+Rootfree inmediato antespull33,853,722,624, después33,305,415,680, settled33,310,531,584
+bytes. Sin limpieza/descargas ajenas/reset/checkpoint ni nueva vigencia.
+Overlay vigente añadido: `/var/lib/zeler-platform/.history-banned-20261006T1103-5b9538b/closed-worker-overlay.json`;
+de632a preservado como rollback cerrado. Este worker ya incluye el operador de
+cadena OPS publicado en338a; no necesita inyección de código para esa herramienta.
+Documentar resultado no cambia runtime ni justifica otro build. Continúa pendiente
+respuesta humana concreta para nueva pasada Questions/prórroga desde su recepción;
+08:17 expirado no se renueva solo por tests/build/rollout. Cinco fuentes/12meses,
+lecturas independientes y dos ciclos de cambios genuinos aún no acreditados:
+objetivo activo, no completado.
