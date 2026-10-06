@@ -1,19 +1,20 @@
 # ZelerData: handoff del histórico al vincular
 
-> **Estado vigente:** el goal sigue abierto. Los cinco buckets de reintento
-> están verificados estructuralmente. Dos probes temporales se detuvieron antes
-> de publicar por perfil de policy no coincidente. La observación posterior halló
-> el perfil real y una muestra recibió su nonce a8.03s; el cierreTLS falló,
-> así que no se declara PASS limpio. Todos sus recursos propios se
-> retiraron y los errores de cierre se conservan. La admisión legacy ya tiene
-> una corrección aditiva con TDD y gates finales (6421PASS/19protegidas),
-> ya publicada y con Gateway nuevo VERIFIED, todavía sin desplegar/activar.
-> Consultar §11 y el ledger único; no ejecutar nuevamente los pasos históricos.
+> **Última evidencia de entrega: 2026-10-06T11:05:19.674168Z; objetivo abierto.**
+> El worker con la corrección BANNED está desplegado **cerrado**, digest `a28cb5…`,
+> fuente `5b9538b2415a9db9031b0125331478adf65b2cd4`; Gateway/API preservados.
+> Ocho controles finales PASS: 6608 pruebas/20 SKIP y 19 protectores/0 SKIP.
+> Plan PAUSED, HISTORY OFF, 81 cargos/79 envíos/24 mantenimiento, Full0.
+> La ventana08:17:23 UTC expiró; nueva pasada Questions/prórroga concreta pendiente
+> de respuesta humana. Cobertura independiente de cinco fuentes/12 meses y dos
+> incrementales con cambios reales todavía no acreditadas. Esta evidencia fechada
+> no implica salud continua ni aceptación. Ver el [ledger único actualizado](zelerdata-historico-paralelo.md)
+> para identidades completas, límites y recibos; no repetir los pasos históricos.
 
 
 **Punto de entrada único para retomar; objetivo global NO completado.** La pausa
 del cierre inicial del 5 de octubre fue revocada por reanudación expresa; aplicar
-el estado vigente de §11 y del ledger, no estados previos de la cronología.
+la última entrada fechada del ledger, no estados previos de §11 o de la cronología.
 No avanzar rollout/OAuth/piloto sin gates. Este archivo registra evidencia
 fechada; ninguna observación pasada implica salud actual.
 
