@@ -92,6 +92,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-033 | ZelerData | Abort bounded 429 before collector retries | active |
 | L-034 | ZelerData | Commit one shipment and its cursor atomically | active |
 | L-035 | Tests | Bound cancellation harness signals | active |
+| L-036 | ZelerData | A paused pilot must release ordinary traffic | active |
 
 ## Cloud Build and VM deployment
 
@@ -577,4 +578,18 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - failed path: Await a signal forever after its worker can already terminate;
   confuse caller termination with child termination, or drop the test to pass.
 - verification/source: `modules/sheets/tests/test_formula_recovery_http_deadlines.py`.
+- status: active
+
+### L-036 — A paused pilot must release ordinary traffic
+- area: ZelerData event consumer / broker quota
+- proven path: When history on link is off, ordinary events ignore persisted
+  pilot plans and use the ordinary gateway client. A policy WAIT backs off from
+  5 s to 10 min after 12 waits. Remove the gateway pilot GET-budget seller list
+  when the pilot closes.
+- failed path: Pause a pilot but keep its plan, worker routing and gateway guard
+  live: 93 ordinary webhooks waited every 5 s forever (~58k requeues/hour),
+  exhausted CloudAMQP's monthly quota in 7 days and blocked every product on
+  2026-10-07. Also, a worker reporting `rabbitmq: ok` had no AMQP connection.
+- verification/source: `modules/sheets/tests/test_history_off_ordinary_events.py`;
+  broker refusal read from `Connection.Close` reply code 530 NOT_ALLOWED.
 - status: active
