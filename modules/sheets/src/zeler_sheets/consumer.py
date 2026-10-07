@@ -152,6 +152,10 @@ RETRIABLE_HTTP_STATUS_CODES = {408, 429}
 DEFAULT_GATEWAY_BASE_URL = "http://gateway:8080/proxy/meli"
 DEFAULT_STATUS_CONTENTION_RETRY_DELAY_MS = 1000
 DEFAULT_EVENT_CLAIM_RETRY_DELAY_MS = 1000
+POLICY_WAIT_HEADER = "x-zeler-policy-waits"
+POLICY_WAIT_SHORT_LIMIT = 12
+POLICY_WAIT_SHORT_DELAY_MS = 5_000
+POLICY_WAIT_LONG_DELAY_MS = 600_000
 SYNC_JOBS_MIGRATION_ID = "sheets_sync_jobs_v2_activation_cutoff"
 CLAIMS_RETRY_DELAYS = (
     (1_000, "1s"),
@@ -553,13 +557,23 @@ class SheetsAmqpConsumerRunner:
         except HistoryPolicyWaitError as exc:
             # Policy backpressure is not a failed delivery or provider attempt.
             # Preserve the source until the bounded delayed copy is confirmed.
-            _log_message_requeued(event, death_count, exc, retry_after=5)
+            # A wait that outlasts a minute backs off so a held policy cannot
+            # churn the broker's message quota (incident 2026-10-07).
+            waits = _policy_wait_count(message) + 1
+            delay_ms = (
+                POLICY_WAIT_SHORT_DELAY_MS
+                if waits <= POLICY_WAIT_SHORT_LIMIT
+                else POLICY_WAIT_LONG_DELAY_MS
+            )
+            _log_message_requeued(event, death_count, exc, retry_after=delay_ms // 1000)
+            headers = _retry_headers(message, attempt=death_count)
+            headers[POLICY_WAIT_HEADER] = waits
             try:
                 await self._publish_retry_delay(
                     message.body,
                     queue_name=queue_name,
-                    delay_ms=5000,
-                    headers=_retry_headers(message, attempt=death_count),
+                    delay_ms=delay_ms,
+                    headers=headers,
                     mandatory=True,
                 )
             except Exception:  # noqa: BLE001 - never lose an unconfirmed original.
@@ -1026,6 +1040,12 @@ def _delivery_attempt_count(message: Any, *, queue_name: str) -> int:
     )
 
 
+def _policy_wait_count(message: Any) -> int:
+    headers = getattr(message, "headers", None)
+    value = headers.get(POLICY_WAIT_HEADER) if isinstance(headers, dict) else None
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
 def _retry_attempt_header_count(message: Any) -> int:
     headers = getattr(message, "headers", None)
     if not isinstance(headers, dict):
@@ -1151,8 +1171,10 @@ class SheetsEventHandler:
         listing_fixed_fee_enabled: bool = False,
         stage_telemetry: EventStageTelemetry | None = None,
         event_claim_store: EventClaimStoreLike | None = None,
+        history_work_enabled: bool = True,
     ) -> None:
         self._db = db
+        self._history_work_enabled = history_work_enabled
         self._gateway_client = gateway_client
         self._sheets_client = sheets_client
         self._idempotency_store = idempotency_store
@@ -1361,6 +1383,10 @@ class SheetsEventHandler:
         *,
         job_identity: dict[str, Any] | None,
     ) -> GatewayResourceClient:
+        if not self._history_work_enabled:
+            # With history on link off, a persisted pilot plan has no live
+            # execution to charge; ordinary events use the ordinary client.
+            return self._gateway_client
         # Production Motor always exposes the collection. Older unit doubles
         # without a plan collection represent the ordinary, non-pilot path.
         try:
@@ -1554,6 +1580,7 @@ async def run() -> None:
         sale_price_enabled=_env_flag_enabled("ZELERDATA_SALE_PRICE_ENABLED"),
         listing_fixed_fee_enabled=_env_flag_enabled("ZELERDATA_LISTING_FIXED_FEE_ENABLED"),
         stage_telemetry=EventStageTelemetry(db=db),
+        history_work_enabled=_env_flag_enabled("ZELERDATA_HISTORY_ON_LINK_ENABLED"),
     )
     runner = SheetsAmqpConsumerRunner(
         rabbitmq_url=rabbitmq_url,
