@@ -74,9 +74,8 @@ Skill registry lives at `.atl/skill-registry.md`, relative to this checkout.
   changes to contracts, persistence, service boundaries, or product workflows.
   Questions, documentation-only changes, and localized fixes preserving those
   contracts and boundaries do not require the full SDD workflow.
-- Worktree and branch administration is user-owned. Agents must not create,
-  remove, switch, or require a Git worktree unless the user explicitly requests
-  that operation.
+- Worktrees, branches, and parallel sessions follow
+  [Parallel sessions and worktrees](#parallel-sessions-and-worktrees-user-decision-oct-7-2026).
 - Work in the checkout and branch selected by the user. Before editing, inspect
   the working tree and preserve unrelated changes; never stash, discard, move,
   or combine existing work without explicit user approval.
@@ -87,6 +86,72 @@ Skill registry lives at `.atl/skill-registry.md`, relative to this checkout.
   independent authorized work while a required decision is pending. Completion
   includes fixing failures caused by the change and rerunning affected checks;
   report any unresolved blockers without claiming the task is complete.
+
+## Parallel sessions and worktrees (user decision, Oct 7, 2026)
+
+The user runs several Claude sessions at once in herdr. This is the same model
+used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
+
+- The main checkout (`~/Documents/repositorios/zeler-platform`, always on `main`)
+  is the coordination checkout. Only it:
+  - integrates branches into `main` and pushes;
+  - requests Cloud Build images, deploys, and inspects or operates production
+    (GCP, `platform-vm`, CloudAMQP). Images are built only from commits on
+    `main`, so unmerged worktree code never reaches production.
+  - Never check out another branch there.
+- Code changes are made in a worktree on their own branch, one per change.
+  Small documentation or rule edits may be made in the main checkout when no
+  other session is editing the same files.
+  - The user creates the worktree in herdr (prefix + Shift+G, or
+    `herdr worktree create --branch <type>/<name>` from the main checkout).
+    herdr puts it in `~/.herdr/worktrees/zeler-platform/`. Agents do not create,
+    switch, or remove worktrees unless the user asks.
+  - Branch prefixes: `feat/`, `fix/`, `docs/`, `chore/`, `test/`.
+  - First step in a new worktree: `uv sync --all-packages`. Do not symlink the
+    main checkout's `.venv`: its editable installs point at the main checkout's
+    sources, so the worktree would run `main`'s code instead of its own.
+- Prompts for worktree sessions: the user usually asks the main session for a
+  complete prompt and pastes it into a worktree session. The prompt names the
+  branch, the goal, the files or areas, the checks to run, and what is out of
+  scope. It starts with a line `Recomendado: <model> · <effort>`:
+  - Opus 5.5 xhigh: production data or operations, workers and concurrency
+    (leases, cursors, retries, quotas), Mercado Libre behavior not yet
+    explored, contracts or schemas, or wide multi-file changes.
+  - Sonnet 5.5 high: small, fully specified changes (documentation, a log or
+    error message, a validation, a missing test) where a mistake shows at once
+    and nothing reaches production.
+  - Opus 5.5 high: anything in between.
+- A worktree does not isolate shared state:
+  - the local test Mongo (loopback replica set on 27028, see L-012) and local
+    RabbitMQ. Give each worktree its own database name in `MONGO_URI`, for
+    example `zeler_test_<branch-slug>`, so two suites never share data;
+  - production and cloud resources; only the main session operates them;
+  - Engram memory and `docs/lessons/README.md`;
+  - long shared docs such as the `docs/sheets/` ledgers; edit each in one
+    session at a time.
+- Finishing ("integra a main"; this phrase is the request to commit, merge,
+  and push):
+  1. Run the focused checks and the four root gates in the worktree, plus the
+     CI extras when they apply.
+  2. Commit on the branch, naming only your own paths.
+  3. Rebase onto `main` if it moved and rerun the affected checks. Then run
+     `git -C <main checkout> merge --ff-only <branch>`. Git refuses if the main
+     checkout has uncommitted changes in the same files; in that case stop and
+     tell the user.
+  4. Push `main`. CI runs on the push.
+  5. If runtime code changed, apply the end-of-session image drift rule. Build
+     and deploy still need explicit authorization and run from the main session.
+  6. The user removes the worktree in herdr (`herdr worktree remove`); then
+     delete the merged branch.
+- Two sessions in the same folder (small changes only):
+  - announce the files and regions you will touch to the other session
+    (SendMessage);
+  - re-read a region right before editing it;
+  - commit only your own hunks, naming the paths. Never use `git add -A` or
+    `git commit -a`, and never commit another session's files.
+- Session close: list `git worktree list` and report which worktrees are clean
+  and merged so the user can remove them. Never remove a worktree with
+  uncommitted, unpushed, or unmerged work.
 
 ## Stack summary
 
