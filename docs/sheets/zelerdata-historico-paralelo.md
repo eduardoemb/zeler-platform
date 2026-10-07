@@ -1,5 +1,16 @@
 # ZelerData: coordinación de CUOTAS y AMQP
 
+> **PENDIENTE DE RESOLVER — cierre solicitado por el usuario, 6 de octubre de 2026.**
+> Vinculación HOPEMOB: correcta. **Histórico completo de cinco fuentes y dos ciclos
+> incrementales con cambios reales: NO terminados/NO aceptados.** Corrección durable
+> de envíos publicada en `415a9cf`, validada localmente, **no desplegada**.
+> Resolver el alcance técnico, servir API/worker compatibles y demostrar los datos
+> reales son pendientes distintos; ninguno se da por cerrado con pruebas verdes.
+> Piloto PAUSED/HISTORY OFF y plazo vencido; datos/checkpoints/cuotas preservados,
+> registro14 sin Full. Esta nota **no autoriza reanudar ni repetir producción**.
+> Ver el [pendiente explícito del handoff](zelerdata-historico-handoff.md#pendiente-de-resolver--cierre-expreso-del-6-de-octubre-de-2026).
+
+
 **Asignación local, no aceptación del producto.** Dos especialistas independientes
 con archivos exclusivos; el coordinador integra y es el único operador de Git y
 producción. El usuario reanudó trabajo local y coordinación el 5 de octubre de

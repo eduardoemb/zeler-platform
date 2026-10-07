@@ -1,5 +1,30 @@
 # ZelerData: handoff del histórico al vincular
 
+## PENDIENTE DE RESOLVER — cierre expreso del 6 de octubre de 2026
+
+**HOPEMOB quedó vinculada correctamente. La carga histórica completa y la
+sincronización incremental de ZelerData NO quedaron terminadas ni aceptadas.**
+El usuario pidió cerrar la sesión y dejar este pendiente explícito. Esta nota
+no reanuda implementación, pruebas, builds, despliegues ni operaciones productivas.
+
+| Pendiente | Estado al cierre / evidencia necesaria para resolverlo |
+| --- | --- |
+| Servir la corrección de avance durable de envíos | Código publicado en `415a9cff4df52d7ffee928ce0b42cf791090e58d` y ocho controles locales PASS; **no desplegado**. Faltan imágenes API/worker, compatibilidad de validator, rollback y rollout autorizado API→worker. |
+| Completar y comprobar el histórico recuperable de las cinco fuentes | **NO acreditado**. Resolver pendientes de envíos, preguntas y reclamos/devoluciones y comprobar rangos, cobertura y lectura por fuente; no sustituirlos por tests verdes o salud del contenedor. |
+| Resolver los bloqueos de adquisición conservando lo existente | Envíos consumió250/250; el arreglo no recupera payloads perdidos ni repone crédito. Reclamos conserva fallos de precondición404; preguntas conserva el archivo del pase previo y el nuevo pase pendiente. No dar por resueltos estos casos. |
+| Demostrar dos ciclos incrementales con cambios empresariales reales | **NO acreditado**. Se necesitan cambios reales y evidencia de lectura; solicitudes de mantenimiento, timestamps, caché, dos passes o archivos de checkpoints no bastan. |
+
+**Responsable de retomar:** coordinador, sólo ante nueva petición del usuario y
+con el alcance autorizado de cada paso. El piloto quedó PAUSED/HISTORY OFF, con
+su plazo vencido. Conservar datos, jobs, IDs, checkpoints, consumos y registro14;
+Full sigue excluido. No reiniciar cuotas/plazos, trasladar cargos entre fases ni
+repetir llamadas fallidas por interpretar esta nota como permiso.
+
+OAuth, muestra nativa en Sheets y API parcial de órdenes mantienen sus resultados
+positivos anteriores, pero **no cierran este pendiente**. El objetivo global de
+ZelerData permanece incompleto. Detalles y evidencias históricas debajo.
+
+
 > **Última evidencia operativa: 2026-10-06T20:32:52.806288Z; objetivo abierto.**
 > Gateway `c905f4…`/source bc93, worker `be4fc0…`/source ed2715a, API3f7 preservada.
 > Fix429 publicado, build VERIFIED y rollout cerrado PASS; 23 capas Compose.
