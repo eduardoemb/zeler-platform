@@ -94,6 +94,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-035 | Tests | Bound cancellation harness signals | active |
 | L-036 | ZelerData | A paused pilot must release ordinary traffic | active |
 | L-037 | ZelerData | Size item and catalog sweeps to their readers' age limits | active |
+| L-038 | ZelerData | A paused pilot must not freeze certified DEVOLUCIONES coverage | active |
 
 ## Cloud Build and VM deployment
 
@@ -606,5 +607,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
   unchanged-item check (likely September `source_incomplete`).
 - verification/source: `modules/sheets/tests/test_zelerdata_refresh.py`,
   `modules/sheets/tests/test_zelerdata_sweep_status.py`,
+  `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
+- status: active
+
+### L-038 — A paused pilot must not freeze certified DEVOLUCIONES coverage
+- area: ZelerData DEVOLUCIONES coverage
+- proven path: With history on link off, skip onboarding runs and admit one
+  ordinary tail run per UTC day (`refresh-tail:v1`) from the latest certificate
+  to the settled UTC midnight, capped at 10 days. Finalize its last window in
+  the same invocation. Leave pilot plans untouched.
+- failed path: Treat certificate renewal as freshness: it keeps old intervals
+  valid but never adds days, so coverage froze at the last pilot acquisition
+  while the paused plan refused every onboarding run. Leaving finalization to
+  the next cycle also fails: a one-window run expires 1070 s after admission,
+  and the next cycle runs at least 900 s later.
+- verification/source: `modules/sheets/tests/test_devoluciones_ordinary_tail.py`,
+  `tests/integration/test_devoluciones_onboarding.py`,
   `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
 - status: active
