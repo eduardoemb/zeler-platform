@@ -431,6 +431,8 @@ async def test_tail_advance_uses_the_ordinary_runtime_source(
     # the pilot plan budget.
     assert "source" not in executed[0]
     assert executed[0]["window"] == {"index": 0}
+    # Only the tail retires pre-v2 rows its inventory no longer reports.
+    assert executed[0]["quarantine_legacy_claims"] is True
     assert admission.acquired[0]["source_fingerprint"] == "t" * 64
     assert admission.acquired[0]["require_coverage_compatible"] is True
     assert [call["succeeded"] for call in admission.finished] == [True]

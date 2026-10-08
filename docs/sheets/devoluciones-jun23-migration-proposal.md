@@ -2,6 +2,13 @@
 
 Status: awaiting explicit scope authorization. No migration has been performed.
 
+Update 2026-10-08: once deployed, the ordinary DEVOLUCIONES tail quarantines
+this kind of row in its own window, using the same archive-and-remove
+transaction (`sheets_devoluciones_claim_quarantine`; see
+`docs/sheets/zelerdata-refresh.md`, "Pre-v2 rows in the tail window"). The
+June 23 row lies on the tail's path. This one-record operator migration is then
+needed only for a row the tail will not reach.
+
 The selected closure design explicitly says “No new recovery protocol, TTL
 expansion, or migration” in
 [design.md](../../openspec/changes/zelerdata-live-formula-repairs/design.md).

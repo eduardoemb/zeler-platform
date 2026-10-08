@@ -148,3 +148,27 @@ def test_devoluciones_run_and_window_schemas_are_strict_and_identity_indexed() -
             "options": {"name": "uniq_sheets_devoluciones_run_windows_index", "unique": True},
         }
     ]
+
+
+def test_legacy_claim_quarantine_schema_keeps_the_original_row_and_its_authority() -> None:
+    quarantine = _load("infra/mongo/schemas/sheets_devoluciones_claim_quarantine.json")
+    schema = quarantine["$jsonSchema"]
+
+    assert _validator_payload(ENTITY_SCHEMAS["sheets_devoluciones_claim_quarantine"]) == quarantine
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == [
+        "_id",
+        "seller_id",
+        "run_id",
+        "window_id",
+        "reason",
+        "source_fingerprint",
+        "fence",
+        "quarantined_at",
+        "claim_bson",
+        "claim_sha256",
+        "schema_version",
+    ]
+    assert schema["properties"]["claim_bson"] == {"bsonType": "binData"}
+    assert schema["properties"]["reason"] == {"enum": ["not_in_authoritative_inventory"]}
+    assert validate_document_against_schema({"_id": "5000000001"}, quarantine).valid is False

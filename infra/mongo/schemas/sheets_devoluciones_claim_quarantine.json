@@ -1,0 +1,69 @@
+{
+  "$jsonSchema": {
+    "additionalProperties": false,
+    "bsonType": "object",
+    "properties": {
+      "_id": {
+        "bsonType": "string"
+      },
+      "claim_bson": {
+        "bsonType": "binData"
+      },
+      "claim_sha256": {
+        "bsonType": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "fence": {
+        "bsonType": [
+          "int",
+          "long"
+        ],
+        "minimum": 1
+      },
+      "quarantined_at": {
+        "bsonType": "date"
+      },
+      "reason": {
+        "enum": [
+          "not_in_authoritative_inventory"
+        ]
+      },
+      "run_id": {
+        "bsonType": "string"
+      },
+      "schema_version": {
+        "bsonType": "int"
+      },
+      "seller_id": {
+        "bsonType": "string"
+      },
+      "source_exclusion": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
+      "source_fingerprint": {
+        "bsonType": "string"
+      },
+      "window_id": {
+        "bsonType": "string"
+      }
+    },
+    "required": [
+      "_id",
+      "seller_id",
+      "run_id",
+      "window_id",
+      "reason",
+      "source_fingerprint",
+      "fence",
+      "quarantined_at",
+      "claim_bson",
+      "claim_sha256",
+      "schema_version"
+    ]
+  },
+  "validationAction": "error",
+  "validationLevel": "strict"
+}

@@ -1418,6 +1418,38 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **SCHEMA_VERSION,
         },
     },
+    # Pre-v2 return rows retired by an ordinary tail window whose revalidated
+    # inventory does not report them. The original row is kept byte for byte.
+    "sheets_devoluciones_claim_quarantine": {
+        "additionalProperties": False,
+        "required": [
+            "_id",
+            "seller_id",
+            "run_id",
+            "window_id",
+            "reason",
+            "source_fingerprint",
+            "fence",
+            "quarantined_at",
+            "claim_bson",
+            "claim_sha256",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_STRING,
+            "seller_id": {"bsonType": "string"},
+            "run_id": {"bsonType": "string"},
+            "window_id": {"bsonType": "string"},
+            "reason": {"enum": ["not_in_authoritative_inventory"]},
+            "source_exclusion": {"bsonType": ["string", "null"]},
+            "source_fingerprint": {"bsonType": "string"},
+            "fence": {"bsonType": ["int", "long"], "minimum": 1},
+            "quarantined_at": DATE,
+            "claim_bson": {"bsonType": "binData"},
+            "claim_sha256": {"bsonType": "string", "pattern": r"^[0-9a-f]{64}$"},
+            **SCHEMA_VERSION,
+        },
+    },
     "events": {
         "required": [
             "event_id",

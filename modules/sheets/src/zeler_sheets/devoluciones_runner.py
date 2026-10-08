@@ -1263,10 +1263,20 @@ async def advance_ordinary_devoluciones_tail(
 
     async def execute(*, window: Mapping[str, Any], **_: Any) -> dict[str, Any]:
         # No source override: the window uses the ordinary runtime gateway and
-        # the existing per-window physical attempt ledger.
-        return await execute_devoluciones_quota_window(
-            db=db, window=window, operation=operation, now=clock
+        # the existing per-window physical attempt ledger. A pre-v2 row the
+        # inventory no longer reports would fail the final readback every day
+        # (2026-10-08), so the tail quarantines it.
+        proof = await execute_devoluciones_quota_window(
+            db=db, window=window, operation=operation, now=clock, quarantine_legacy_claims=True
         )
+        if proof.get("quarantined_legacy_claims"):
+            logger.info(
+                "zelerdata.devoluciones_legacy_claims_quarantined",
+                seller_id=str(run["seller_id"]),
+                run_id=run_id,
+                count=proof["quarantined_legacy_claims"],
+            )
+        return proof
 
     try:
         outcome = await advance_devoluciones_quota_run(

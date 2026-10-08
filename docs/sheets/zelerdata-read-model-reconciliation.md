@@ -475,6 +475,12 @@ noncanonical `returns` row keeps the DEVOLUCIONES marker blocked, and the timer
 remains disabled. The observed `21/2/8/66/21/95` values are evidence only, not
 classifier inputs, fixed expectations, or authorization for a write.
 
+Since 2026-10-08 the only automatic exception is the ordinary DEVOLUCIONES
+tail (`refresh-tail:v1`). Inside its own window, it quarantines non-canonical
+`returns` rows that its revalidated inventory does not report. See
+`docs/sheets/zelerdata-refresh.md`, "Pre-v2 rows in the tail window". Operator
+quota runs still fail closed on these rows.
+
 ## DEVOLUCIONES authoritative acceptance
 
 The expected inventory is dynamic. It contains only productive claims backed by authoritative v2

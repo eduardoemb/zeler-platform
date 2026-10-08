@@ -1233,6 +1233,99 @@ async def write_devoluciones_snapshot(
     }
 
 
+LEGACY_CLAIM_QUARANTINE_COLLECTION = "sheets_devoluciones_claim_quarantine"
+
+
+async def quarantine_unreported_legacy_claims(
+    *,
+    db: Any,
+    snapshot: CollectedDevolucionesSnapshot,
+    operation: Any,
+    window: Mapping[str, Any],
+    now: datetime,
+) -> int:
+    """Retire pre-v2 return rows that the revalidated window inventory omits.
+
+    The v2 acquisition only rewrites claims its inventory reports, and every
+    certified reader rejects a non-canonical row in its range, so one such row
+    fails the run's final readback on every retry. Only non-canonical rows the
+    inventory does not report move; a canonical row the source omits is a
+    membership disagreement and still fails closed. Each original row is
+    archived byte for byte and removed in the same fenced transaction.
+    """
+    from bson.codec_options import CodecOptions
+    from bson.raw_bson import RawBSONDocument
+
+    from zeler_platform_core.devoluciones_certificates import invalidate_claim_impact
+    from zeler_platform_core.devoluciones_readiness import guarded_devoluciones_write
+
+    if operation.seller_id != snapshot.seller_id or not operation.owns_lease:
+        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+    if operation.source_fingerprint != snapshot.source_fingerprint:
+        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+    selector: dict[str, Any] = {
+        "seller_id": snapshot.seller_id,
+        "type": "returns",
+        "date_created": {"$gte": snapshot.start, "$lt": snapshot.end},
+        "_id": {"$nin": sorted(snapshot.expected_claim_ids)},
+        "$or": [
+            {"productive": {"$ne": True}},
+            {"return_quantity_basis": {"$ne": "v2_return_order"}},
+        ],
+    }
+    claims = db["claims"]
+    raw_claims = claims.with_options(
+        codec_options=CodecOptions(document_class=RawBSONDocument, tz_aware=True, tzinfo=UTC)
+    )
+    stale_ids = [row["_id"] async for row in claims.find(selector, projection={"_id": 1})]
+    exclusions = {exclusion.claim_id: str(exclusion.reason) for exclusion in snapshot.exclusions}
+    quarantined = 0
+    for stale_id in stale_ids:
+        exact = {**selector, "_id": stale_id}
+
+        async def retire(session: Any, exact: dict[str, Any] = exact) -> None:
+            nonlocal quarantined
+            session_kwargs = {"session": session} if session is not None else {}
+            original = await raw_claims.find_one(exact, **session_kwargs)
+            if original is None:
+                # Rewritten or removed meanwhile: the final readback decides.
+                return
+            claim_bson = bytes(original.raw)
+            claim_id = str(original["_id"])
+            await db[LEGACY_CLAIM_QUARANTINE_COLLECTION].insert_one(
+                {
+                    "_id": claim_id,
+                    "seller_id": snapshot.seller_id,
+                    "run_id": str(window["run_id"]),
+                    "window_id": str(window["_id"]),
+                    "reason": "not_in_authoritative_inventory",
+                    "source_exclusion": exclusions.get(claim_id),
+                    "source_fingerprint": snapshot.source_fingerprint,
+                    "fence": operation.fence,
+                    "quarantined_at": now,
+                    "claim_bson": claim_bson,
+                    "claim_sha256": hashlib.sha256(claim_bson).hexdigest(),
+                    "schema_version": 1,
+                },
+                **session_kwargs,
+            )
+            removed = await claims.delete_one(exact, **session_kwargs)
+            if getattr(removed, "deleted_count", 0) != 1:
+                raise DevolucionesReadModelVerificationError("legacy claim changed in quarantine")
+            await invalidate_claim_impact(db, snapshot.seller_id, [original], session=session)
+            quarantined += 1
+
+        await guarded_devoluciones_write(
+            db=db,
+            operation=operation,
+            seller_id=snapshot.seller_id,
+            checkpoint={"phase": "legacy_claim_quarantine", "window_id": str(window["_id"])},
+            writer=retire,
+            certificate_impact_handled=True,
+        )
+    return quarantined
+
+
 async def _inventory_pass(
     *,
     source: ClaimInventorySource,

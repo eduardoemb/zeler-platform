@@ -168,6 +168,25 @@ changes: the pilot owns the incremental run. DEVOLUCIONES therefore answers
 ranges that end on the previous UTC day or earlier. A range that includes today
 needs coverage up to tomorrow 00:00 UTC and stays unavailable by design.
 
+##### Pre-v2 rows in the tail window (2026-10-08)
+
+The tail for 2026-06-11..06-21 certified its only window (9 claims), but its
+final readback counted a tenth `returns` row in the pre-v2 format (no
+`productive` or `return_quantity_basis`). The v2 acquisition rewrites only
+claims its inventory reports, so the row stayed, the run failed, and the next
+day's retry failed the same way. Relaxing the readback alone does not help:
+publishing the certificate and every certified read run
+`verify_devoluciones_read_model`, which rejects any non-canonical row in range.
+
+After its source revalidation, each tail window now moves this seller's
+non-canonical `returns` rows in the window that the inventory does not report to
+`sheets_devoluciones_claim_quarantine`. Each row is archived byte for byte with
+its SHA-256, run, window, source fingerprint, and the source exclusion if any,
+and is removed in the same fenced transaction. A canonical v2 row the source
+omits is not moved; the run still fails closed. Operator and pilot runs share
+the window executor without this step and keep failing on any non-canonical row.
+Restoring an archived row blocks the range again.
+
 #### Renewing a settled marker
 
 The quota finalize publishes the `devoluciones` marker once, when the last window

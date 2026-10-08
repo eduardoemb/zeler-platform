@@ -1190,8 +1190,13 @@ async def execute_devoluciones_quota_window(
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    quarantine_legacy_claims: bool = False,
 ) -> dict[str, Any]:
-    """Write and verify one exact quota window under an existing root lease."""
+    """Write and verify one exact quota window under an existing root lease.
+
+    Only the ordinary tail sets ``quarantine_legacy_claims``. Operator and
+    pilot runs keep failing closed on any non-canonical row in their range.
+    """
     from zeler_sheets.devoluciones_reconciliation import (
         MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
         MAX_SOURCE_PHYSICAL_ATTEMPTS,
@@ -1200,6 +1205,7 @@ async def execute_devoluciones_quota_window(
         SourceCallRecorder,
         SourceRunLedger,
         collect_devoluciones_snapshot,
+        quarantine_unreported_legacy_claims,
         require_snapshot_publication_age,
         revalidate_devoluciones_snapshot,
         write_devoluciones_snapshot,
@@ -1275,6 +1281,16 @@ async def execute_devoluciones_quota_window(
             returns_pacer=returns_pacer,
             now=now,
         )
+        quarantined = 0
+        if quarantine_legacy_claims:
+            # After revalidation: the source has reported the same inventory twice.
+            quarantined = await quarantine_unreported_legacy_claims(
+                db=db,
+                snapshot=snapshot,
+                operation=window_operation,
+                window=window,
+                now=now(),
+            )
         summary = await collect_reconciliation_counts(
             db=db,
             request=request,
@@ -1296,6 +1312,8 @@ async def execute_devoluciones_quota_window(
     }
     if not _complete_quota_proof(proof):
         raise RuntimeError("quota window readback proof is incomplete")
+    if quarantined:
+        proof["quarantined_legacy_claims"] = quarantined
     return proof
 
 

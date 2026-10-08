@@ -440,3 +440,170 @@ async def test_paused_pilot_coverage_is_extended_by_the_ordinary_tail(
         )
         == 1
     )
+
+
+QUARANTINE = "sheets_devoluciones_claim_quarantine"
+
+
+def legacy_claim(claim_id: str, created: datetime, seller: str = "999") -> dict[str, Any]:
+    # Pre-v2 projection: no productive flag, return basis or source version.
+    return {
+        "_id": claim_id,
+        "seller_id": seller,
+        "order_id": "20000000" + claim_id[-2:],
+        "status": "closed",
+        "stage": "claim",
+        "type": "returns",
+        "date_created": created,
+        "schema_version": 1,
+    }
+
+
+async def paused_pilot_with_tail_due(
+    db: Any, monkeypatch: pytest.MonkeyPatch
+) -> tuple[datetime, datetime, datetime]:
+    """Certify one pilot unit, pause the pilot, and return the tail bounds."""
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / f"infra/mongo/schemas/{QUARANTINE}.json").read_text()
+    )
+    await db.create_collection(
+        QUARANTINE,
+        validator={"$jsonSchema": schema["$jsonSchema"]},
+        validationLevel="strict",
+        validationAction="error",
+    )
+    plan = await seed_plan(db)
+    today = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC)
+    start = today - timedelta(days=12)
+    await acquire_unit(db, plan, start, EmptyGateway())
+    await db[ONBOARDING_PLANS_COLLECTION].update_one({"_id": "999"}, {"$set": {"state": "paused"}})
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=EmptyGateway()),
+    )
+    settled = datetime.combine(
+        (datetime.now(UTC) - timedelta(hours=1)).date(), time.min, tzinfo=UTC
+    )
+    return start, start + timedelta(days=10), settled
+
+
+@pytest.mark.asyncio
+async def test_tail_quarantines_a_legacy_claim_its_inventory_does_not_report(
+    onboarding_claims_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-08: the tail for 06-11..06-21 certified its window (9 claims) but
+    its final readback counted a tenth, pre-v2 row the source no longer reports.
+    The run failed and retried once a day forever, freezing coverage. Every
+    certified reader rejects such a row, so the window must retire it.
+    """
+    import hashlib
+
+    from bson import BSON
+    from bson.codec_options import CodecOptions
+
+    db = onboarding_claims_db
+    start, tail_start, settled = await paused_pilot_with_tail_due(db, monkeypatch)
+    legacy = legacy_claim("5000000001", tail_start + timedelta(hours=6))
+    other_seller = legacy_claim("5000000002", tail_start + timedelta(hours=6), seller="998")
+    after_tail = legacy_claim("5000000003", settled + timedelta(minutes=30))
+    await db.claims.insert_many([dict(legacy), other_seller, after_tail])
+
+    assert await advance_due_devoluciones_run(db, "999", history_work_enabled=False) is True
+
+    tail = await db.sheets_devoluciones_runs.find_one(
+        {"authorization_id": ORDINARY_TAIL_AUTHORIZATION}
+    )
+    assert tail is not None and tail["state"] == "completed"
+    covering = await select_covering_proofs(db, "999", start, settled, datetime.now(UTC))
+    assert len(covering.proofs) == 2
+    assert await db.claims.find_one({"_id": legacy["_id"]}) is None
+    archived = await db[QUARANTINE].find_one({"_id": legacy["_id"]})
+    assert archived is not None
+    assert archived["seller_id"] == "999"
+    assert archived["run_id"] == tail["_id"]
+    assert archived["window_id"] == f"{tail['_id']}:0"
+    assert archived["reason"] == "not_in_authoritative_inventory"
+    assert archived["claim_sha256"] == hashlib.sha256(archived["claim_bson"]).hexdigest()
+    original = BSON(archived["claim_bson"]).decode(CodecOptions(tz_aware=True, tzinfo=UTC))
+    assert original == legacy
+    # Only this seller's non-canonical rows inside the acquired window move.
+    assert await db.claims.count_documents({"_id": {"$in": ["5000000002", "5000000003"]}}) == 2
+    assert await db[QUARANTINE].count_documents({}) == 1
+
+
+@pytest.mark.asyncio
+async def test_tail_keeps_an_unreported_canonical_claim_and_fails_closed(
+    onboarding_claims_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A v2 row the source omits is a membership disagreement, not a stale
+    format: it stays in place and the run must not certify the range.
+    """
+    db = onboarding_claims_db
+    start, tail_start, settled = await paused_pilot_with_tail_due(db, monkeypatch)
+    created = tail_start + timedelta(hours=6)
+    canonical = legacy_claim("5000000004", created) | {
+        "status": "opened",
+        "item_id": "MLM1",
+        "productive": True,
+        "returned_quantity": 1,
+        "return_quantity_basis": "v2_return_order",
+        "claim_version": 1,
+        "last_updated": created,
+        "return_last_updated": created,
+    }
+    await db.claims.insert_one(dict(canonical))
+
+    assert await advance_due_devoluciones_run(db, "999", history_work_enabled=False) is True
+
+    tail = await db.sheets_devoluciones_runs.find_one(
+        {"authorization_id": ORDINARY_TAIL_AUTHORIZATION}
+    )
+    assert tail is not None and tail["state"] == "failed"
+    assert await db.claims.find_one({"_id": canonical["_id"]}) == canonical
+    assert await db[QUARANTINE].count_documents({}) == 0
+    with pytest.raises(CoverageUnavailableError):
+        await select_covering_proofs(db, "999", start, settled, datetime.now(UTC))
+
+
+@pytest.mark.asyncio
+async def test_pilot_windows_still_leave_legacy_claims_to_the_operator(
+    onboarding_claims_db: Any,
+) -> None:
+    """Only the ordinary tail retires rows. Operator and pilot runs share the
+    window executor and keep failing closed on any non-canonical row.
+    """
+    db = onboarding_claims_db
+    plan = await seed_plan(db)
+    start = datetime(2026, 6, 11, tzinfo=UTC)
+    legacy = legacy_claim("5000000005", start + timedelta(days=2))
+    await db.claims.insert_one(dict(legacy))
+    gateway = EmptyGateway()
+
+    first = await advance_onboarding_devoluciones(
+        db,
+        plan,
+        start=start,
+        end=start + timedelta(days=10),
+        gateway=gateway,
+        charge=charge_for(db, plan),
+    )
+    assert first["state"] == "active" and first["advanced"] == 1
+    await db.sheets_devoluciones_runs.update_one(
+        {"_id": first["run_id"]}, {"$set": {"not_before": datetime.now(UTC)}}
+    )
+    final = await advance_onboarding_devoluciones(
+        db,
+        plan,
+        start=start,
+        end=start + timedelta(days=10),
+        gateway=gateway,
+        charge=charge_for(db, plan),
+    )
+
+    assert final["state"] == "failed" and final["finalized"] == 0
+    assert await db.claims.find_one({"_id": legacy["_id"]}) == legacy
+    assert await db[QUARANTINE].count_documents({}) == 0
+    assert await db[CERTIFICATES].count_documents({}) == 0
