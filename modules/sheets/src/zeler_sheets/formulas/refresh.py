@@ -75,6 +75,16 @@ EXPLICIT_IDENTITY_MODELS: frozenset[str] = frozenset(
     }
 )
 
+# Whole-seller sweeps that may be scheduled on their own spacing instead of
+# every cycle. Each is planned only while no sweep of the same model is in
+# flight and its interval has elapsed, so a pass never restarts faster than it
+# finishes (L-021). The base inventory is cheap (one discovery plus 20-ID
+# batches) and its readers need 15-minute data; catalog products are read from
+# a 4-hour cache. Buybox is excluded: its readers need 15-minute competition
+# data that a full pass cannot deliver within the reserved budget, so it stays
+# on demand.
+SPACED_SWEEP_MODELS: frozenset[str] = frozenset({"item_formula_rows", "catalog_product_snapshots"})
+
 FAST_MODE = "fast"
 DAILY_MODE = "daily"
 FULL_MODE = "full"
@@ -223,6 +233,7 @@ class ZelerDataRefreshPlanner:
         *,
         queue: Any,
         enabled_models: Iterable[str] = IMPLEMENTED_REFRESH_MODELS,
+        sweep_intervals: Mapping[str, timedelta] | None = None,
         allowed_sellers: frozenset[str] | None = None,
         identity_source: RefreshIdentitySource | None = None,
         now: Callable[[], datetime] | None = None,
@@ -237,13 +248,22 @@ class ZelerDataRefreshPlanner:
         enabled = frozenset(enabled_models)
         if not enabled or not enabled <= RECOVERABLE_MODELS:
             raise ValueError("refresh models must be recoverable read models")
-        needs_identities = enabled & EXPLICIT_IDENTITY_MODELS
+        sweeps = dict(sweep_intervals or {})
+        if not set(sweeps) <= SPACED_SWEEP_MODELS or set(sweeps) & enabled:
+            raise ValueError(
+                "spaced sweeps are limited to inventory and catalog products, "
+                "and are never also planned every cycle"
+            )
+        if any(interval <= timedelta(0) for interval in sweeps.values()):
+            raise ValueError("spaced sweep intervals must be positive")
+        needs_identities = (enabled | set(sweeps)) & EXPLICIT_IDENTITY_MODELS
         if needs_identities and identity_source is None:
             raise ValueError(
                 "an identity source is required to refresh " + ", ".join(sorted(needs_identities))
             )
         self._queue = queue
         self._enabled_models = enabled
+        self._sweep_intervals = sweeps
         self._identity_source = identity_source
         self._allowed_sellers = allowed_sellers
         self._now = now or (lambda: datetime.now(UTC))
@@ -253,14 +273,49 @@ class ZelerDataRefreshPlanner:
 
     async def plan_inventory(self, seller_id: str) -> bool:
         """Keep current inventory cycling without creating moving range intents."""
-        if "item_formula_rows" not in self._enabled_models:
-            return False
         if self._allowed_sellers is not None and seller_id not in self._allowed_sellers:
+            return False
+        if "item_formula_rows" in self._sweep_intervals:
+            return await self._plan_spaced_sweep(seller_id, "item_formula_rows")
+        if "item_formula_rows" not in self._enabled_models:
             return False
         try:
             async with asyncio.timeout(2):
                 await self._queue.enqueue(ItemInventoryRecoveryRequest(seller_id))
         except (ValueError, TimeoutError):
+            return False
+        return True
+
+    async def _plan_spaced_sweep(self, seller_id: str, read_model: str) -> bool:
+        """Admit one whole-seller sweep only when its own spacing allows it."""
+        try:
+            async with asyncio.timeout(2):
+                in_flight, anchor = await self._queue.sweep_status(
+                    seller_id=seller_id, read_model=read_model
+                )
+        except Exception:  # noqa: BLE001 - an unreadable status skips only this sweep
+            logger.warning("zelerdata.refresh_sweep_status_failed", read_model=read_model)
+            return False
+        if in_flight:
+            return False
+        now = self._now().astimezone(UTC)
+        if anchor is not None and now - anchor < self._sweep_intervals[read_model]:
+            return False
+        admitted = False
+        for request in await self._identity_requests(seller_id=seller_id, read_model=read_model):
+            admitted = await self._admit(request) or admitted
+        return admitted
+
+    async def _admit(self, request: Any) -> bool:
+        try:
+            async with asyncio.timeout(2):
+                await self._queue.enqueue(request)
+        except (ValueError, TimeoutError):
+            # Capacity and dedup rejections are expected. One model must
+            # not stop the rest of the cycle.
+            return False
+        except Exception:  # noqa: BLE001 - storage errors must not stop the loop
+            logger.warning("zelerdata.refresh_enqueue_failed", read_model=request.read_model)
             return False
         return True
 
@@ -280,50 +335,32 @@ class ZelerDataRefreshPlanner:
         date_from = now - window
         admitted = False
         for read_model in sorted(models):
-            requests = await self._requests_for(
-                seller_id=seller_id,
-                read_model=read_model,
-                date_from=date_from,
-                date_to=date_to,
-            )
+            if read_model == "orders" or read_model == "questions":
+                requests: tuple[Any, ...] = (
+                    RecoveryRequest(
+                        seller_id=seller_id,
+                        read_model=read_model,
+                        date_from=date_from,
+                        date_to=date_to,
+                    ),
+                )
+            else:
+                requests = await self._identity_requests(seller_id=seller_id, read_model=read_model)
             for request in requests:
-                try:
-                    async with asyncio.timeout(2):
-                        await self._queue.enqueue(request)
-                except (ValueError, TimeoutError):
-                    # Capacity and dedup rejections are expected. One model must
-                    # not stop the rest of the cycle.
-                    continue
-                except Exception:  # noqa: BLE001 - storage errors must not stop the loop
-                    logger.warning("zelerdata.refresh_enqueue_failed", read_model=read_model)
-                    continue
-                admitted = True
+                admitted = await self._admit(request) or admitted
+        # Spaced sweeps ignore the mode window; their own guard decides.
+        for read_model in sorted(self._sweep_intervals):
+            admitted = await self._plan_spaced_sweep(seller_id, read_model) or admitted
         return admitted
 
-    async def _requests_for(
-        self,
-        *,
-        seller_id: str,
-        read_model: str,
-        date_from: datetime,
-        date_to: datetime,
-    ) -> tuple[Any, ...]:
-        """Build the admissible requests for one model.
+    async def _identity_requests(self, *, seller_id: str, read_model: str) -> tuple[Any, ...]:
+        """Build the admissible requests for one model that a range cannot address.
 
         The queue rejects a generic range request for four of the six
         refreshable models because those sources need explicit identities.
         Planning the wrong shape silently produced a refresh loop that only
         ever served two models, so the shape is now chosen per model.
         """
-        if read_model == "orders" or read_model == "questions":
-            return (
-                RecoveryRequest(
-                    seller_id=seller_id,
-                    read_model=read_model,
-                    date_from=date_from,
-                    date_to=date_to,
-                ),
-            )
         if read_model == "item_formula_rows":
             # A whole-seller inventory sweep is the only honest way to certify
             # current item rows; a windowed range cannot prove membership.

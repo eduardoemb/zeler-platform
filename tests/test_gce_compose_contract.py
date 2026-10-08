@@ -505,6 +505,12 @@ class TestEnvTemplateContract:
         assert values["ZELERDATA_REFRESH_SELLERS"] == "82453304"
         assert values["ZELERDATA_REFRESH_INTERVAL_SECONDS"] == "900"
         assert values["ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE"] == "180"
+        # Whole-seller sweeps stay on demand until an operator opts in.
+        assert values["ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED"] == "false"
+        assert values["ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"] == "false"
+        assert values["ZELERDATA_INVENTORY_REFRESH_MINUTES"] == "10"
+        assert values["ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED"] == "false"
+        assert values["ZELERDATA_CATALOG_REFRESH_HOURS"] == "3"
 
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()

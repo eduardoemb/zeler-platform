@@ -1830,11 +1830,29 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         dlq_archiver = build_dlq_auto_archiver(db, sellers=allowed)
 
     scheduled_bulk = _env_flag_enabled("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED")
+    # Spaced sweeps keep item rows and catalog products current without the
+    # every-cycle bulk replanning that L-021 turned off: each sweep waits for
+    # its previous pass and its own interval. Buybox stays on demand.
+    sweep_intervals: dict[str, timedelta] = {}
+    if _env_flag_enabled("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"):
+        sweep_intervals["item_formula_rows"] = timedelta(
+            minutes=_positive_env_number("ZELERDATA_INVENTORY_REFRESH_MINUTES", default=10)
+        )
+    if _env_flag_enabled("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED"):
+        sweep_intervals["catalog_product_snapshots"] = timedelta(
+            hours=_positive_env_number("ZELERDATA_CATALOG_REFRESH_HOURS", default=3)
+        )
+    if scheduled_bulk and sweep_intervals:
+        raise RuntimeError(
+            "ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED already plans every model each "
+            "cycle; disable it to use spaced inventory or catalog sweeps"
+        )
     planner = ZelerDataRefreshPlanner(
         queue=queue,
         enabled_models=(
             IMPLEMENTED_REFRESH_MODELS if scheduled_bulk else SCHEDULED_RANGE_REFRESH_MODELS
         ),
+        sweep_intervals=sweep_intervals,
         allowed_sellers=allowed,
         # Explicit-identity models read their identities from the already
         # acquired local read models; planning never calls Mercado Libre.
@@ -1843,7 +1861,11 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     return ZelerDataRefreshSupervisor(
         explorer=MongoSellerExplorer(db=db, allowed_sellers=allowed),
         planner=planner,
-        inventory_refresher=planner.plan_inventory if scheduled_bulk else None,
+        inventory_refresher=(
+            planner.plan_inventory
+            if scheduled_bulk or "item_formula_rows" in sweep_intervals
+            else None
+        ),
         history_backfill=build_pilot_history_backfill(
             db=db,
             recovery_queue=queue,
@@ -1893,6 +1915,17 @@ def _account_status_source_from_db(db: Any) -> AccountStatusSource:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _positive_env_number(name: str, *, default: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw else default
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be numeric") from exc
+    if not value > 0 or value == float("inf"):
+        raise RuntimeError(f"{name} must be positive")
+    return value
 
 
 def _build_precalculated_warmer(db: Any) -> Callable[[str], Awaitable[int]]:

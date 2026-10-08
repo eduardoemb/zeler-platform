@@ -93,6 +93,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-034 | ZelerData | Commit one shipment and its cursor atomically | active |
 | L-035 | Tests | Bound cancellation harness signals | active |
 | L-036 | ZelerData | A paused pilot must release ordinary traffic | active |
+| L-037 | ZelerData | Size item and catalog sweeps to their readers' age limits | active |
 
 ## Cloud Build and VM deployment
 
@@ -592,4 +593,18 @@ repeat failures, and promote stable knowledge to its proper operational form.
   2026-10-07. Also, a worker reporting `rabbitmq: ok` had no AMQP connection.
 - verification/source: `modules/sheets/tests/test_history_off_ordinary_events.py`;
   broker refusal read from `Connection.Close` reply code 530 NOT_ALLOWED.
+- status: active
+
+### L-037 — Size item and catalog sweeps to their readers' age limits
+- area: ZelerData scheduled refresh
+- proven path: Item and catalog formulas have no marker; they check each
+  acquisition's age (15 minutes, catalog products 4 hours). Space each sweep
+  from its own previous pass, never while one is in flight, and keep the base
+  inventory off while a buybox job is in progress.
+- failed path: A daily sweep keeps them `OK` only for minutes. An inventory pass
+  during buybox invalidates its snapshots (`synced <= observed`) and fails its
+  unchanged-item check (likely September `source_incomplete`).
+- verification/source: `modules/sheets/tests/test_zelerdata_refresh.py`,
+  `modules/sheets/tests/test_zelerdata_sweep_status.py`,
+  `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
 - status: active

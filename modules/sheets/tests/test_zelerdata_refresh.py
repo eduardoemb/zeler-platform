@@ -368,6 +368,173 @@ async def test_planner_requires_identity_source_for_catalog_models() -> None:
         )
 
 
+class FakeSweepQueue(FakeQueue):
+    """Queue double that reports the last whole-seller sweep per model."""
+
+    def __init__(self, status: dict[str, tuple[bool, datetime | None]] | None = None) -> None:
+        super().__init__()
+        self.status = status or {}
+        self.status_calls: list[str] = []
+
+    async def sweep_status(self, *, seller_id: str, read_model: str) -> tuple[bool, Any]:
+        self.status_calls.append(read_model)
+        return self.status.get(read_model, (False, None))
+
+
+def _spaced_planner(queue: Any, **sweeps: timedelta) -> ZelerDataRefreshPlanner:
+    return ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"orders", "questions"}),
+        sweep_intervals=sweeps,
+        identity_source=FakeIdentitySource(catalog_product_ids=("MLM1", "MLM2")),
+        now=lambda: NOW,
+    )
+
+
+@pytest.mark.asyncio
+async def test_spaced_catalog_sweep_is_planned_when_none_ran_before() -> None:
+    from zeler_sheets.formulas.recovery import CatalogRecoveryRequest
+
+    queue = FakeSweepQueue()
+    planner = _spaced_planner(queue, catalog_product_snapshots=timedelta(hours=3))
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+
+    catalog = [r for r in queue.enqueued if r.read_model == "catalog_product_snapshots"]
+    assert len(catalog) == 1
+    assert isinstance(catalog[0], CatalogRecoveryRequest)
+    assert catalog[0].ids == ("MLM1", "MLM2")
+    assert {r.read_model for r in queue.enqueued} == {
+        "orders",
+        "questions",
+        "catalog_product_snapshots",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "finished_ago", "planned"),
+    [
+        # A same-model sweep still in flight is never reopened or overlapped.
+        (True, None, False),
+        # The interval starts when the previous pass finished, not when it began.
+        (False, timedelta(hours=2, minutes=59), False),
+        (False, timedelta(hours=3), True),
+    ],
+)
+async def test_spaced_catalog_sweep_waits_for_active_and_recent_passes(
+    active: bool, finished_ago: timedelta | None, planned: bool
+) -> None:
+    anchor = NOW - finished_ago if finished_ago is not None else None
+    queue = FakeSweepQueue({"catalog_product_snapshots": (active, anchor)})
+    planner = _spaced_planner(queue, catalog_product_snapshots=timedelta(hours=3))
+
+    await planner.plan(seller_id="82453304", mode="fast")
+
+    catalog = [r for r in queue.enqueued if r.read_model == "catalog_product_snapshots"]
+    assert bool(catalog) is planned
+    # Bounded range refresh is unaffected by the sweep guard.
+    assert {"orders", "questions"} <= {r.read_model for r in queue.enqueued}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "discovered_ago", "planned"),
+    [
+        (False, None, True),
+        (True, None, False),
+        # Inventory is anchored on its discovery so the enumeration stays inside
+        # the readers' 15-minute window.
+        (False, timedelta(minutes=9), False),
+        (False, timedelta(minutes=10), True),
+    ],
+)
+async def test_spaced_inventory_tick_is_anchored_on_the_previous_discovery(
+    active: bool, discovered_ago: timedelta | None, planned: bool
+) -> None:
+    from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
+
+    anchor = NOW - discovered_ago if discovered_ago is not None else None
+    queue = FakeSweepQueue({"item_formula_rows": (active, anchor)})
+    planner = _spaced_planner(queue, item_formula_rows=timedelta(minutes=10))
+
+    assert await planner.plan_inventory("82453304") is planned
+
+    assert [type(request) for request in queue.enqueued] == (
+        [ItemInventoryRecoveryRequest] if planned else []
+    )
+
+
+@pytest.mark.asyncio
+async def test_spaced_inventory_tick_respects_the_seller_allowlist() -> None:
+    queue = FakeSweepQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"orders"}),
+        sweep_intervals={"item_formula_rows": timedelta(minutes=10)},
+        allowed_sellers=frozenset({"82453304"}),
+        now=lambda: NOW,
+    )
+
+    assert await planner.plan_inventory("999") is False
+    assert queue.enqueued == []
+    assert queue.status_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unreadable_sweep_status_skips_the_sweep_but_not_the_cycle() -> None:
+    class BrokenStatusQueue(FakeQueue):
+        async def sweep_status(self, *, seller_id: str, read_model: str) -> Any:
+            raise RuntimeError("storage unavailable")
+
+    queue = BrokenStatusQueue()
+    planner = _spaced_planner(queue, catalog_product_snapshots=timedelta(hours=3))
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert sorted(r.read_model for r in queue.enqueued) == ["orders", "questions"]
+    assert await planner.plan_inventory("82453304") is False
+
+
+def test_buybox_is_never_a_spaced_sweep() -> None:
+    """Buybox readers need 15-minute data; a scheduled pass cannot keep up."""
+    with pytest.raises(ValueError, match="spaced"):
+        ZelerDataRefreshPlanner(
+            queue=FakeSweepQueue(),
+            enabled_models=frozenset({"orders"}),
+            sweep_intervals={"catalog_buybox_snapshots": timedelta(hours=3)},
+            identity_source=FakeIdentitySource(),
+        )
+
+
+def test_a_model_is_either_planned_every_cycle_or_spaced() -> None:
+    with pytest.raises(ValueError, match="spaced"):
+        ZelerDataRefreshPlanner(
+            queue=FakeSweepQueue(),
+            enabled_models=frozenset({"orders", "catalog_product_snapshots"}),
+            sweep_intervals={"catalog_product_snapshots": timedelta(hours=3)},
+            identity_source=FakeIdentitySource(),
+        )
+
+
+@pytest.mark.parametrize("interval", [timedelta(0), timedelta(minutes=-1)])
+def test_spaced_sweep_interval_must_be_positive(interval: timedelta) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        ZelerDataRefreshPlanner(
+            queue=FakeSweepQueue(),
+            enabled_models=frozenset({"orders"}),
+            sweep_intervals={"item_formula_rows": interval},
+        )
+
+
+def test_spaced_catalog_sweep_requires_an_identity_source() -> None:
+    with pytest.raises(ValueError, match="identity source"):
+        ZelerDataRefreshPlanner(
+            queue=FakeSweepQueue(),
+            enabled_models=frozenset({"orders"}),
+            sweep_intervals={"catalog_product_snapshots": timedelta(hours=3)},
+        )
+
+
 @pytest.mark.asyncio
 async def test_planner_chunks_shipment_intents_within_the_admitted_identity_cap() -> None:
     """A seller with more shipments than one intent admits must still be covered."""
@@ -1472,3 +1639,113 @@ async def test_refresh_factory_can_explicitly_enable_full_seller_sweeps(
     assert supervisor._inventory_interval == 30
     assert supervisor._interval == 900
     assert await supervisor._inventory_refresher("999") is False
+
+
+def _enable_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
+    monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
+    for name in (
+        "ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED",
+        "ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED",
+        "ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED",
+        "ZELERDATA_INVENTORY_REFRESH_MINUTES",
+        "ZELERDATA_CATALOG_REFRESH_HOURS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_keeps_spaced_sweeps_off_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._sweep_intervals == {}
+    assert supervisor._inventory_refresher is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_spaces_inventory_and_catalog_sweeps_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED", "true")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    planner = supervisor._planner
+    assert isinstance(planner, ZelerDataRefreshPlanner)
+    # Only bounded ranges are planned every cycle; buybox stays on demand.
+    assert planner._enabled_models == frozenset({"orders", "questions"})
+    assert planner._sweep_intervals == {
+        "item_formula_rows": timedelta(minutes=10),
+        "catalog_product_snapshots": timedelta(hours=3),
+    }
+    assert supervisor._inventory_refresher == planner.plan_inventory
+    assert supervisor._inventory_interval == 30
+    assert supervisor._interval == 900
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_reads_spaced_sweep_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_CATALOG_REFRESH_HOURS", "24")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    planner = supervisor._planner
+    assert isinstance(planner, ZelerDataRefreshPlanner)
+    assert planner._sweep_intervals == {"catalog_product_snapshots": timedelta(hours=24)}
+    # The inventory tick only runs when its own sweep is enabled.
+    assert supervisor._inventory_refresher is None
+
+    monkeypatch.delenv("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED")
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_INVENTORY_REFRESH_MINUTES", "20")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    planner = supervisor._planner
+    assert isinstance(planner, ZelerDataRefreshPlanner)
+    assert planner._sweep_intervals == {"item_formula_rows": timedelta(minutes=20)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("flag", "variable"),
+    [
+        ("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED", "ZELERDATA_INVENTORY_REFRESH_MINUTES"),
+        ("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED", "ZELERDATA_CATALOG_REFRESH_HOURS"),
+    ],
+)
+@pytest.mark.parametrize("value", ["abc", "0", "-5"])
+async def test_refresh_factory_rejects_bad_sweep_intervals(
+    monkeypatch: pytest.MonkeyPatch, flag: str, variable: str, value: str
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv(flag, "true")
+    monkeypatch.setenv(variable, value)
+    with pytest.raises(RuntimeError, match=variable):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_refuses_bulk_and_spaced_sweeps_together(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bulk replans every model every cycle; mixing it with spacing is ambiguous."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="BULK"):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())

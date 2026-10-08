@@ -42,6 +42,41 @@ slow-moving history is still covered without paying that cost every 15 minutes.
 
 `RecoveryRequest` caps a single range at 90 days, which is why `full` uses 90.
 
+### Spaced item and catalog sweeps
+
+Item rows and catalog snapshots have no freshness marker, and none is
+published (see the item readiness rules in `zelerdata-formulas.md`). Their
+readers check how recent each acquisition is: the inventory enumeration, each
+publication's base row, quality, cost fields and buybox must be at most 15
+minutes old, and a catalog product snapshot at most 4 hours old. A daily sweep
+would therefore keep those formulas `OK` only for minutes a day.
+
+Since L-021, the every-cycle bulk planner is off
+(`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED=false`). Two whole-seller sweeps can
+instead be enabled on their own spacing. A spaced sweep is never planned while
+a sweep of the same model is pending or running, so a pass cannot restart before
+it finishes:
+
+| Sweep | Flag | Interval | Interval starts at |
+| --- | --- | --- | --- |
+| Base inventory (`item_formula_rows`) | `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` | `ZELERDATA_INVENTORY_REFRESH_MINUTES` (10) | the previous discovery, or the end of a pass that failed before discovering |
+| Catalog products (`catalog_product_snapshots`) | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `ZELERDATA_CATALOG_REFRESH_HOURS` (3) | the end of the previous pass |
+
+- The inventory is checked every 30 seconds and the catalog every refresh cycle.
+  The inventory sweep acquires base fields only (one discovery plus 20-ID
+  batches, about 115 calls for 1,900 publications). Quality, costs and
+  promotions still come from formula-triggered recovery.
+- An inventory pass re-observes every publication. A buybox acquisition is valid
+  only if it is newer than its item's last observation, and buybox persistence
+  fails if the item changes during the chunk. The inventory therefore waits while
+  a buybox job has made progress in the last two leases (20 minutes). This was
+  the probable source of the September buybox `source_incomplete` failures,
+  when every-cycle bulk sweeps ran alongside buybox jobs.
+- Buybox is never scheduled. Keeping roughly 900 publications within 15 minutes
+  would require about 150 sustained requests per minute, which L-021 rules out.
+  `CATALOGOBUYBOX` and `CATALOGO` remain on demand.
+- Bulk and spaced sweeps are mutually exclusive; enabling both fails startup.
+
 ## Freshness validity
 
 A reconciled marker stays valid for `MARKER_VALIDITY` (30 minutes), which is two
@@ -167,6 +202,11 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_REFRESH_SELLERS` | — | Required numeric allowlist when enabled. |
 | `ZELERDATA_REFRESH_INTERVAL_SECONDS` | `900` | Fast-cycle interval. |
 | `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` | `180` | Reserved acquisition budget. |
+| `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` | `false` | Legacy every-cycle plan of all six models plus the inventory tick (L-021). |
+| `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` | `false` | Spaced base-inventory sweep. |
+| `ZELERDATA_INVENTORY_REFRESH_MINUTES` | `10` | Minutes between inventory discoveries. |
+| `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `false` | Spaced catalog-product sweep. |
+| `ZELERDATA_CATALOG_REFRESH_HOURS` | `3` | Hours from the end of one catalog pass to the next. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
@@ -203,6 +243,7 @@ queries, which is the split agreed after a production write aborted with
 
 ```bash
 uv run pytest modules/sheets/tests/test_zelerdata_refresh.py \
+  modules/sheets/tests/test_zelerdata_sweep_status.py \
   modules/sheets/tests/test_zelerdata_recovery_pacing.py \
   tests/test_gce_compose_contract.py
 ```

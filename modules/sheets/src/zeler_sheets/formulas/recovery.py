@@ -755,6 +755,72 @@ class FormulaRecoveryQueue:
             expected_job_sha256=expected_job_sha256,
         )
 
+    async def sweep_status(
+        self, *, seller_id: str, read_model: str
+    ) -> tuple[bool, datetime | None]:
+        """Report whether a whole-seller sweep is in flight, else its last anchor.
+
+        The inventory is anchored on its discovery, so a spaced schedule keeps
+        the enumeration inside the readers' window. A catalog intent is anchored
+        on the completion of its latest pass, so a pass longer than its interval
+        is never followed immediately by another. A pass that ended before
+        discovering is anchored on that end, so the tick never reopens it at once.
+        A formula-sized ID batch is not a sweep. A buybox job that is making
+        progress also holds the inventory: re-observing its items would
+        invalidate that acquisition before readers could use it. A buybox job
+        without progress for two leases never does.
+        """
+        authority = (
+            self.policy_authority if self.policy_authority is not None else {"$exists": False}
+        )
+        active_states = {"$in": ["pending", "running"]}
+        if read_model == "item_formula_rows":
+            # One inventory job per seller; its key keeps the 30-second tick indexed.
+            sweep: dict[str, Any] = {
+                "_id": ItemInventoryRecoveryRequest(seller_id).key,
+                "inventory_scope": True,
+            }
+            blockers: list[dict[str, Any]] = [
+                {
+                    "read_model": "catalog_buybox_snapshots",
+                    "updated_at": {"$gt": self.now() - 2 * LEASE},
+                }
+            ]
+        elif read_model == "catalog_product_snapshots":
+            sweep = {"catalog_offset": {"$exists": True}}
+            blockers = []
+        else:
+            raise ValueError("only inventory and catalog products have spaced sweeps")
+        scope = {"seller_id": seller_id, "policy_authority": authority}
+        in_flight = await self.collection.find_one(
+            {
+                **scope,
+                "state": active_states,
+                "$or": [{"read_model": read_model, **sweep}, *blockers],
+            },
+            {"_id": 1},
+        )
+        if in_flight is not None:
+            return True, None
+        latest = (
+            await self.collection.find(
+                {**scope, "read_model": read_model, **sweep, "updated_at": {"$type": "date"}},
+                {"updated_at": 1, "inventory_offset": 1, "inventory_observed_at": 1},
+            )
+            .sort([("updated_at", -1)])
+            .limit(1)
+            .to_list(length=1)
+        )
+        if not latest:
+            return False, None
+        job = latest[0]
+        anchored: datetime = job["updated_at"]
+        # Reopening clears the cursor but keeps the previous pass's discovery,
+        # so only a pass with a cursor reached its own discovery.
+        if "inventory_offset" in job and isinstance(job.get("inventory_observed_at"), datetime):
+            anchored = job["inventory_observed_at"]
+        return False, anchored.replace(tzinfo=UTC) if anchored.tzinfo is None else anchored
+
     async def checkpoint_inventory(
         self,
         job: dict[str, Any],
