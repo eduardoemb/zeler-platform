@@ -1178,6 +1178,62 @@ async def test_ordenes_por_sku_filters_orders_by_requested_skus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ordenes_por_sku_returns_every_ordenes_row_for_the_sku_it_shows() -> None:
+    """Pilot probe 2026-10-07: ORDENES returned 78 rows and ORDENESPORSKU none.
+
+    Both read the same certified orders and resolve SKUs with the same
+    resolver, so any SKU in the ORDENES SKU column must select exactly those
+    rows, whatever canonical item shape carried it. An empty answer means the
+    SKU had no order line in the range (or was typed as a different value,
+    such as a number that lost leading zeros), not a lost match.
+    """
+    db = FakeDb()
+    db["sheets_item_sku_index"].documents = {
+        "seller-1:IDX-1:MLA3": _sku_index_doc("seller-1", "Idx-1", "MLA3"),
+        "seller-1:VAR-RED:MLA4:11": _sku_index_doc(
+            "seller-1", "var-red", "MLA4", variation_id="11"
+        ),
+        "seller-1:VAR-BLUE:MLA4:12": _sku_index_doc(
+            "seller-1", "var-blue", "MLA4", variation_id="12"
+        ),
+    }
+    shapes = [
+        {"item_id": "MLA1", "sku": " direct-1 ", "qty": 1, "unit_price": 10},
+        {"item_id": "MLA2", "seller_sku": "Seller-2", "qty": 2, "unit_price": 20},
+        {"item_id": "MLA5", "seller_custom_field": "custom-5", "qty": 1, "unit_price": 50},
+        {"item_id": "MLA3", "qty": 3, "unit_price": 30},
+        {"item_id": "MLA4", "variation_id": "12", "qty": 4, "unit_price": 40},
+        {"item_id": "MLA6", "sku": "12345", "qty": 1, "unit_price": 60},
+    ]
+    db["orders"].documents = {
+        f"order-{index}": _order_doc(
+            f"order-{index}",
+            seller_id="seller-1",
+            status="paid",
+            buyer_id=f"buyer-{index}",
+            date_created=datetime(2026, 10, 1 + index, 8, 0, tzinfo=UTC),
+            total_amount=10,
+            items=[item],
+        )
+        for index, item in enumerate(shapes)
+    }
+    dispatcher = _order_question_dispatcher(db)
+    week = {"fecha_inicial": "2026-10-01", "fecha_final": "2026-10-07", "estado": "todos"}
+
+    ordenes = await dispatcher.execute(_context("ZELERDATA_ORDENES", week))
+    skus = [row[3] for row in ordenes.values]
+    assert skus == ["DIRECT-1", "SELLER-2", "CUSTOM-5", "IDX-1", "VAR-BLUE", "12345"]
+
+    for sku in skus:
+        # A SKU typed in a cell can arrive as a number; it is the same SKU.
+        requested: Any = int(sku) if sku.isdecimal() else sku.lower()
+        result = await dispatcher.execute(
+            _context("ZELERDATA_ORDENESPORSKU", {**week, "skus": [[requested]]})
+        )
+        assert result.values == [row for row in ordenes.values if row[3] == sku]
+
+
+@pytest.mark.asyncio
 async def test_ordenes_por_sku_enriches_canonical_order_items_from_seller_sku_index() -> None:
     db = FakeDb()
     db["sheets_item_sku_index"].documents = {

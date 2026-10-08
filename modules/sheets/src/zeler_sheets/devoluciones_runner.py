@@ -9,13 +9,17 @@ onboarding admits independent bounded runs only under persisted account-link
 policy; it revalidates seller, eligibility, source, cutoff and durable budget.
 Both paths retain the existing fenced lease, exact window and joint readback
 guarantees. Automatic policy does not re-authorize terminal operator runs.
+
+With history on link off, a paused pilot plan cannot authorize its runs, so the
+loop ignores them and extends certified coverage with one ordinary bounded tail
+run per day instead (L-036: a paused pilot must not hold ordinary work).
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, cast
 
 import httpx
@@ -31,7 +35,7 @@ from zeler_platform_core.devoluciones_readiness import (
 from zeler_platform_core.devoluciones_readiness import (
     finish_devoluciones_operation as _finish_onboarding_operation,
 )
-from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION
+from zeler_platform_core.devoluciones_runs import RUNS_COLLECTION, WINDOW_DAYS, RunBinding
 from zeler_platform_core.devoluciones_runs import MongoRunWindowRepository as _OnboardingRepository
 from zeler_platform_core.history_onboarding import history_execution_allowed, history_request_trace
 from zeler_sheets.formulas.pacing import (
@@ -44,9 +48,14 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "ADVANCEABLE_RUN_STATES",
+    "ORDINARY_TAIL_AUTHORIZATION",
     "advance_due_devoluciones_run",
     "admit_onboarding_devoluciones",
+    "admit_ordinary_devoluciones_tail",
     "advance_onboarding_devoluciones",
+    "advance_ordinary_devoluciones_tail",
+    "ordinary_tail_binding",
+    "ordinary_tail_bounds",
     "renew_devoluciones_marker_if_proven",
 ]
 
@@ -71,33 +80,39 @@ async def advance_due_devoluciones_run(
     now: Callable[[], datetime] | None = None,
     advance: Callable[..., Awaitable[dict[str, int]]] | None = None,
     advance_enabled: bool = True,
+    history_work_enabled: bool = True,
+    admit_tail: Callable[..., Awaitable[str | None]] | None = None,
 ) -> bool:
     """Advance at most one due DEVOLUCIONES window for ``seller_id``.
 
-    Returns ``True`` only when an authorized run was handed to the advancer, so
-    the refresh cycle can report whether it did operational work. Missing,
-    expired, foreign, or not-yet-due runs return ``False`` without touching the
-    source or creating anything.
+    Returns ``True`` only when a run was handed to the advancer, so the refresh
+    cycle can report whether it did operational work. Missing, expired,
+    foreign, or not-yet-due runs return ``False`` without touching the source.
 
     ``advance_enabled`` gates only source work. The marker renewal below is
     always attempted: it never calls Mercado Libre and only restores a proof
     whose fingerprint still matches the settled run.
+
+    With ``history_work_enabled`` off, pilot (``onboarding:``) runs are
+    ignored: their paused plan cannot authorize them, and they must not hold
+    the single advancement slot. When nothing else is due, the cycle admits the
+    ordinary daily tail that the pilot's incremental run used to provide.
     """
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
     if not advance_enabled:
         await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
         return False
-    run = await db[RUNS_COLLECTION].find_one(
-        {
-            "seller_id": str(seller_id),
-            "scope": "devoluciones",
-            "state": {"$in": sorted(ADVANCEABLE_RUN_STATES)},
-            "expires_at": {"$gt": current},
-            "$or": [{"not_before": {"$exists": False}}, {"not_before": {"$lte": current}}],
-        },
-        sort=[("created_at", -1)],
-    )
+    query: dict[str, Any] = {
+        "seller_id": str(seller_id),
+        "scope": "devoluciones",
+        "state": {"$in": sorted(ADVANCEABLE_RUN_STATES)},
+        "expires_at": {"$gt": current},
+        "$or": [{"not_before": {"$exists": False}}, {"not_before": {"$lte": current}}],
+    }
+    if not history_work_enabled:
+        query["authorization_id"] = {"$not": {"$regex": "^onboarding:"}}
+    run = await db[RUNS_COLLECTION].find_one(query, sort=[("created_at", -1)])
     if not isinstance(run, dict) or not str(run.get("_id") or "").strip():
         # No window is due. The settled run's marker still has to outlive the
         # 30-minute lease, and the finalize only runs once, so the same cycle
@@ -106,13 +121,20 @@ async def advance_due_devoluciones_run(
         # readiness without publishing a replacement (for example an ``orders``
         # recovery job, which takes the same lease).
         await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
-        return False
-
-    # Existing independent proofs must get an opportunity even while a new
-    # run has work on every refresh tick, or when that source attempt fails.
-    # Renew before source work so a slow/failing upstream cannot starve history.
-    await _renew_active_before_advance(db, seller_id, clock)
-    run_id = str(run["_id"])
+        if history_work_enabled:
+            return False
+        tail_id = await (admit_tail or admit_ordinary_devoluciones_tail)(
+            db, str(seller_id), now=clock
+        )
+        if tail_id is None:
+            return False
+        run_id = tail_id
+    else:
+        # Existing independent proofs must get an opportunity even while a new
+        # run has work on every refresh tick, or when that source attempt fails.
+        # Renew before source work so a slow/failing upstream cannot starve history.
+        await _renew_active_before_advance(db, seller_id, clock)
+        run_id = str(run["_id"])
     if advance is None:
         advance = _runtime_advance
     await advance(db=db, run_id=run_id, now=clock)
@@ -142,6 +164,8 @@ async def _renew_active_before_advance(
 async def _runtime_advance(*, db: Any, run_id: str, now: Any = None) -> dict[str, int]:
     """Keep operator CLI authority separate from automatic product policy."""
     run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+    if isinstance(run, Mapping) and run.get("authorization_id") == ORDINARY_TAIL_AUTHORIZATION:
+        return await advance_ordinary_devoluciones_tail(db, run_id, now=now)
     if isinstance(run, Mapping) and str(run.get("authorization_id", "")).startswith("onboarding:"):
         from infra.operations.zelerdata_read_model_reconcile import (
             create_runtime_historical_meli_gateways,
@@ -1093,3 +1117,188 @@ async def advance_onboarding_devoluciones(
     if failure_reason is not None:
         result["reason"] = failure_reason
     return result
+
+
+# Ordinary forward tail. The pilot's incremental claims run was the only thing
+# extending certified coverage; with the pilot paused, coverage froze and every
+# current DEVOLUCIONES range became unavailable (2026-10-07). The tail runs only
+# with history on link off, so it never competes with a live pilot plan.
+ORDINARY_TAIL_AUTHORIZATION = "refresh-tail:v1"
+ORDINARY_TAIL_COHORT = "zelerdata-refresh-tail-v1"
+# Claims created just before midnight need a moment to appear in the search.
+ORDINARY_TAIL_SETTLE = timedelta(hours=1)
+# One partition window per run keeps each run inside the existing call budget.
+ORDINARY_TAIL_MAX = timedelta(days=WINDOW_DAYS)
+
+
+def ordinary_tail_bounds(
+    coverage_end: datetime | None, *, now: datetime
+) -> tuple[datetime, datetime] | None:
+    """Return the next unacquired interval up to the last settled UTC midnight.
+
+    The tail only moves forward from the newest certified interval. It never
+    starts without certified coverage: initial acquisition stays with the
+    operator or the onboarding policy.
+    """
+    if coverage_end is None:
+        return None
+    start = _onboarding_utc(coverage_end)
+    settled = _onboarding_utc(now) - ORDINARY_TAIL_SETTLE
+    end = min(datetime.combine(settled.date(), time.min, tzinfo=UTC), start + ORDINARY_TAIL_MAX)
+    return (start, end) if start < end else None
+
+
+def ordinary_tail_binding(
+    seller_id: str, start: datetime, end: datetime, *, admitted_on: date
+) -> RunBinding:
+    # The admission day is part of the identity, so a failed or expired run is
+    # retried at most once per UTC day instead of on every cycle.
+    return RunBinding(
+        authorization_id=ORDINARY_TAIL_AUTHORIZATION,
+        cohort_id=ORDINARY_TAIL_COHORT,
+        seller_id=seller_id,
+        scope="devoluciones",
+        start=start,
+        end=end,
+        partition_version="v1",
+        release_fingerprints={"admitted_on": admitted_on.isoformat()},
+    )
+
+
+async def admit_ordinary_devoluciones_tail(
+    db: Any, seller_id: str, *, now: Callable[[], datetime] | None = None
+) -> str | None:
+    """Admit the ordinary tail run, or return ``None`` when none is due."""
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+
+    current = _onboarding_utc((now or (lambda: datetime.now(UTC)))())
+    control = await coverage_control(db, seller_id)
+    if (
+        control.get("coverage_mode") != "active"
+        or control.get("coverage_ack_fence") != control.get("fence")
+        or type(control.get("coverage_epoch")) is not int
+    ):
+        return None
+    latest = await db[CERTIFICATES].find_one(
+        {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
+        sort=[("date_to", -1)],
+    )
+    bounds = ordinary_tail_bounds(
+        latest.get("date_to") if isinstance(latest, Mapping) else None, now=current
+    )
+    if bounds is None:
+        return None
+    binding = ordinary_tail_binding(seller_id, *bounds, admitted_on=current.date())
+    if await db[RUNS_COLLECTION].find_one({"_id": binding.run_id}) is not None:
+        return None
+    operation = await _acquire_onboarding_operation(
+        db=db,
+        seller_id=seller_id,
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("refresh_tail_admit", binding.run_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=binding.run_id,
+        invalidate_readiness=False,
+        require_coverage_compatible=True,
+    )
+    try:
+        if not await _OnboardingRepository(db).create(
+            binding, operation=operation, created_at=current
+        ):
+            raise RuntimeError("ordinary tail admission failed")
+    except Exception:
+        await _finish_onboarding_operation(
+            db=db, operation=operation, succeeded=False, error_code="refresh_tail_admission_failed"
+        )
+        raise
+    await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    logger.info(
+        "zelerdata.devoluciones_tail_admitted",
+        seller_id=seller_id,
+        run_id=binding.run_id,
+        start=binding.start.isoformat(),
+        end=binding.end.isoformat(),
+    )
+    return str(binding.run_id)
+
+
+async def advance_ordinary_devoluciones_tail(
+    db: Any, run_id: str, *, now: Callable[[], datetime] | None = None
+) -> dict[str, int]:
+    """Advance one tail window through the ordinary runtime gateway."""
+    from infra.operations.zelerdata_read_model_reconcile import (
+        _finalize_devoluciones_quota_run,
+        advance_devoluciones_quota_run,
+        execute_devoluciones_quota_window,
+        readback_devoluciones_quota_run,
+    )
+
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+
+    clock = now or (lambda: datetime.now(UTC))
+
+    async def readback(**kwargs: Any) -> Mapping[str, Any]:
+        return await readback_devoluciones_quota_run(db=db, **kwargs)
+
+    run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+    if not isinstance(run, Mapping) or run.get("authorization_id") != ORDINARY_TAIL_AUTHORIZATION:
+        raise ValueError("run is not an ordinary tail run")
+    operation = await _acquire_onboarding_operation(
+        db=db,
+        seller_id=str(run["seller_id"]),
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("refresh_tail_advance", run_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=run_id,
+        invalidate_readiness=False,
+        require_coverage_compatible=True,
+    )
+
+    async def execute(*, window: Mapping[str, Any], **_: Any) -> dict[str, Any]:
+        # No source override: the window uses the ordinary runtime gateway and
+        # the existing per-window physical attempt ledger.
+        return await execute_devoluciones_quota_window(
+            db=db, window=window, operation=operation, now=clock
+        )
+
+    try:
+        outcome = await advance_devoluciones_quota_run(
+            db=db,
+            run_id=run_id,
+            operation=operation,
+            now=clock,
+            source=execute,
+            readback=readback,
+        )
+        advanced = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+        if (
+            outcome.get("advanced")
+            and isinstance(advanced, Mapping)
+            and advanced.get("state") == "active"
+            and int(advanced.get("next_window_index", 0)) >= int(advanced.get("window_count", 1))
+        ):
+            # A one-window run expires 1070 s after admission, but the next
+            # cycle arrives only after this cycle's work plus the 900 s
+            # interval. Finalization makes no source calls, so publish now
+            # instead of letting the tail expire unfinalized on busy cycles.
+            finalized = await _finalize_devoluciones_quota_run(
+                db=db, run=advanced, operation=operation, current=clock(), readback=readback
+            )
+            outcome = {"advanced": outcome["advanced"], "finalized": finalized["finalized"]}
+    except Exception:
+        await _finish_onboarding_operation(
+            db=db,
+            operation=operation,
+            succeeded=False,
+            error_code="refresh_tail_advancement_failed",
+        )
+        raise
+    await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    return outcome

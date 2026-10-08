@@ -1463,9 +1463,20 @@ async def test_refresh_builder_renews_devoluciones_even_with_advancement_disable
     calls: list[dict[str, Any]] = []
 
     async def runner(
-        db: Any, seller_id: str, *, advance_enabled: bool = True, now: Any = None
+        db: Any,
+        seller_id: str,
+        *,
+        advance_enabled: bool = True,
+        history_work_enabled: bool = True,
+        now: Any = None,
     ) -> bool:
-        calls.append({"seller_id": seller_id, "advance_enabled": advance_enabled})
+        calls.append(
+            {
+                "seller_id": seller_id,
+                "advance_enabled": advance_enabled,
+                "history_work_enabled": history_work_enabled,
+            }
+        )
         return False
 
     monkeypatch.setattr(consumer_module, "advance_due_devoluciones_run", runner)
@@ -1473,11 +1484,14 @@ async def test_refresh_builder_renews_devoluciones_even_with_advancement_disable
     monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", "82453304")
     monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
     monkeypatch.delenv("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED", raising=False)
+    monkeypatch.delenv("ZELERDATA_HISTORY_ON_LINK_ENABLED", raising=False)
 
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     await supervisor.run_cycle()
 
-    assert calls == [{"seller_id": "82453304", "advance_enabled": False}]
+    assert calls == [
+        {"seller_id": "82453304", "advance_enabled": False, "history_work_enabled": False}
+    ]
 
 
 @pytest.mark.asyncio

@@ -684,8 +684,8 @@ class ZelerDataRefreshSupervisor:
             if self._devoluciones_runner is not None:
                 try:
                     # DEVOLUCIONES is absorbed into this loop (Q2-b/Q7-a). The
-                    # runner only advances a run an operator already authorized;
-                    # it never creates or widens coverage.
+                    # runner advances an authorized run; with history on link
+                    # off it may admit one bounded forward tail of coverage.
                     if await self._devoluciones_runner(seller_id):
                         admitted = True
                 except Exception:  # noqa: BLE001 - one model must not stop the loop

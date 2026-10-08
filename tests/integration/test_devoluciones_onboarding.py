@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -22,7 +23,9 @@ from zeler_platform_core.devoluciones_certificates import (
 )
 from zeler_sheets.devoluciones_runner import (
     ONBOARDING_PLANS_COLLECTION,
+    ORDINARY_TAIL_AUTHORIZATION,
     admit_onboarding_devoluciones,
+    advance_due_devoluciones_run,
     advance_onboarding_devoluciones,
 )
 
@@ -391,3 +394,49 @@ async def test_standing_incremental_charge_works_after_initial_budget_is_spent(
     final = await advance_onboarding_devoluciones(db, plan, start=start, end=end, gateway=gateway)
     assert final["state"] == "completed"
     assert await db[CERTIFICATES].count_documents({}) == 1
+
+
+@pytest.mark.asyncio
+async def test_paused_pilot_coverage_is_extended_by_the_ordinary_tail(
+    onboarding_claims_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    db = onboarding_claims_db
+    plan = await seed_plan(db)
+    today = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC)
+    start = today - timedelta(days=12)
+    await acquire_unit(db, plan, start, EmptyGateway())
+    await db[ONBOARDING_PLANS_COLLECTION].update_one({"_id": "999"}, {"$set": {"state": "paused"}})
+    charged = (await db[ONBOARDING_PLANS_COLLECTION].find_one({"_id": "999"}))["budget"]
+    source = EmptyGateway()
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=source),
+    )
+
+    assert await advance_due_devoluciones_run(db, "999", history_work_enabled=False) is True
+
+    tail = await db.sheets_devoluciones_runs.find_one(
+        {"authorization_id": ORDINARY_TAIL_AUTHORIZATION}
+    )
+    assert tail is not None and tail["state"] == "completed"
+    assert tail["start"] == start + timedelta(days=10)
+    assert source.attempts > 0
+    now = datetime.now(UTC)
+    settled = datetime.combine((now - timedelta(hours=1)).date(), time.min, tzinfo=UTC)
+    assert tail["end"] == settled
+    covering = await select_covering_proofs(db, "999", start, settled, now)
+    assert len(covering.proofs) == 2
+    # The paused plan is never charged for ordinary work.
+    stored = await db[ONBOARDING_PLANS_COLLECTION].find_one({"_id": "999"})
+    assert stored["budget"] == charged and stored["state"] == "paused"
+    # Coverage now reaches the settled midnight: nothing else is due today.
+    assert await advance_due_devoluciones_run(db, "999", history_work_enabled=False) is False
+    assert (
+        await db.sheets_devoluciones_runs.count_documents(
+            {"authorization_id": ORDINARY_TAIL_AUTHORIZATION}
+        )
+        == 1
+    )

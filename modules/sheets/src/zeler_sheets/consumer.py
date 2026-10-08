@@ -1808,6 +1808,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     # alarm an operator. The reporter holds dedup state for the worker's life;
     # the evaluator only reads durable markers and never acquires from Meli.
     devoluciones_advance = _env_flag_enabled("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED")
+    history_work_enabled = _env_flag_enabled("ZELERDATA_HISTORY_ON_LINK_ENABLED")
     alert_reporter = FreshnessAlarmReporter()
     expected_models = refresh_owned_read_models(
         observed_models=OBSERVED_READ_MODEL_SOURCES,
@@ -1878,13 +1879,17 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             db, seller_id
         ),
         # DEVOLUCIONES moved off its own systemd timer into this loop (Q2-b,
-        # Q7-a). The runner only advances an already-authorized run; it never
-        # creates one, so the operator authorization boundary is unchanged. The
-        # renewal inside it always runs, because a settled proof must stay
-        # productive between authorizations without any source work.
+        # Q7-a). With history on link on, the runner only advances an
+        # already-authorized run. With it off, pilot runs are ignored and the
+        # runner admits one ordinary forward tail per day, so a paused pilot
+        # cannot freeze coverage (L-036). The renewal inside it always runs,
+        # because a settled proof must stay productive without source work.
         devoluciones_runner=(
             lambda seller_id: advance_due_devoluciones_run(
-                db, seller_id, advance_enabled=devoluciones_advance
+                db,
+                seller_id,
+                advance_enabled=devoluciones_advance,
+                history_work_enabled=history_work_enabled,
             )
         ),
         precalculated_warmer=precalculated_warmer,

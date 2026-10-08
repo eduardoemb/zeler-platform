@@ -129,7 +129,44 @@ action (`infra.operations.devoluciones_quota_authorize`). The real advancement
 keeps the existing lease, 10-day window bound, and readback guarantees.
 
 The absorbed trigger is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
-Turn it on only after an operator-authorized run exists for the pilot.
+Turn it on only after an operator-authorized run exists for the pilot, or to run
+the ordinary tail below.
+
+#### Ordinary tail while history on link is off (2026-10-07)
+
+A seller in certificate mode (`coverage_mode=active`, the pilot since
+2026-10-02) is read only through `sheets_devoluciones_certificates`. Only an
+acquisition extends them. Until 2026-10-07 the only automatic acquisition was
+the history pilot's incremental claims run, so pausing the pilot froze coverage
+at its last run (2026-10-06T06:52Z) and every current DEVOLUCIONES range
+returned `DATA_UNAVAILABLE`. The legacy marker that expired at 07:22Z was
+written by that run's finalize; nothing renews it in certificate mode, and the
+reader does not use it there.
+
+Same principle as L-036: a paused pilot must not hold ordinary work. With
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true` and
+`ZELERDATA_HISTORY_ON_LINK_ENABLED` off, each cycle:
+
+1. ignores `onboarding:` runs, which the paused plan cannot authorize;
+2. advances any other due run, as before;
+3. otherwise admits one ordinary run (`authorization_id=refresh-tail:v1`) from
+   the newest certificate's `date_to` in the current epoch up to the last UTC
+   midnight at least one hour old, capped at one 10-day window;
+4. acquires it through the ordinary runtime gateway with the existing
+   per-window physical attempt ledger and finalizes it in the same invocation,
+   publishing its certificate.
+
+Finalizing at once matters: a one-window run expires 1,070 s after admission,
+but the next cycle arrives only after the cycle's own work plus 900 s. The
+finalize step is a local readback with no source calls.
+
+The admission day is part of the run identity, so a failed or expired tail is
+retried at most once per UTC day. A longer gap catches up one 10-day window per
+cycle. The tail never starts without certified coverage and never re-acquires a
+stale interval; those remain operator runs. With history on link on, nothing
+changes: the pilot owns the incremental run. DEVOLUCIONES therefore answers
+ranges that end on the previous UTC day or earlier. A range that includes today
+needs coverage up to tomorrow 00:00 UTC and stays unavailable by design.
 
 #### Renewing a settled marker
 
@@ -167,7 +204,8 @@ instead of looking identical to a healthy one.
 The renewal is **not** gated by `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED`. That
 flag gates source work only; the renewal is a local read and runs every cycle
 for every refresh seller, which is what carries a settled proof across the
-30-minute lease.
+30-minute lease. In certificate mode the same call renews due certificates
+instead of the legacy marker; renewal never extends coverage to new days.
 
 ## Precalculated heavy formulas
 
@@ -207,7 +245,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_INVENTORY_REFRESH_MINUTES` | `10` | Minutes between inventory discoveries. |
 | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `false` | Spaced catalog-product sweep. |
 | `ZELERDATA_CATALOG_REFRESH_HOURS` | `3` | Hours from the end of one catalog pass to the next. |
-| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop. |
+| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop; with history on link off, also admit the ordinary daily tail. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
 | `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
@@ -231,8 +269,10 @@ queries, which is the split agreed after a production write aborted with
   stop the rest of the cycle.
 - Explicit stop: the loop is a co-resident poller in the worker, so it stops with
   the worker and can be disabled without a deploy by setting the flag.
-- DEVOLUCIONES stays inside the operator authorization boundary: the loop never
-  creates or expands coverage, and the legacy systemd timer is superseded.
+- DEVOLUCIONES stays inside an explicit authorization boundary: the loop only
+  advances operator or pilot runs, plus, with history on link off, one bounded
+  forward tail per day from existing certified coverage. The legacy systemd
+  timer is superseded.
 - The DLQ archive stays evidence-based: a message is only removed when a
   reconciled marker already covers its window or it is past retention, the
   sanitized record is written before the ack, and everything else is requeued

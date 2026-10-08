@@ -157,6 +157,39 @@ An absent, expired, malformed, non-enclosing, ambiguous, or drifted joint marker
 returns stable `DATA_UNAVAILABLE`. Formula execution must not query
 MercadoLibre, widen coverage, or synthesize returned quantities.
 
+A seller in certificate mode (the pilot since 2026-10-02) is read through
+`sheets_devoluciones_certificates` instead of the marker, and the certificates
+must cover `[fecha_inicio 00:00Z, fecha_final + 1 day 00:00Z)` without a gap. A
+range that includes today is therefore unavailable by design. While history on
+link is off, the refresh loop extends coverage once per day up to the last UTC
+midnight; see [ZelerData refresh](zelerdata-refresh.md#ordinary-tail-while-history-on-link-is-off-2026-10-07).
+
+### Range decisions (2026-10-07)
+
+The 52-formula probe of 2026-10-07 left three range results that are not defects:
+
+- `ZELERDATA_PREGUNTAS` and `ZELERDATA_PREGUNTASKPI` with 30 days: correct as
+  is. The gate is strict on purpose: a KPI over a partially covered range would
+  be a wrong number presented as complete, and the history-on-link
+  specification requires API, Apps Script and user to recognize partial output
+  before any formula returns it. After a refresh outage, the daily sweep covers
+  7 days and the 90-day sweep runs only on Mondays from 03:00 UTC, so a longer
+  range becomes available again after the next Monday sweep. An opt-in partial
+  table, like `ZELERDATA_ORDENES` `_allow_partial`, stays a possible follow-up.
+- `ZELERDATA_COMPRADORES` has no date range. It reads the requested order IDs
+  and fails when any of them is missing from the read model or is a productive
+  order whose shipment identity is unavailable. With IDs taken from a 30-day
+  ORDENES output, the likely cause is an older order without that identity;
+  the error metadata names `order_ids` for the first case and a date range for
+  the second. Missing receiver addresses alone return a partial table with
+  recovery, not `DATA_UNAVAILABLE`.
+- `ZELERDATA_ORDENESPORSKU` returning no rows while `ZELERDATA_ORDENES` returns
+  rows is a probe artifact, not a defect. Both read the same certified orders
+  and resolve SKUs the same way, and a regression test checks that every SKU in
+  the ORDENES SKU column selects exactly its rows. Probe it with a SKU taken
+  from the ORDENES output for the same range. A SKU with leading zeros typed
+  into a numeric cell arrives without them and cannot match.
+
 `ID Carrito` is an order-formula-only column in `ZELERDATA_ORDENES` and `ZELERDATA_ORDENESPORSKU`. Values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing official MercadoLibre `orders.pack_id` values display as `NA`. Historical May rows can still show `NA` if persisted read models do not have `meli_pack_id`; any refresh/backfill for those rows requires separate operational authorization and is not part of this hotfix.
 
 ## Deferred formulas
