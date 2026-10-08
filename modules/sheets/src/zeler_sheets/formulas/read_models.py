@@ -184,6 +184,37 @@ def _item_association_evidence(source: dict[str, Any]) -> dict[str, Any]:
     return evidence
 
 
+# Canonical item documents are ~30 KB. A whole-inventory read must visit them in small
+# server batches and keep only evidence: decoding ~1.9k of them at once peaked near
+# 300 MB, which the worker's allocator never returned.
+ITEM_SOURCE_STREAM_BATCH = 20
+
+
+async def _stream_item_sources(
+    db: Any, seller_id: str, identities: Sequence[str], *, limit: int = 10001
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """Fingerprint each full item document and keep only its evidence.
+
+    Documents are fetched in small identity chunks so at most one chunk of full
+    documents is alive at a time.
+    """
+    fingerprints: dict[str, str] = {}
+    evidence: list[dict[str, Any]] = []
+    for start in range(0, len(identities), ITEM_SOURCE_STREAM_BATCH):
+        chunk = list(identities[start : start + ITEM_SOURCE_STREAM_BATCH])
+        sources = (
+            await db["items"]
+            .find({"seller_id": seller_id, "_id": {"$in": chunk}})
+            .to_list(length=len(chunk) + 1)
+        )
+        for source in sources:
+            fingerprints[str(source["_id"])] = item_source_fingerprint(source)
+            evidence.append(_item_association_evidence(source))
+        if len(evidence) >= limit:
+            break
+    return fingerprints, evidence
+
+
 @dataclass
 class _ItemReadFlight:
     task: asyncio.Task[_ItemReadCut]
@@ -205,15 +236,8 @@ class ItemReadAcquisitions:
             .sort([("item_id", 1), ("variation_id", 1), ("normalized_sku", 1), ("_id", 1)])
             .to_list(length=10001)
         )
-        sources = (
-            await self.db["items"]
-            .find({"seller_id": seller_id, "_id": {"$in": list(identities)}})
-            .to_list(length=10001)
-        )
-        fingerprints = {str(source["_id"]): item_source_fingerprint(source) for source in sources}
-        return _ItemReadCut(
-            rows, [_item_association_evidence(source) for source in sources], fingerprints
-        )
+        fingerprints, evidence = await _stream_item_sources(self.db, seller_id, identities)
+        return _ItemReadCut(rows, evidence, fingerprints)
 
     async def acquire(self, *, seller_id: str, item_ids: list[str]) -> _ItemReadCut:
         if self._closed:
@@ -853,22 +877,18 @@ class FormulaReadModelRepository:
             return result
         rows, _, missing_items, current = inventory
         trusted = {str(row["item_id"]): row["source_snapshot"] for row in rows}
-        sources = (
-            await self._db["items"]
-            .find({"seller_id": seller_id, "_id": {"$in": sorted(trusted)}})
-            .to_list(length=10001)
+        fingerprints, sources = (
+            await _stream_item_sources(self._db, seller_id, sorted(trusted))
             if trusted
-            else []
+            else ({}, [])
         )
         invalid = set(missing_items) | (set(trusted) - {str(row["_id"]) for row in sources})
         valid_sources = []
         for source in sources:
             identity = str(source["_id"])
-            if item_source_fingerprint(source) != trusted[identity][
-                "fingerprint"
-            ] or _safe_utc_datetime(source.get("last_meli_sync_at")) != _safe_utc_datetime(
-                trusted[identity]["observed_at"]
-            ):
+            if fingerprints[identity] != trusted[identity]["fingerprint"] or _safe_utc_datetime(
+                source.get("last_meli_sync_at")
+            ) != _safe_utc_datetime(trusted[identity]["observed_at"]):
                 invalid.add(identity)
             else:
                 valid_sources.append(source)
@@ -932,7 +952,9 @@ class FormulaReadModelRepository:
                 and observed is not None
                 and synced is not None
                 and now - timedelta(minutes=15) < observed <= now
-                and synced <= observed
+                # A periodic base re-sync only moves the item's observation cut, so
+                # the snapshot is judged by the fields it carries (product, title,
+                # quantity), not by whether the item was re-read after it.
                 and snapshot.get("_id") == f"{seller_id}:{identity}"
                 and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
                 and snapshot.get("catalog_product_id") == source["catalog_product_id"]

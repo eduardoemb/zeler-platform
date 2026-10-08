@@ -97,6 +97,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-038 | ZelerData | A paused pilot must not freeze certified DEVOLUCIONES coverage | active |
 | L-039 | ZelerData | Widening the seller scope must not widen pilots | active |
 | L-040 | ZelerData | Retire pre-v2 return rows the tail inventory omits | active |
+| L-041 | ZelerData | Bound whole-inventory reads and do not tie snapshots to the re-sync cut | active |
 
 ## Cloud Build and VM deployment
 
@@ -657,4 +658,19 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `tests/integration/test_devoluciones_onboarding.py`
   (tail quarantine, canonical fail-closed, pilot unchanged),
   `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
+- status: active
+
+### L-041 — Bound whole-inventory reads and do not tie snapshots to the re-sync cut
+- area: ZelerData worker memory and buybox freshness
+- proven path: Read canonical item documents for a whole inventory in small
+  identity chunks and keep only evidence and fingerprints. Judge a buybox
+  snapshot by its own age and the fields it carries, never by whether the item
+  was re-read after it.
+- failed path: `to_list` over every item document peaked near 312 MB for 1.9k
+  publications (7 MB kept); the worker's allocator never gave it back, so each
+  pass grew the process until the VM froze. The sweep rewrites every
+  `last_meli_sync_at`, so `synced <= observed` discarded 934 of 940 snapshots.
+- verification/source: `modules/sheets/tests/test_formula_read_memory_bounds.py`,
+  `modules/sheets/tests/test_formula_buybox_item_resync.py`,
+  `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
 - status: active

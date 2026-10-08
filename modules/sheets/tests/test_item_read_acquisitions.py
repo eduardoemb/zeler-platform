@@ -163,7 +163,8 @@ async def test_seven_concurrent_real_inventory_reads_share_19mb_acquisition(
         database.release.set()
         results = await asyncio.gather(*tasks)
     assert all(len(rows) == 2873 and missing == () for rows, missing in results)
-    assert database.source_reads == 1
+    # One shared acquisition reads the source in identity chunks, not once per caller.
+    assert database.source_reads == -(-1900 // read_models.ITEM_SOURCE_STREAM_BATCH)
     assert fingerprint_calls == 1900
     results[0][0][0]["current"]["nested"]["value"] = "changed"
     assert results[1][0][0]["current"]["nested"]["value"] == "original"

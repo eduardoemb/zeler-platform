@@ -192,6 +192,32 @@ The 52-formula probe of 2026-10-07 left three range results that are not defects
 
 `ID Carrito` is an order-formula-only column in `ZELERDATA_ORDENES` and `ZELERDATA_ORDENESPORSKU`. Values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing official MercadoLibre `orders.pack_id` values display as `NA`. Historical May rows can still show `NA` if persisted read models do not have `meli_pack_id`; any refresh/backfill for those rows requires separate operational authorization and is not part of this hotfix.
 
+## Partial results and worker memory (8 October 2026)
+
+Measured on a seller with about 1.9k publications before the spaced sweeps
+were switched off after the VM froze for about five hours.
+
+- **Whole-inventory reads are bounded.** `ItemReadAcquisitions` and the catalog
+  buybox verification fetch canonical item documents in chunks of 20 identities,
+  fingerprint each one and keep only its association evidence. Before, one
+  inventory read decoded every document at once: about 312 MB peak for 1.9k
+  documents of about 30 KB, of which about 7 MB was kept. The long-lived worker
+  never returned that fragmented memory, so each pass raised its size.
+  `modules/sheets/tests/test_formula_read_memory_bounds.py` asserts the peak and
+  that repeated inventory sweeps retain nothing. The sweep's own per-batch path
+  (20 publications at a time) was measured flat over six passes, so the growth
+  came from these whole-inventory reads.
+- **A base re-sync does not discard buybox snapshots.** The inventory sweep
+  rewrites every publication's `last_meli_sync_at`, so the reader's old
+  `synced <= observed` check dropped 934 of 940 snapshots. The reader now judges
+  a snapshot by the fields it carries (product, title, quantity), its own 15
+  minute age and its offers' age. A changed title, quantity or product still
+  discards it (`test_formula_buybox_item_resync.py`).
+- **Still open.** `resolve_item_history_sources` (stock-time and history
+  formulas) keeps full documents. Their formulas are out of scope here.
+  Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,
+  because the acquired-price proof is bound to the item's observation cut.
+
 ## Deferred formulas
 
 No active Seller Data formula is deferred currently. If a future active formula lacks a safe seller-scoped read model, it must remain documented here and return DATA_UNAVAILABLE until that read model exists.
