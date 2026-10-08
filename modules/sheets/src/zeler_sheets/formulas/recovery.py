@@ -17,6 +17,8 @@ from pymongo.errors import DuplicateKeyError
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
 
+from zeler_sheets.formulas.seller_scope import SellerGate, parse_seller_scope
+
 RECOVERABLE_MODELS = frozenset(
     {
         "questions",
@@ -47,14 +49,12 @@ class RecoveryCapacityError(ValueError):
     """The seller's bounded recovery admission slots are occupied."""
 
 
-def recovery_sellers(value: str | None) -> frozenset[str]:
-    """Runtime recovery is closed unless sellers are explicitly configured."""
-    if not value or not value.strip():
-        return frozenset()
-    sellers = frozenset(part.strip() for part in value.split(","))
-    if any(not seller.isascii() or not seller.isdecimal() for seller in sellers):
-        raise ValueError("formula recovery requires explicit numeric seller IDs")
-    return sellers
+def recovery_sellers(value: str | None) -> frozenset[str] | None:
+    """Runtime recovery is closed unless sellers are configured.
+
+    ``all`` returns ``None``: every eligible seller, checked on admission.
+    """
+    return parse_seller_scope(value, error="formula recovery requires explicit numeric seller IDs")
 
 
 @dataclass(frozen=True)
@@ -395,6 +395,7 @@ class FormulaRecoveryQueue:
         now: Callable[[], datetime] | None = None,
         enabled_models: frozenset[str] = RECOVERABLE_MODELS,
         allowed_sellers: frozenset[str] | None = None,
+        seller_gate: SellerGate | None = None,
         max_active_jobs_per_seller: int = 20,
         reserved_inventory_slots: int = 0,
         policy_authority: str | None = None,
@@ -413,6 +414,8 @@ class FormulaRecoveryQueue:
         self.now = now or (lambda: datetime.now(UTC))
         self.enabled_models = enabled_models
         self.allowed_sellers = allowed_sellers
+        # `all` mode: no allowlist, so admission checks the seller is eligible.
+        self.seller_gate = seller_gate
 
     async def ensure_indexes(self) -> None:
         await self.collection.create_index(
@@ -461,6 +464,8 @@ class FormulaRecoveryQueue:
             request, (ItemIdsRecoveryRequest, ItemInventoryRecoveryRequest, CatalogRecoveryRequest)
         ):
             raise ValueError("item recovery requires explicit IDs or an inventory request")
+        if self.seller_gate is not None and not await self.seller_gate(request.seller_id):
+            raise ValueError("recovery seller is not enabled")
         # Repeated cells need no admission write. Validate scope above even on this path.
         active_job = await self.collection.find_one(
             {

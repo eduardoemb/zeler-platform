@@ -20,13 +20,17 @@ from typing import Any
 
 import structlog
 
+from zeler_sheets.formulas.seller_scope import eligible_sellers
+
 logger = structlog.get_logger(__name__)
 
 __all__ = ["build_dlq_auto_archiver"]
 
 
-def build_dlq_auto_archiver(db: Any, *, sellers: frozenset[str]) -> Callable[[], Awaitable[Any]]:
-    """Return the per-cycle DLQ archive for the configured sellers."""
+def build_dlq_auto_archiver(
+    db: Any, *, sellers: frozenset[str] | None
+) -> Callable[[], Awaitable[Any]]:
+    """Return the per-cycle DLQ archive for the configured or eligible sellers."""
     from infra.operations.sheets_dlq_archive_runtime import (
         AioPikaArchiveBroker,
         load_reconciled_coverages,
@@ -37,10 +41,14 @@ def build_dlq_auto_archiver(db: Any, *, sellers: frozenset[str]) -> Callable[[],
     amqp_url = os.environ.get("RABBITMQ_URL")
     if not amqp_url:
         raise RuntimeError("RABBITMQ_URL is required when the DLQ auto-archive is enabled")
-    ordered_sellers = tuple(sorted(sellers))
+    ordered_sellers = tuple(sorted(sellers)) if sellers is not None else None
 
     async def archive_once() -> Any:
-        coverage = await load_reconciled_coverages(db, ordered_sellers)
+        # `all` mode: only the sellers eligible right now authorize removals.
+        archive_sellers = (
+            ordered_sellers if ordered_sellers is not None else await eligible_sellers(db)
+        )
+        coverage = await load_reconciled_coverages(db, archive_sellers)
         report = await run_archive(
             broker=AioPikaArchiveBroker(amqp_url),
             store=mongo_archive_store(db),

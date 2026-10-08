@@ -148,7 +148,10 @@ Formula recovery requires both `ZELERDATA_FORMULA_RECOVERY_ENABLED=true` and
 for the agreed pilot. Both services must use verified images containing this
 seller gate before activation. Missing/blank seller configuration admits and
 claims no jobs; malformed IDs or wildcards fail startup. Other sellers' queued
-jobs, including expired leases, remain untouched by the scoped worker.
+jobs, including expired leases, remain untouched by the scoped worker. The
+explicit value `all` admits every eligible seller instead; its eligibility rule,
+limits and activation order are in `docs/sheets/zelerdata-refresh.md`
+("All eligible sellers").
 
 Keep recovery disabled until compatible orders/shipments validators and the
 remaining rollout gates are verified. This allowlist does not replace admission

@@ -2,8 +2,9 @@
 
 The refresh never touches Mercado Libre on the formula path. It plans bounded
 recovery requests onto the existing durable queue, and the recovery worker
-performs the acquisition. Enabling is explicit per seller and every knob is a
-runtime flag so the loop can be stopped without a deploy.
+performs the acquisition. Enabling is explicit, for named sellers or every
+eligible one, and every knob is a runtime flag so the loop can be stopped
+without a deploy.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from zeler_sheets.formulas.recovery import (
     RecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
+from zeler_sheets.formulas.seller_scope import eligible_sellers, parse_seller_scope
 
 logger = structlog.get_logger(__name__)
 
@@ -105,14 +107,12 @@ DEFAULT_DAILY_HOUR_UTC = 3
 DEFAULT_FULL_WEEKDAY = 0  # Monday
 
 
-def refresh_sellers(value: str | None) -> frozenset[str]:
-    """Runtime refresh is closed unless sellers are explicitly configured."""
-    if not value or not value.strip():
-        return frozenset()
-    sellers = frozenset(part.strip() for part in value.split(","))
-    if any(not seller.isascii() or not seller.isdecimal() for seller in sellers):
-        raise ValueError("zelerdata refresh requires explicit numeric seller IDs")
-    return sellers
+def refresh_sellers(value: str | None) -> frozenset[str] | None:
+    """Runtime refresh is closed unless sellers are configured.
+
+    ``all`` returns ``None``: every eligible seller, rediscovered each cycle.
+    """
+    return parse_seller_scope(value, error="zelerdata refresh requires explicit numeric seller IDs")
 
 
 def reconciled_marker(
@@ -494,7 +494,7 @@ class MongoRefreshIdentitySource:
 
 
 class MongoSellerExplorer:
-    """Discover refreshable sellers from linked accounts, without extra flags."""
+    """Discover refreshable sellers: the explicit allowlist, or every eligible one."""
 
     def __init__(self, *, db: Any, allowed_sellers: frozenset[str] | None = None) -> None:
         self._db = db
@@ -503,16 +503,8 @@ class MongoSellerExplorer:
     async def discover_sellers(self) -> tuple[str, ...]:
         if self._allowed_sellers is not None:
             return tuple(sorted(self._allowed_sellers))
-        cursor = self._db["meli_accounts"].find(
-            {"status": "active"},
-            {"seller_id": 1},
-        )
-        sellers: set[str] = set()
-        async for row in cursor:
-            seller_id = str(row.get("seller_id") or "").strip()
-            if seller_id.isascii() and seller_id.isdecimal():
-                sellers.add(seller_id)
-        return tuple(sorted(sellers))
+        # Re-read every cycle so a paused or revoked seller drops out at once.
+        return await eligible_sellers(self._db)
 
 
 class ZelerDataRefreshSupervisor:
@@ -658,6 +650,7 @@ class ZelerDataRefreshSupervisor:
         return tuple(modes)
 
     async def run_cycle(self) -> bool:
+        started = self._monotonic()
         now = self._now().astimezone(UTC)
         modes = self._due_modes(now)
         sellers = await self._explorer.discover_sellers()
@@ -731,6 +724,13 @@ class ZelerDataRefreshSupervisor:
                     logger.warning("zelerdata.dlq_auto_archive_failed")
         if FULL_MODE in modes:
             self._last_full_date = now.date()
+        # Sellers share one recovery budget and run in sequence, so the cycle
+        # length is the capacity signal: it must stay well inside the interval.
+        logger.info(
+            "zelerdata.refresh_cycle_completed",
+            sellers=len(sellers),
+            elapsed_seconds=round(self._monotonic() - started, 3),
+        )
         self.health_status = "ok"
         self._cycle.set()
         return admitted

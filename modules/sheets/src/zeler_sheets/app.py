@@ -21,6 +21,7 @@ from zeler_sheets.formulas.recovery import (
     FormulaRecoveryQueue,
     recovery_sellers,
 )
+from zeler_sheets.formulas.seller_scope import SellerGate, seller_gate_for
 from zeler_sheets.google_oauth_router import build_router as build_google_oauth_router
 from zeler_sheets.sheets_config import SheetsSettings, get_settings
 
@@ -65,6 +66,7 @@ def build_app(
     claims_dlq_state: ClaimsDlqStateSource | None = None,
     formula_recovery_enabled: bool = False,
     formula_recovery_sellers: frozenset[str] | None = None,
+    formula_recovery_seller_gate: SellerGate | None = None,
 ) -> FastAPI:
     app = FastAPI(title="zeler-sheets")
     app.state.mongo_db = mongo_db
@@ -77,6 +79,7 @@ def build_app(
             enabled_models=IMPLEMENTED_MODELS,
             reserved_inventory_slots=1,
             allowed_sellers=formula_recovery_sellers,
+            seller_gate=formula_recovery_seller_gate,
         )
     if kms_client is not None:
         app.state.kms_client = kms_client
@@ -155,6 +158,9 @@ def make_app() -> FastAPI:
             return None
         return await claims_queue_state(rabbitmq_url=rabbitmq_url, queue_name=SHEETS_CLAIMS_DLQ)
 
+    formula_recovery_sellers = recovery_sellers(
+        os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")
+    )
     return build_app(
         mongo_db=mongo_db,
         rabbitmq_url=rabbitmq_url,
@@ -163,7 +169,7 @@ def make_app() -> FastAPI:
         claims_dlq_state=claims_state,
         formula_recovery_enabled=os.environ.get("ZELERDATA_FORMULA_RECOVERY_ENABLED", "").lower()
         in {"1", "true", "yes", "on"},
-        formula_recovery_sellers=recovery_sellers(
-            os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")
-        ),
+        formula_recovery_sellers=formula_recovery_sellers,
+        # `all`: a formula from any eligible seller may request recovery.
+        formula_recovery_seller_gate=seller_gate_for(mongo_db, formula_recovery_sellers),
     )

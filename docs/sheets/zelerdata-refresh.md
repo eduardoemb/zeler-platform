@@ -237,7 +237,7 @@ arrives disabled and must be enabled explicitly.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ZELERDATA_REFRESH_ENABLED` | `false` | Kill switch. Set `true` to enable the loop. |
-| `ZELERDATA_REFRESH_SELLERS` | — | Required numeric allowlist when enabled. |
+| `ZELERDATA_REFRESH_SELLERS` | — | Required when enabled: a numeric allowlist, or `all` (see [All eligible sellers](#all-eligible-sellers-all-mode)). |
 | `ZELERDATA_REFRESH_INTERVAL_SECONDS` | `900` | Fast-cycle interval. |
 | `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` | `180` | Reserved acquisition budget. |
 | `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` | `false` | Legacy every-cycle plan of all six models plus the inventory tick (L-021). |
@@ -291,3 +291,167 @@ uv run pytest modules/sheets/tests/test_zelerdata_refresh.py \
 Deployment: build and deploy the Sheets worker image, then set
 `ZELERDATA_REFRESH_ENABLED=true` on the worker and confirm
 `zelerdata_refresh` reports a healthy component status.
+
+## All eligible sellers (`all` mode)
+
+`ZELERDATA_REFRESH_SELLERS` and `ZELERDATA_FORMULA_RECOVERY_SELLERS` accept
+`all` as well as a numeric allowlist. The environment templates still ship the
+pilot allowlist, so nothing changes until an operator sets `all`.
+
+| Value | Refresh (worker) | Formula recovery (worker and API) |
+| --- | --- | --- |
+| empty or unset | Startup fails when refresh is enabled. | Closed: no seller is admitted. |
+| `82453304,...` | Exactly those sellers, as before. | Exactly those sellers, as before. |
+| `all` | Eligible sellers, rediscovered every cycle. | Any eligible seller; admission checks eligibility. |
+
+Startup rejects mixed values such as `all,82453304`.
+
+### Eligibility
+
+A seller is eligible when both conditions hold:
+
+1. Its `meli_accounts` document has `status` `active` or `refresh_pending`
+   (a token refresh in progress, which the gateway waits for). Sellers with
+   `paused`, `revoked`, `invalid_grant`, `error`, `invalid` or `pending` are
+   excluded.
+2. ZelerData is enabled for it: at least one `sheets_extension_tokens`
+   document is `active`, not deleted and not expired, and its `seller_scopes`
+   includes the seller. The module registry has no per-seller switch (the
+   `sheets` entry is global), so the extension token is the per-seller
+   signal. A linked seller that only uses ZelerPricing or ZelerSupport is not
+   refreshed.
+
+`eligible_sellers` in `modules/sheets/src/zeler_sheets/formulas/seller_scope.py`
+implements this rule. Refresh reads it again on every cycle. Recovery admission
+caches it for 30 seconds per process. Pausing a seller or revoking its last
+token removes it without a restart. A job that was already queued when its
+seller became ineligible goes to the gateway. The gateway answers 423
+`seller_paused` or 412 `account_not_active` without calling Mercado Libre, and
+the job ends `failed` with `source_rejected` and is not retried.
+
+The numeric allowlist does not check eligibility, so the pilot behaves exactly
+as before.
+
+### What `all` does not open
+
+- **The 12-month history pilot.** The legacy backfill
+  (`build_pilot_history_backfill`) creates a `sheets_history_backfill_plans`
+  document and up to twelve months of orders and questions for every seller it
+  sees, so `all` mode does not wire it. `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
+  `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED` and
+  `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED` require an explicit numeric
+  `ZELERDATA_FORMULA_RECOVERY_SELLERS`. With `all`, the worker fails at startup
+  and names the flag. History on link (`ZELERDATA_HISTORY_ON_LINK_*`) keeps its
+  own allowlist and is not affected.
+- **DEVOLUCIONES.** The daily tail runs only for sellers in certificate mode,
+  which is only the pilot today. A new seller without certificates gets no
+  returns acquisition.
+- **Refresh without recovery.** `ZELERDATA_REFRESH_SELLERS=all` requires
+  `ZELERDATA_FORMULA_RECOVERY_SELLERS=all`, otherwise startup fails. Refresh
+  would otherwise queue jobs that the recovery worker never claims.
+
+### Failure isolation
+
+- **Refresh cycle.** Each per-seller step (planning, observed markers,
+  DEVOLUCIONES, precalculated formulas, alarms) catches its own error. A 429,
+  a revoked token or a storage error for one seller is logged and the cycle
+  continues with the next seller. Only a failed discovery (Mongo unavailable)
+  fails the whole cycle. Three consecutive failures exhaust the restart budget.
+- **Recovery jobs.** A 429 or 5xx is retried after 30 s, then 60 s, up to three
+  attempts. Any other 4xx (423, 412, 401, 403) fails the job as
+  `source_rejected`, with a 15-minute cooldown. A local quota wait defers the
+  job without using an attempt. A job is capped at 240 s, and then its lane
+  claims the next job, whichever seller it belongs to.
+
+`modules/sheets/tests/test_zelerdata_all_sellers.py` covers both paths.
+
+### Limits and shared capacity
+
+| Resource | Scope | With N sellers |
+| --- | --- | --- |
+| Gateway proxy limit (600/min, `GATEWAY_PROXY_RATE_LIMIT`) | Per module and seller | Not shared. One seller's 429 does not affect the others. |
+| Recovery pacer (`ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE`, 180) | One per worker process, shared by every seller and lane | The total never exceeds 180/min, so no seller's gateway budget saturates. Sellers split it, about 180/N each under contention. It is fair across lanes, not across sellers. |
+| Recovery lanes (`inventory`, `ids`, `ranges`) | One job at a time per lane and worker | Three jobs at once in total, up to 240 s each. Claims are FIFO by `available_at` across sellers. |
+| Recovery queue | Up to 20 active jobs per seller | Shared collection with claim indexes. At most N × 20 active jobs. |
+| Refresh cycle | Sellers run one after another; the next cycle starts one interval after the previous one ends | Cycle duration grows linearly. Markers last two intervals (30 min). |
+| Mercado Libre application limits | Every seller shares the Zeler application | Not measured here. The pacer limits background traffic. |
+
+By default, scheduled refresh plans only orders and questions: the last hour
+every 15 minutes, 7 days once a day, and 90 days once a week. That costs a few
+requests per seller and cycle. Whole-seller sweeps multiply by the number of
+sellers, so keep them off at first in `all` mode. This includes
+`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` and any spaced inventory or catalog
+sweep. As a reference, an inventory sweep for a seller with about 1,900
+listings costs about 12 requests per minute. Roughly 15 sellers of that size
+would fill the 180 reservation with inventory alone.
+
+No new limit is needed now. The global 180/min reservation is the cap and
+protects the gateway. Every cycle logs `zelerdata.refresh_cycle_completed` with
+`sellers` and `elapsed_seconds`. Revisit capacity when:
+
+- a cycle takes more than about 5 minutes,
+- pending `ranges` jobs wait longer than one interval, or
+- freshness alarms fire for sellers whose refresh is healthy.
+
+The first options are to raise the reservation or to add claims that are fair
+across sellers. The reservation is global, so even 300 stays under each
+seller's 600 gateway quota. Check the Mercado Libre application limits before
+raising it.
+
+### Production activation
+
+Production changes run only from the main session, after this change is
+merged and with explicit authorization. An image without this change rejects
+`all` at startup, so the images go first and the variables change after them.
+
+1. **Images.** Build and deploy `sheets-worker` and `sheets-api` from `main`
+   without changing any variable. Behavior stays identical. Verify health and
+   that the pilot is still served.
+2. **Read-only preflight** (runtime container, sanitized output):
+   - Read the current values of `ZELERDATA_REFRESH_ENABLED`,
+     `ZELERDATA_REFRESH_SELLERS` and `ZELERDATA_FORMULA_RECOVERY_SELLERS` on
+     both services.
+   - Confirm that `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
+     `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED`,
+     `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED`,
+     `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED`,
+     `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` and
+     `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` are off.
+   - List the eligible sellers and confirm the pilot is among them. If the
+     pilot has no active extension token, it would stop being refreshed in
+     `all` mode. Run this inside `sheets-worker`; it prints only seller IDs:
+
+     ```bash
+     .venv/bin/python -c "
+     import asyncio, os
+     from motor.motor_asyncio import AsyncIOMotorClient
+     from zeler_sheets.formulas.seller_scope import eligible_sellers
+     async def main():
+         client = AsyncIOMotorClient(os.environ['MONGO_URI'])
+         print(await eligible_sellers(client[os.environ['MONGO_DB']]))
+         client.close()
+     asyncio.run(main())"
+     ```
+
+3. **Worker.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and, if refresh is
+   enabled, `ZELERDATA_REFRESH_SELLERS=all`. Restart only `sheets-worker`.
+   Verify:
+   - the `formula_recovery` and `zelerdata_refresh` components,
+   - delivery progress (L-027),
+   - `zelerdata.refresh_cycle_completed` with the expected `sellers`,
+   - jobs for every eligible seller reaching `completed`.
+4. **API.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and restart only
+   `sheets-api`. Verify `/health` and a `formula_recovery_admission` with
+   outcome `admitted` for a seller other than the pilot.
+
+Rollback reverses the order. Set the API back to `82453304` and restart it,
+then do the same for the worker. Change the variables before any image
+rollback. No data migration is involved. Jobs queued for other sellers stay
+`pending` and unclaimed while the allowlist is numeric. `ZELERDATA_REFRESH_ENABLED=false`
+remains the kill switch for the loop.
+
+Verification for this mode:
+
+```bash
+uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py
+```

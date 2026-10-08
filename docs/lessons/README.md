@@ -95,6 +95,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-036 | ZelerData | A paused pilot must release ordinary traffic | active |
 | L-037 | ZelerData | Size item and catalog sweeps to their readers' age limits | active |
 | L-038 | ZelerData | A paused pilot must not freeze certified DEVOLUCIONES coverage | active |
+| L-039 | ZelerData | Widening the seller scope must not widen pilots | active |
 
 ## Cloud Build and VM deployment
 
@@ -624,4 +625,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `modules/sheets/tests/test_devoluciones_ordinary_tail.py`,
   `tests/integration/test_devoluciones_onboarding.py`,
   `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
+- status: active
+
+### L-039 — Widening the seller scope must not widen pilots
+- area: ZelerData seller scope (`all` mode)
+- proven path: Before widening `ZELERDATA_REFRESH_SELLERS` or
+  `ZELERDATA_FORMULA_RECOVERY_SELLERS`, find every consumer of that allowlist.
+  Pilot-only work stays bound to named sellers and fails at startup otherwise.
+  Eligibility is an active or `refresh_pending` account plus an active
+  extension token for that seller, re-read every cycle.
+- failed path: The refresh supervisor always wired the legacy 12-month backfill,
+  which seeds a plan and 12 months of orders and questions for every seller the
+  explorer returns. Reusing the allowlist for `all` would have opened history
+  for everyone.
+- verification/source: `modules/sheets/tests/test_zelerdata_all_sellers.py`,
+  `docs/sheets/zelerdata-refresh.md` ("All eligible sellers"). Not yet
+  observed in production.
 - status: active

@@ -98,6 +98,7 @@ from zeler_sheets.formulas.refresh import (
     ZelerDataRefreshSupervisor,
     refresh_sellers,
 )
+from zeler_sheets.formulas.seller_scope import seller_gate_for
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
@@ -1707,6 +1708,7 @@ async def build_formula_recovery_poller(
         enabled_models=IMPLEMENTED_MODELS,
         reserved_inventory_slots=1,
         allowed_sellers=allowed_sellers,
+        seller_gate=seller_gate_for(db, allowed_sellers),
     )
     await recovery_queue.ensure_indexes()
     pacer = pacer or RecoveryRequestPacer(
@@ -1736,7 +1738,9 @@ async def build_formula_recovery_poller(
             db,
             enabled_models=frozenset({"orders"}),
             reserved_inventory_slots=1,
-            allowed_sellers=allowed_sellers,
+            allowed_sellers=_pilot_sellers(
+                allowed_sellers, "ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"
+            ),
         )
         await history_queue.ensure_indexes()
         history = HistoryOrdersWorker(
@@ -1754,7 +1758,9 @@ async def build_formula_recovery_poller(
             db,
             enabled_models=frozenset({"questions"}),
             reserved_inventory_slots=1,
-            allowed_sellers=allowed_sellers,
+            allowed_sellers=_pilot_sellers(
+                allowed_sellers, "ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED"
+            ),
         )
         await question_queue.ensure_indexes()
         questions = HistoryQuestionsWorker(
@@ -1771,25 +1777,45 @@ async def build_formula_recovery_poller(
         scan = ModificationScanWorker(
             ModificationScanStore(db, recovery_queue, now=lambda: datetime.now(UTC)),
             PacedMeliGateway(inner=discovery, pacer=pacer, lane="ranges"),
-            sellers=allowed_sellers,
+            sellers=_pilot_sellers(allowed_sellers, "ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED"),
         )
         lanes += (SyncJobsPollerSupervisor(scan, poll_interval=30),)
     return FormulaRecoverySupervisor(lanes)
 
 
+def _pilot_sellers(allowed: frozenset[str] | None, flag: str) -> frozenset[str]:
+    """Pilot history protocols never widen to `all`; they need named sellers."""
+    if allowed is None:
+        raise RuntimeError(
+            f"{flag} requires an explicit numeric ZELERDATA_FORMULA_RECOVERY_SELLERS list"
+        )
+    return allowed
+
+
 async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupervisor:
     """Build the scheduled ZelerData refresh from explicit runtime configuration.
 
-    Refresh stays closed unless enabled for named sellers. It also requires the
-    recovery worker, because refresh only plans work and never acquires data.
+    Refresh stays closed unless enabled for named sellers or `all` eligible
+    sellers. It also requires the recovery worker, because refresh only plans
+    work and never acquires data.
     """
     if not _env_flag_enabled("ZELERDATA_REFRESH_ENABLED"):
         raise RuntimeError("ZelerData refresh must be explicitly enabled")
     allowed = refresh_sellers(os.environ.get("ZELERDATA_REFRESH_SELLERS"))
-    if not allowed:
-        raise RuntimeError("ZELERDATA_REFRESH_SELLERS is required when refresh is enabled")
+    if allowed is not None and not allowed:
+        raise RuntimeError(
+            "ZELERDATA_REFRESH_SELLERS is required when refresh is enabled (numeric IDs or all)"
+        )
     if not _env_flag_enabled("ZELERDATA_FORMULA_RECOVERY_ENABLED"):
         raise RuntimeError("ZelerData refresh requires formula recovery to be enabled")
+    if allowed is None and (
+        recovery_sellers(os.environ.get("ZELERDATA_FORMULA_RECOVERY_SELLERS")) is not None
+    ):
+        # Refresh only plans. Jobs for sellers the recovery worker cannot claim
+        # would wait in the queue forever.
+        raise RuntimeError(
+            "ZELERDATA_REFRESH_SELLERS=all requires ZELERDATA_FORMULA_RECOVERY_SELLERS=all"
+        )
     raw_interval = os.environ.get("ZELERDATA_REFRESH_INTERVAL_SECONDS")
     try:
         interval = float(raw_interval) if raw_interval else REFRESH_DEFAULT_INTERVAL_SECONDS
@@ -1802,6 +1828,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
         enabled_models=IMPLEMENTED_MODELS,
         reserved_inventory_slots=1,
         allowed_sellers=allowed,
+        seller_gate=seller_gate_for(db, allowed),
     )
     await queue.ensure_indexes()
     # Q21-a: a model that stops refreshing, or a loop that keeps failing, must
@@ -1867,11 +1894,17 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             if scheduled_bulk or "item_formula_rows" in sweep_intervals
             else None
         ),
-        history_backfill=build_pilot_history_backfill(
-            db=db,
-            recovery_queue=queue,
-            order_history=_env_flag_enabled("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"),
-            question_history=_env_flag_enabled("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED"),
+        # The 12-month pilot backfill seeds a plan for every seller it sees, so
+        # it stays bound to named sellers and never runs in `all` mode.
+        history_backfill=(
+            build_pilot_history_backfill(
+                db=db,
+                recovery_queue=queue,
+                order_history=_env_flag_enabled("ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED"),
+                question_history=_env_flag_enabled("ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED"),
+            )
+            if allowed is not None
+            else None
         ),
         # Observed-only read models cannot be certified by a source range, so
         # the same cycle renews their heartbeat from the data already observed.
