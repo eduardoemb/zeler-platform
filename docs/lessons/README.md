@@ -96,6 +96,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-037 | ZelerData | Size item and catalog sweeps to their readers' age limits | active |
 | L-038 | ZelerData | A paused pilot must not freeze certified DEVOLUCIONES coverage | active |
 | L-039 | ZelerData | Widening the seller scope must not widen pilots | active |
+| L-040 | ZelerData | Retire pre-v2 return rows the tail inventory omits | active |
 
 ## Cloud Build and VM deployment
 
@@ -641,4 +642,19 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `modules/sheets/tests/test_zelerdata_all_sellers.py`,
   `docs/sheets/zelerdata-refresh.md` ("All eligible sellers"). Not yet
   observed in production.
+- status: active
+
+### L-040 — Retire pre-v2 return rows the tail inventory omits
+- area: ZelerData DEVOLUCIONES coverage
+- proven path: After source revalidation, the tail window archives the exact
+  BSON of each non-canonical `returns` row in range that its inventory omits,
+  then removes that row in the same fenced transaction. Keep canonical rows the
+  source omits, and operator runs, failing closed.
+- failed path: Narrowing only the final readback to complete v2 rows: certificate
+  publication and every certified read run `verify_devoluciones_read_model`,
+  which rejects that row, so finalization raised and the run stayed `active`.
+  An unchanged readback failed the tail once a day and froze coverage at 06-11.
+- verification/source: `tests/integration/test_devoluciones_onboarding.py`
+  (tail quarantine, canonical fail-closed, pilot unchanged),
+  `docs/sheets/zelerdata-refresh.md`. Not yet observed in production.
 - status: active
