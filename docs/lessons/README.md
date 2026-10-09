@@ -100,6 +100,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-041 | ZelerData | Bound whole-inventory reads and do not tie snapshots to the re-sync cut | active |
 | L-042 | VM deploy | Codify memory mitigations instead of leaving VM-only overlays | active |
 | L-043 | ZelerData | Re-check eligibility at claim and cap serial warming in `all` mode | active |
+| L-044 | ZelerData | Size reader age limits to on-demand acquisition and compare only stored fields | active |
 
 ## Cloud Build and VM deployment
 
@@ -708,4 +709,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `tests/operations/test_zelerdata_all_sellers_dry_run.py`,
   `docs/sheets/zelerdata-refresh.md` ("Scale analysis"). Capacity figures come
   from code, not production.
+- status: active
+
+### L-044 — Size reader age limits to on-demand acquisition and compare only stored fields
+- area: ZelerData buybox, quality and cost readers
+- proven path: Serve an on-demand acquisition (buybox, quality, costs) for as
+  long as one pass over the whole inventory can keep it (24 hours), guarded by
+  its basis fields and reported age; recover only absent, older or mismatched
+  ones. A base-change check compares only fields the canonical item stores.
+- failed path: A 15-minute limit on data that only formula recovery acquires,
+  in passes that take hours, left buybox 934/935, quality 1,896/1,896 and costs
+  on almost every row unavailable while each read re-requested a full pass. The
+  quality basis compared `pictures`, which `Item` never stores, so every base
+  re-sync invalidated every quality projection.
+- verification/source: `test_formula_buybox_item_resync.py`,
+  `test_layered_basic_acquisition.py`,
+  `test_formula_handlers_quality_calculator.py`,
+  `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
 - status: active
