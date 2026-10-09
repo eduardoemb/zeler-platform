@@ -30,6 +30,10 @@ services:
       - "--keyFile"
       - /etc/mongo/keyfile/rs0.key
       - "--bind_ip_all"
+      # Cap the WiredTiger cache (default ~1.44 GB on this VM). No mem_limit on
+      # purpose: a hard cgroup kill mid-write is worse than a bounded cache.
+      - "--wiredTigerCacheSizeGB"
+      - "0.75"
     networks:
       - platform_default
     ports:
@@ -56,6 +60,7 @@ services:
   # --------------------------------------------------------------------------
   caddy:
     <<: *restart
+    mem_limit: 128m
     image: caddy:2-alpine
     ports:
       - "80:80"
@@ -79,6 +84,7 @@ services:
   # --------------------------------------------------------------------------
   gateway:
     <<: *restart
+    mem_limit: 512m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/gateway:remove-user-allowlist-385af09
     networks:
       - platform_default
@@ -92,6 +98,7 @@ services:
   # --------------------------------------------------------------------------
   repricer-api:
     <<: *restart
+    mem_limit: 384m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-api:rollout-v5
     networks:
       - platform_default
@@ -102,6 +109,7 @@ services:
 
   sheets-api:
     <<: *restart
+    mem_limit: 512m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-api:items-enrich-dab2601
     networks:
       - platform_default
@@ -112,6 +120,7 @@ services:
 
   publicador-api:
     <<: *restart
+    mem_limit: 384m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/publicador-api:rollout-v5
     networks:
       - platform_default
@@ -122,6 +131,7 @@ services:
 
   autoreply-api:
     <<: *restart
+    mem_limit: 384m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-api:rollout-v5
     networks:
       - platform_default
@@ -135,6 +145,7 @@ services:
   # --------------------------------------------------------------------------
   bootstrap-dispatcher:
     <<: *restart
+    mem_limit: 256m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/bootstrap-dispatcher:pending-build
     entrypoint:
       - /app/.venv/bin/python
@@ -159,6 +170,7 @@ services:
 
   repricer-worker:
     <<: *restart
+    mem_limit: 384m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/repricer-worker:health-d908574
     networks:
       - platform_default
@@ -169,6 +181,7 @@ services:
 
   sheets-worker:
     <<: *restart
+    mem_limit: 1g
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/sheets-worker:sheets-dlq-fc4dde2
     networks:
       - platform_default
@@ -194,6 +207,7 @@ services:
 
   autoreply-worker:
     <<: *restart
+    mem_limit: 384m
     image: us-central1-docker.pkg.dev/zeler-platform-dev/zeler-platform/autoreply-worker:dlq-skip-d6b3029
     networks:
       - platform_default

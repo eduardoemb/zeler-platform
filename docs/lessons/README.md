@@ -98,6 +98,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-039 | ZelerData | Widening the seller scope must not widen pilots | active |
 | L-040 | ZelerData | Retire pre-v2 return rows the tail inventory omits | active |
 | L-041 | ZelerData | Bound whole-inventory reads and do not tie snapshots to the re-sync cut | active |
+| L-042 | VM deploy | Codify memory mitigations instead of leaving VM-only overlays | active |
 
 ## Cloud Build and VM deployment
 
@@ -202,6 +203,19 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `docs/ops/platform-vm-prevention-20260926.md` and its tested
   runtime configuration. The original failed and the candidate passed the same
   real-engine fixtures; production subsequently emitted structured events.
+- status: active
+
+### L-042 — Codify memory mitigations instead of leaving VM-only overlays
+- area: VM deploy and capacity
+- proven path: Carry emergency memory mitigations (container `mem_limit`, Mongo
+  `--wiredTigerCacheSizeGB`, host swap) into `infra/gce/docker-compose.yml` and
+  the startup script, with a contract test, then compare the rendered Compose
+  against the live overlays before the next deploy.
+- failed path: After the 2026-10-08 freeze, the limits, cache cap and swap
+  existed only as overlays under `/var/lib/zeler-platform/` on the VM. A deploy
+  from the base Compose would silently drop them and restore the unbounded state.
+- verification/source: `tests/test_gce_compose_contract.py` (limits, cache flag,
+  sandboxed idempotent swap step), `docs/deploy.md` §5a.1.
 - status: active
 
 ### L-019 — Bound optional quality retries and overlapping item jobs

@@ -4,6 +4,7 @@
 # Responsibilities:
 #   1. Install Docker Engine + Compose v2
 #   2. Configure Docker daemon log rotation
+#   2c. Provision a 2 GB /swapfile (fstab) and vm.swappiness=10
 #   3. Format & mount persistent data disk at /var/lib/zeler-mongo (ext4, nofail fstab)
 #   4. Chown /var/lib/zeler-mongo to UID 999:999 (mongo container user)
 #   5. Install Google Cloud Ops Agent (logging + metrics)
@@ -76,6 +77,40 @@ else
   echo "Docker daemon log rotation already configured in /etc/docker/daemon.json"
 fi
 rm -f "$DAEMON_JSON_TMP"
+
+# -------------------------------------------------------------------------
+# 2c. Host swap (2 GB) + low swappiness
+# -------------------------------------------------------------------------
+# e2-medium has ~3.9 GB of RAM. Swap absorbs short spikes so the guest does not
+# freeze (2026-10-08); per-container mem_limit lives in docker-compose.yml.
+SWAP_FILE=/swapfile
+SWAP_SIZE=2G
+FSTAB_FILE=/etc/fstab
+SWAP_SYSCTL_CONF=/etc/sysctl.d/99-zeler-swap.conf
+if [[ ! -f "$SWAP_FILE" ]]; then
+  # Build it aside so a failed run never leaves a non-swap file at $SWAP_FILE.
+  rm -f "$SWAP_FILE.tmp"
+  fallocate -l "$SWAP_SIZE" "$SWAP_FILE.tmp"
+  chmod 0600 "$SWAP_FILE.tmp"
+  mkswap "$SWAP_FILE.tmp"
+  mv "$SWAP_FILE.tmp" "$SWAP_FILE"
+  echo "Created $SWAP_SIZE swap file at $SWAP_FILE"
+fi
+if ! swapon --show=NAME --noheadings | grep -qxF "$SWAP_FILE"; then
+  swapon "$SWAP_FILE" || echo "WARNING: swapon $SWAP_FILE failed; continuing without swap"
+fi
+if ! grep -qE "^${SWAP_FILE}[[:space:]]" "$FSTAB_FILE"; then
+  echo "$SWAP_FILE none swap sw 0 0" >> "$FSTAB_FILE"
+  echo "Added fstab entry for $SWAP_FILE"
+fi
+SWAP_SYSCTL_TMP=$(mktemp)
+printf 'vm.swappiness=10\n' > "$SWAP_SYSCTL_TMP"
+if ! cmp -s "$SWAP_SYSCTL_TMP" "$SWAP_SYSCTL_CONF"; then
+  install -m 0644 "$SWAP_SYSCTL_TMP" "$SWAP_SYSCTL_CONF"
+  sysctl -p "$SWAP_SYSCTL_CONF"
+  echo "Set vm.swappiness=10 in $SWAP_SYSCTL_CONF"
+fi
+rm -f "$SWAP_SYSCTL_TMP"
 
 # -------------------------------------------------------------------------
 # 3. Persistent data disk — format (if blank) + mount

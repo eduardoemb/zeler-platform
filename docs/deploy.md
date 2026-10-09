@@ -104,6 +104,8 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 test -f /opt/zeler-platform/.startup-complete && echo OK
 df -h /var/lib/zeler-mongo          # mounted disk ≥40 GB available
 df -h /                             # boot disk has deploy margin
+swapon --show                       # /swapfile, 2G (see §5a.1)
+cat /proc/sys/vm/swappiness         # → 10
 systemctl is-enabled zeler-docker-maintenance.timer
 docker --version
 docker compose version
@@ -630,6 +632,44 @@ and the matching Cloud Build record, then update the compose `image:` lines.
 The verifier lives in `infra/deploy/provenance_check.py` and reuses the same
 single-subject SLSA v1 binding as the Sheets rollback attestation, so
 provenance interpretation never drifts between the two gates.
+
+---
+
+## 5a.1. platform-vm memory limits and swap
+
+On 2026-10-08 `platform-vm` (`e2-medium`, ~3.9 GB RAM, no swap) froze for about
+five hours from memory exhaustion: no container limits, Mongo's default
+WiredTiger cache (~1.44 GB on this VM) and a growing `sheets-worker` pushed the
+guest into reclaim until it stopped responding. The mitigation was first applied
+on the VM as overlays; these values are now the repository baseline:
+
+| Service | Limit |
+| --- | --- |
+| `mongo` | `--wiredTigerCacheSizeGB 0.75`; **no `mem_limit`** |
+| `sheets-worker` | `1g` |
+| `gateway`, `sheets-api` | `512m` |
+| `autoreply-api`, `autoreply-worker`, `repricer-api`, `repricer-worker`, `publicador-api` | `384m` |
+| `bootstrap-dispatcher` | `256m` |
+| `caddy` | `128m` |
+
+- The container limits live in `infra/gce/docker-compose.yml` and are asserted by
+  `tests/test_gce_compose_contract.py`. Every service has `restart: unless-stopped`,
+  so an OOM kill restarts only that container; check `OOMKilled` and the restart
+  count with narrow `docker inspect --format` fields.
+- Mongo has no container limit on purpose: a cgroup kill mid-write is worse than
+  a bounded cache. The cache flag bounds its largest consumer instead.
+- The limits are ceilings, not reservations; their sum exceeds physical RAM. Swap
+  absorbs short overlaps, so do not raise a limit without measuring
+  `docker stats --no-stream` and `free -m` first.
+- Host swap is provisioned idempotently by `infra/gce/platform-vm-startup.sh`
+  (step 2c): a 2 GB `/swapfile` registered in `/etc/fstab` and
+  `vm.swappiness=10` in `/etc/sysctl.d/99-zeler-swap.conf`. Existing swap and
+  matching configuration are left untouched. The startup script reaches the VM
+  only through its instance metadata; updating that metadata is a separate,
+  authorized operation.
+- Changing a `mem_limit` or the Mongo flag takes effect only when that container
+  is recreated. Recreate one service at a time inside an authorized deploy;
+  recreating `mongo` restarts the database.
 
 ---
 
@@ -1554,7 +1594,7 @@ approved rollout step (section 3), then repeat the read-only drift check.
 | Sheets OAuth returns 503 | Pass-1 placeholder creds still active | Complete §4 pass-2 steps |
 | Sheets OAuth returns 500 | Real creds set but redirect URI mismatch | Verify `https://sheets.zeler.ai/oauth/google/callback` in GCP OAuth client |
 | VM unreachable via SSH | IAP firewall rule missing or VM not RUNNING | Check firewall `allow-platform-ssh`; `gcloud compute instances describe platform-vm` |
-| Memory OOM / container killed | `e2-medium` (4 GB) saturated | `sudo free -h`; scale to `e2-standard-2`: `gcloud compute instances stop platform-vm && gcloud compute instances set-machine-type platform-vm --machine-type=e2-standard-2 --zone=$ZONE && gcloud compute instances start platform-vm` |
+| Memory OOM / container killed | A service hit its `mem_limit` (§5a.1), or `e2-medium` (4 GB) saturated | Check `OOMKilled` and restart counts per container, `sudo free -h` and `swapon --show`; if the host itself is saturated, scale to `e2-standard-2`: `gcloud compute instances stop platform-vm && gcloud compute instances set-machine-type platform-vm --machine-type=e2-standard-2 --zone=$ZONE && gcloud compute instances start platform-vm` |
 | Image pull fails | SA missing Artifact Registry reader | Re-apply `roles/artifactregistry.reader` (see §1); `gcloud auth configure-docker us-central1-docker.pkg.dev` |
 
 ---

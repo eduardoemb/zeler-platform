@@ -47,6 +47,20 @@ EXPECTED_SERVICES = {
     "autoreply-worker",
 }
 
+# Values applied on platform-vm after the 2026-10-08 memory freeze (docs/deploy.md §5a.1).
+EXPECTED_MEM_LIMITS = {
+    "sheets-worker": "1g",
+    "gateway": "512m",
+    "sheets-api": "512m",
+    "autoreply-api": "384m",
+    "autoreply-worker": "384m",
+    "repricer-api": "384m",
+    "repricer-worker": "384m",
+    "publicador-api": "384m",
+    "bootstrap-dispatcher": "256m",
+    "caddy": "128m",
+}
+
 EXPECTED_SUBDOMAINS = {
     "gateway.zeler.ai",
     "sheets.zeler.ai",
@@ -267,6 +281,21 @@ class TestComposeServices:
         assert "/opt/zeler-platform/sheets-dlq-snapshot-execute.sh" in startup
         assert "install -m 0755" in startup
         assert wrapper.strip() in startup
+
+    def test_mongo_caps_wiredtiger_cache_without_a_container_limit(self) -> None:
+        mongo = load_compose()["services"]["mongo"]
+        command = mongo["command"]
+
+        flag = command.index("--wiredTigerCacheSizeGB")
+        assert command[flag + 1] == "0.75"
+        # A hard cgroup cap would kill mongod mid-write; the cache cap bounds it instead.
+        assert "mem_limit" not in mongo
+
+    def test_every_other_service_has_its_production_memory_limit(self) -> None:
+        services = load_compose()["services"]
+
+        limits = {name: cfg.get("mem_limit") for name, cfg in services.items() if name != "mongo"}
+        assert limits == EXPECTED_MEM_LIMITS
 
     @pytest.mark.parametrize("path", (SECRETS_SCRIPT, COMPOSE_FILE))
     def test_materializer_and_compose_boundary_has_no_smoke_variables(self, path: Path) -> None:
@@ -683,3 +712,80 @@ class TestDockerRootDiskSafeguards:
         ) < deploy_section.index('docker compose --file "$COMPOSE_FILE" pull "$SERVICE"')
         assert "never prune volumes" in text.lower()
         assert "/var/lib/zeler-mongo" in text
+
+
+# ===========================================================================
+# Ops hardening — platform-vm host memory safeguards
+# ===========================================================================
+
+
+class TestHostSwapProvisioning:
+    SWAP_STEP_MARKER = "# 2c. Host swap"
+
+    def _sandboxed_swap_step(self, tmp_path: Path) -> Path:
+        startup = STARTUP_SCRIPT.read_text(encoding="utf-8")
+        assert self.SWAP_STEP_MARKER in startup
+        section = startup.split(self.SWAP_STEP_MARKER, 1)[1].split("\n", 1)[1]
+        section = section.split("# 3. Persistent data disk", 1)[0]
+        for production, sandbox in (
+            ("SWAP_FILE=/swapfile", f"SWAP_FILE={tmp_path / 'swapfile'}"),
+            ("FSTAB_FILE=/etc/fstab", f"FSTAB_FILE={tmp_path / 'fstab'}"),
+            (
+                "SWAP_SYSCTL_CONF=/etc/sysctl.d/99-zeler-swap.conf",
+                f"SWAP_SYSCTL_CONF={tmp_path / '99-zeler-swap.conf'}",
+            ),
+        ):
+            assert production in section
+            section = section.replace(production, sandbox)
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fakes = {
+            "fallocate": 'echo "fallocate $*" >> "$CALLS"; : > "${@: -1}"\n',
+            "mkswap": 'echo "mkswap $*" >> "$CALLS"\n',
+            "swapon": (
+                'if [[ "$1" == --show* ]]; then cat "$ACTIVE" 2>/dev/null; exit 0; fi\n'
+                'echo "swapon $*" >> "$CALLS"; echo "$1" >> "$ACTIVE"\n'
+            ),
+            "sysctl": 'echo "sysctl $*" >> "$CALLS"\n',
+        }
+        for name, body in fakes.items():
+            fake = bin_dir / name
+            fake.write_text(f"#!/usr/bin/env bash\n{body}")
+            fake.chmod(0o755)
+
+        script = tmp_path / "swap-step.sh"
+        script.write_text(f"set -euo pipefail\n{section}")
+        return script
+
+    def test_swap_step_creates_persists_and_tunes_swap_idempotently(self, tmp_path: Path) -> None:
+        script = self._sandboxed_swap_step(tmp_path)
+        fstab = tmp_path / "fstab"
+        fstab.write_text("UUID=abc /var/lib/zeler-mongo ext4 defaults,nofail 0 2\n")
+        calls = tmp_path / "calls"
+        env = {
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+            "CALLS": str(calls),
+            "ACTIVE": str(tmp_path / "active"),
+        }
+
+        for _ in range(2):
+            completed = subprocess.run(  # noqa: S603 - sandboxed checked-in script section.
+                ["/bin/bash", str(script)], capture_output=True, check=False, env=env, text=True
+            )
+            assert completed.returncode == 0, completed.stderr
+
+        swapfile = tmp_path / "swapfile"
+        assert swapfile.stat().st_mode & 0o777 == 0o600
+        recorded = calls.read_text().splitlines()
+        assert recorded == [
+            f"fallocate -l 2G {swapfile}.tmp",
+            f"mkswap {swapfile}.tmp",
+            f"swapon {swapfile}",
+            f"sysctl -p {tmp_path / '99-zeler-swap.conf'}",
+        ]
+        assert fstab.read_text().splitlines() == [
+            "UUID=abc /var/lib/zeler-mongo ext4 defaults,nofail 0 2",
+            f"{swapfile} none swap sw 0 0",
+        ]
+        assert (tmp_path / "99-zeler-swap.conf").read_text() == "vm.swappiness=10\n"
