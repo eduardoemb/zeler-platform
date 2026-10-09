@@ -10,6 +10,7 @@ from bson.decimal128 import Decimal128
 from zeler_sheets.formulas.catalog_values import (
     catalog_only_competitor,
     catalog_shared_users,
+    catalog_winner_user,
 )
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -589,9 +590,7 @@ def _catalogo_row(
         "DATA_UNAVAILABLE",
         _sheet_optional_number(_first_value(buybox, "winning_price", "winner_price")),
         _selected_price(current, tipo_precio=tipo_precio),
-        buybox.get("winning_user_id", "DATA_UNAVAILABLE")
-        if buybox is not None
-        else "DATA_UNAVAILABLE",
+        catalog_winner_user(buybox),
         catalog_shared_users(buybox),
         _sheet_optional_number(_first_value(buybox, "price_to_win", "price_to_win_amount")),
         catalog_only_competitor(buybox),

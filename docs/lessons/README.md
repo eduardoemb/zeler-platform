@@ -740,6 +740,11 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - failed path: Treating every non-value as `DATA_UNAVAILABLE`: 657 `not_listed`
   buybox rows and about 1,440 quality rows were re-requested on every read,
   re-acquired and stored with the same answer, and never filled.
+  The same absence shows in every column the snapshot lacks: after the
+  `only_competitor` flag was served as `NA`, `CATALOGO` still reported 779
+  unrecoverable rows because the winning-user column of the same `not_listed`
+  snapshots (no `winning_user_id`) stayed `DATA_UNAVAILABLE`. Check each column
+  that feeds `recoverable`, not only the one that exposed the loop.
 - verification/source: `test_formula_handlers_item_shipping_catalog.py`,
   `test_formula_handlers_remaining_phase4.py`,
   `test_formula_handlers_quality_calculator.py`,

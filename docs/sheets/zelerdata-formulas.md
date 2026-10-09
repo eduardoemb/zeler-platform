@@ -252,6 +252,11 @@ were switched off after the VM froze for about five hours.
   (`test_formula_handlers_quality_calculator.py`,
   `test_formula_handlers_item_shipping_catalog.py`,
   `test_formula_handlers_remaining_phase4.py`).
+  `CATALOGO` still reported 779 `unavailable_buybox_items` after that fix
+  because the winning-user column (index 20) of the same `not_listed`
+  snapshots carries no `winning_user_id`: it now shows `NA` too and does not
+  count as recoverable. A competing publication without its winner keeps
+  `DATA_UNAVAILABLE` and recovery. The time-winning column is untouched.
 - **Calculator costs follow the same 24-hour limit (9 October 2026).** Seller
   shipping cost, listing fees, the fixed fee and the current promotion were
   `trusted` on 2,911 of 2,912 rows, yet `CALCULADORA` discarded them because

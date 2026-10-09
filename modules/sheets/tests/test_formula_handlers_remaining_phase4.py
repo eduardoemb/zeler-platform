@@ -616,6 +616,57 @@ async def test_catalogo_not_listed_only_competitor_is_na_and_not_recoverable() -
 
 
 @pytest.mark.asyncio
+async def test_catalogo_not_listed_winner_user_is_na_and_not_recoverable() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["sheets_item_formula_rows"].documents = {
+        f"82453304:SKU-{index}:{identity}": _item_row(
+            item_id=identity,
+            sku=f"sku-{index}",
+            title="Catalog item",
+            catalog_product_id="CAT-1",
+            price=Decimal("100"),
+        )
+        for index, identity in enumerate(("MLA1", "MLA2", "MLA3"), start=1)
+    }
+    db["sheets_catalog_buybox_snapshots"].documents = {
+        f"82453304:{identity}": {
+            "_id": f"82453304:{identity}",
+            "seller_id": "82453304",
+            "item_id": identity,
+            "buybox_status": status,
+            "winning_price": None,
+            "competitors_sharing_first_place": None,
+            "price_to_win": None,
+            "competitor_count": None,
+            "only_competitor": None,
+            "offers_snapshot_at": None,
+        }
+        for identity, status in (
+            ("MLA1", "not_listed"),
+            ("MLA2", "competing"),
+            ("MLA3", "competing"),
+        )
+    }
+    # MLA1 and MLA2 carry no winning_user_id key; MLA3 carries an explicit None,
+    # which a competing publication keeps serving as before.
+    db["sheets_catalog_buybox_snapshots"].documents["82453304:MLA3"]["winning_user_id"] = None
+    _seed_catalog_inventory(db)
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGO", {"tipo_precio": "base", "encabezados": False})
+    )
+
+    by_id = {row[2]: row for row in result.values}
+    assert by_id["MLA1"][20] == "NA"
+    assert by_id["MLA2"][20] == "DATA_UNAVAILABLE"
+    assert by_id["MLA3"][20] == "NA"
+    assert result.recovery is not None
+    assert result.recovery.item_ids == ("MLA2", "MLA3")
+    assert result.meta["unavailable_buybox_items"] == 2
+
+
+@pytest.mark.asyncio
 async def test_catalogo_serves_hours_old_buybox_and_reports_its_age() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)

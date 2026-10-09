@@ -29,3 +29,14 @@ def catalog_only_competitor(snapshot: Mapping[str, Any] | None) -> Any:
     # listing has no row for it, so the flag does not apply; reacquiring it
     # returns the same answer until the status changes.
     return NA_VALUE if snapshot.get("buybox_status") == "not_listed" else "DATA_UNAVAILABLE"
+
+
+def catalog_winner_user(snapshot: Mapping[str, Any] | None) -> Any:
+    if snapshot is None:
+        return "DATA_UNAVAILABLE"
+    # A publication Mercado Libre declared out of competition has no winner to
+    # name, and reacquiring it returns the same answer until the status changes.
+    # Any other state without its winner is still a gap to recover.
+    if snapshot.get("buybox_status") == "not_listed" and snapshot.get("winning_user_id") is None:
+        return NA_VALUE
+    return snapshot.get("winning_user_id", "DATA_UNAVAILABLE")
