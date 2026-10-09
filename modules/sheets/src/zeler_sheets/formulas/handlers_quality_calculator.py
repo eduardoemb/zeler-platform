@@ -87,11 +87,14 @@ class QualityCalculatorFormulaHandlers:
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CALIDAD_HEADERS)
         header_rows = len(values)
         quality_unavailable: set[str] = set()
+        source_absent = 0
         for row in rows:
             quality_row = _quality_row(row, now=now)
             values.append(quality_row)
             if quality_row[7] == "DATA_UNAVAILABLE":
                 quality_unavailable.add(str(row.get("item_id") or ""))
+            elif _quality_source_absent(_current_mapping(row), now=now):
+                source_absent += 1
         values.extend(
             [item_id, *["DATA_UNAVAILABLE"] * (len(CALIDAD_HEADERS) - 1)]
             for item_id in unavailable_items
@@ -103,6 +106,7 @@ class QualityCalculatorFormulaHandlers:
             meta={
                 "rows_count": len(values) - header_rows,
                 "columns": "modern_quality_projection",
+                **({"quality_source_absent_items": source_absent} if source_absent else {}),
                 **(
                     {
                         "quality_unavailable_items": sorted(quality_unavailable),
@@ -311,6 +315,28 @@ def _expired_inventory_warning(width: int) -> list[str]:
     ]
 
 
+# Mercado Libre's own answer that a publication has no quality: not generated
+# (404, typically paused publications) or unsupported for the entity (400 after
+# the User Product route). Unlike a missing or failed acquisition, asking again
+# returns the same answer, so it is served as NA while it is fresh.
+QUALITY_SOURCE_ABSENT = frozenset(
+    {("transient", "performance_not_generated"), ("malformed", "http_400")}
+)
+
+
+def _quality_state(current: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    states = _optional_mapping(current.get("enrichment_state")) or {}
+    return _optional_mapping(states.get("quality_projection"))
+
+
+def _quality_source_absent(current: Mapping[str, Any], *, now: datetime) -> bool:
+    state = _quality_state(current)
+    if state is None or (state.get("status"), state.get("reason")) not in QUALITY_SOURCE_ABSENT:
+        return False
+    observed = bson_ms_utc_datetime(state.get("synced_at"))
+    return observed is not None and now - ITEM_ENRICHMENT_CACHE_MAX_AGE < observed <= now
+
+
 def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
     current = _current_mapping(row)
     base = [
@@ -323,8 +349,10 @@ def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
         _current_value(current, "listing_type_id"),
     ]
     raw = current.get("quality_projection")
-    states = _optional_mapping(current.get("enrichment_state")) or {}
-    state = _optional_mapping(states.get("quality_projection"))
+    if _quality_source_absent(current, now=now):
+        # The latest acquisition outranks any earlier projection.
+        return [*base, *[NA_VALUE] * 12]
+    state = _quality_state(current)
     if state is not None and (
         state.get("status") == "basis_mismatch"
         or (

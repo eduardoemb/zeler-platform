@@ -507,6 +507,41 @@ async def test_catalogo_buybox_does_not_infer_shared_count_from_legacy_totals() 
 
 
 @pytest.mark.asyncio
+async def test_catalogo_buybox_not_listed_publication_is_na_and_not_recoverable() -> None:
+    """Mercado Libre declares a publication out of competition (`not_listed`), and
+    its offer listing has no row for it, so "only competitor" does not apply. That
+    is NA and is never requested again; an unknown flag on a competing publication
+    still is."""
+    db = FakeDb()
+    for identity, status in (("MLA1", "not_listed"), ("MLA2", "competing")):
+        db["sheets_catalog_buybox_snapshots"].documents[identity] = {
+            "item_id": identity,
+            "title": "Publication",
+            "available_quantity": 0,
+            "buybox_status": status,
+            "price": 120,
+            "winning_price": None,
+            "competitors_sharing_first_place": None,
+        }
+    _seed_buybox_inventory(db)
+    for snapshot in db["sheets_catalog_buybox_snapshots"].documents.values():
+        snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": False})
+    )
+
+    assert result.values == [
+        ["Publication", "MLA1", "MLM1", 0, "not_listed", 120, "NA", "NA", "NA"],
+        ["Publication", "MLA2", "MLM1", 0, "competing", 120, "NA", "NA", "DATA_UNAVAILABLE"],
+    ]
+    assert result.recovery is not None
+    assert result.recovery.read_model == CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL
+    assert result.recovery.item_ids == ("MLA2",)
+    assert result.meta["unavailable_buybox_items"] == 1
+
+
+@pytest.mark.asyncio
 async def test_catalogo_buybox_serves_hours_old_snapshot_and_reports_its_age() -> None:
     db = FakeDb()
     db["sheets_catalog_buybox_snapshots"].documents["snapshot"] = {

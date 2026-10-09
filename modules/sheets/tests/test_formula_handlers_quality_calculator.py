@@ -168,33 +168,80 @@ async def test_calculator_missing_freshness_carries_explicit_recovery_scope() ->
     assert caught.value.item_ids == ("MLA1", "MLA2")
 
 
-def test_quality_404_does_not_display_previous_projection() -> None:
+@pytest.mark.parametrize(
+    ("status", "reason", "age", "expected"),
+    [
+        # Mercado Libre declared the quality absent: not generated (404) or
+        # unsupported for this entity (400). A fresh declaration is NA.
+        ("transient", "performance_not_generated", timedelta(0), "NA"),
+        ("transient", "performance_not_generated", timedelta(hours=23), "NA"),
+        ("malformed", "http_400", timedelta(0), "NA"),
+        # An expired declaration, or a failure that declares nothing, still
+        # needs acquisition.
+        ("transient", "performance_not_generated", timedelta(hours=24), "DATA_UNAVAILABLE"),
+        ("malformed", "http_400", timedelta(hours=24), "DATA_UNAVAILABLE"),
+        ("transient", "rate_limited", timedelta(0), "DATA_UNAVAILABLE"),
+        ("malformed", "source_error", timedelta(0), "DATA_UNAVAILABLE"),
+    ],
+)
+def test_quality_fresh_source_declared_absence_is_na(
+    status: str, reason: str, age: timedelta, expected: str
+) -> None:
     from zeler_sheets.formulas.handlers_quality_calculator import _quality_row
 
     row = _item_row(
         item_id="MLA1",
         sku="sku-1",
         title="Quality item",
-        status="active",
+        status="paused",
         quality_projection={
             "source": "/item/{id}/performance",
             "entity_id": "MLA1",
-            "observed_at": NOW,
+            "observed_at": NOW - age,
             "score": 88.0,
             "level": "good",
             "calculated_at": QUALITY_CALCULATED_AT,
             "components": {},
             "pending_actions": [],
-        },
+        }
+        if expected == "NA"
+        else None,
     )
     row["current"]["enrichment_state"] = {
-        "quality_projection": {
-            "status": "transient",
-            "reason": "performance_not_generated",
-            "synced_at": NOW,
-        }
+        "quality_projection": {"status": status, "reason": reason, "synced_at": NOW - age}
     }
-    assert _quality_row(row, now=NOW)[7:] == ["DATA_UNAVAILABLE"] * 12
+    assert _quality_row(row, now=NOW)[7:] == [expected] * 12
+
+
+@pytest.mark.asyncio
+async def test_calidad_does_not_recover_quality_the_source_declared_absent() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
+    rows = {}
+    for identity, reason, age in (
+        ("MLA1", "performance_not_generated", timedelta(hours=2)),
+        ("MLA2", "performance_not_generated", timedelta(hours=25)),
+    ):
+        row = _item_row(item_id=identity, sku=identity, title="Paused item", status="paused")
+        row["current"]["enrichment_state"] = {
+            "quality_projection": {
+                "status": "transient",
+                "reason": reason,
+                "synced_at": NOW - age,
+            }
+        }
+        rows[identity] = row
+    db["sheets_item_formula_rows"].documents = rows
+
+    result = await _dispatcher(db).execute(_context("ZELERDATA_CALIDAD", {"encabezados": "no"}))
+
+    by_id = {row[0]: row for row in result.values}
+    assert by_id["MLA1"][7:] == ["NA"] * 12
+    assert by_id["MLA2"][7:] == ["DATA_UNAVAILABLE"] * 12
+    assert result.recovery is not None
+    assert result.recovery.item_ids == ("MLA2",)
+    assert result.meta["quality_unavailable_items"] == ["MLA2"]
+    assert result.meta["quality_source_absent_items"] == 1
 
 
 @pytest.mark.asyncio

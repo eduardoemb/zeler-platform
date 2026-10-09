@@ -571,6 +571,51 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
 
 
 @pytest.mark.asyncio
+async def test_catalogo_not_listed_only_competitor_is_na_and_not_recoverable() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["sheets_item_formula_rows"].documents = {
+        f"82453304:SKU-{index}:{identity}": _item_row(
+            item_id=identity,
+            sku=f"sku-{index}",
+            title="Catalog item",
+            catalog_product_id="CAT-1",
+            price=Decimal("100"),
+        )
+        for index, identity in enumerate(("MLA1", "MLA2"), start=1)
+    }
+    db["sheets_catalog_buybox_snapshots"].documents = {
+        f"82453304:{identity}": {
+            "_id": f"82453304:{identity}",
+            "seller_id": "82453304",
+            "item_id": identity,
+            "buybox_status": status,
+            "winning_price": None,
+            "winning_user_id": None,
+            "competitors_sharing_first_place": None,
+            "price_to_win": None,
+        }
+        for identity, status in (("MLA1", "not_listed"), ("MLA2", "competing"))
+    }
+    _seed_catalog_inventory(db)
+    for snapshot in db["sheets_catalog_buybox_snapshots"].documents.values():
+        snapshot.update(competitor_count=None, only_competitor=None, offers_snapshot_at=None)
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGO", {"tipo_precio": "base", "encabezados": False})
+    )
+
+    by_id = {row[2]: row for row in result.values}
+    assert by_id["MLA1"][16] == "not_listed"
+    assert by_id["MLA1"][23] == "NA"
+    assert by_id["MLA2"][23] == "DATA_UNAVAILABLE"
+    assert result.recovery is not None
+    assert result.recovery.read_model == CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL
+    assert result.recovery.item_ids == ("MLA2",)
+    assert result.meta["unavailable_buybox_items"] == 1
+
+
+@pytest.mark.asyncio
 async def test_catalogo_serves_hours_old_buybox_and_reports_its_age() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ORDERS_READ_MODEL)

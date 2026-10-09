@@ -7,7 +7,10 @@ from typing import Any
 
 from bson.decimal128 import Decimal128
 
-from zeler_sheets.formulas.catalog_values import catalog_shared_users
+from zeler_sheets.formulas.catalog_values import (
+    catalog_only_competitor,
+    catalog_shared_users,
+)
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
     FormulaExecutionContext,
@@ -701,9 +704,7 @@ def _catalogo_buybox_row(snapshot: Mapping[str, Any]) -> list[Any]:
         else "DATA_UNAVAILABLE",
         _sheet_optional_number(snapshot.get("winning_price")),
         catalog_shared_users(snapshot),
-        snapshot["only_competitor"]
-        if isinstance(snapshot.get("only_competitor"), bool)
-        else "DATA_UNAVAILABLE",
+        catalog_only_competitor(snapshot),
     ]
 
 

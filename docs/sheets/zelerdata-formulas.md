@@ -236,6 +236,22 @@ were switched off after the VM froze for about five hours.
   acquisition for `ITEM_ENRICHMENT_CACHE_MAX_AGE` (24 hours) instead of 15
   minutes: quality is acquired only on demand, and a pass over a whole
   inventory takes hours.
+- **Source-declared absence is NA, not a recovery (9 October 2026).** On the
+  pilot, 657 of 934 fresh buybox snapshots were `not_listed` (mostly paused,
+  no stock): their offer listing returns 404, so `UNICO COMPETIDOR` stayed
+  unknown and every read re-requested about 700 publications that could never
+  fill. Quality had the same loop: 1,198 publications whose performance Mercado
+  Libre has not generated (404, mostly paused) and 240 with HTTP 400 (entity
+  unsupported, after the User Product route). `CATALOGOBUYBOX` and `CATALOGO`
+  now show `NA` for the flag of a `not_listed` publication, as the legacy
+  add-on did, and do not recover it. `CALIDAD` shows `NA` in every quality
+  column while the declaration is younger than `ITEM_ENRICHMENT_CACHE_MAX_AGE`,
+  reports them as `quality_source_absent_items`, and recovers them only once it
+  expires. Absent, expired or failed acquisitions keep `DATA_UNAVAILABLE` and
+  recovery. Writers and the recovery worker are unchanged
+  (`test_formula_handlers_quality_calculator.py`,
+  `test_formula_handlers_item_shipping_catalog.py`,
+  `test_formula_handlers_remaining_phase4.py`).
 - **Calculator costs follow the same 24-hour limit (9 October 2026).** Seller
   shipping cost, listing fees, the fixed fee and the current promotion were
   `trusted` on 2,911 of 2,912 rows, yet `CALCULADORA` discarded them because

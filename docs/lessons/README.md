@@ -101,6 +101,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-042 | VM deploy | Codify memory mitigations instead of leaving VM-only overlays | active |
 | L-043 | ZelerData | Re-check eligibility at claim and cap serial warming in `all` mode | active |
 | L-044 | ZelerData | Size reader age limits to on-demand acquisition and compare only stored fields | active |
+| L-045 | ZelerData | Serve a source-declared absence as NA instead of recovering it | active |
 
 ## Cloud Build and VM deployment
 
@@ -724,6 +725,23 @@ repeat failures, and promote stable knowledge to its proper operational form.
   re-sync invalidated every quality projection.
 - verification/source: `test_formula_buybox_item_resync.py`,
   `test_layered_basic_acquisition.py`,
+  `test_formula_handlers_quality_calculator.py`,
+  `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
+- status: active
+
+### L-045 — Serve a source-declared absence as NA instead of recovering it
+- area: ZelerData buybox and quality readers
+- proven path: When Mercado Libre answers that a datum does not exist for a
+  publication (`not_listed` competition, quality not generated or HTTP 400),
+  the reader serves `NA` while that answer is fresh and does not request
+  recovery; only absent, expired or failed acquisitions stay
+  `DATA_UNAVAILABLE` and recoverable. Decide it in the reader from the stored
+  status and its observation time, without changing writers.
+- failed path: Treating every non-value as `DATA_UNAVAILABLE`: 657 `not_listed`
+  buybox rows and about 1,440 quality rows were re-requested on every read,
+  re-acquired and stored with the same answer, and never filled.
+- verification/source: `test_formula_handlers_item_shipping_catalog.py`,
+  `test_formula_handlers_remaining_phase4.py`,
   `test_formula_handlers_quality_calculator.py`,
   `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
 - status: active
