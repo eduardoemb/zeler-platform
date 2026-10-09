@@ -466,7 +466,7 @@ verify_digest_binding() {
   fi
   echo "Refusing any moving image tag before pull (REQUIRE_DIGEST_BINDING=1)."
   PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" -m infra.deploy.provenance_check \
-    check-compose --compose-file "$COMPOSE_FILE" "${digest_binding_service_args[@]}"
+    check-compose --compose-file "$COMPOSE_FILE" ${digest_binding_service_args[@]+"${digest_binding_service_args[@]}"}
   gcloud_project_id=$("$GCLOUD_BIN" config get-value project 2>/dev/null)
   if [[ ! "$gcloud_project_id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
     echo "ERROR: trusted gcloud project id is missing or invalid." >&2
@@ -483,7 +483,7 @@ verify_digest_binding() {
   rm -f "$IMAGE_TO_COMMIT_FILE"
   PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
     -m infra.deploy.provenance_check list-images --compose-file "$COMPOSE_FILE" \
-    "${digest_binding_service_args[@]}" > "$image_list"
+    ${digest_binding_service_args[@]+"${digest_binding_service_args[@]}"} > "$image_list"
   while IFS= read -r image_ref; do
     [[ -n "$image_ref" ]] || continue
     "$GCLOUD_BIN" artifacts docker images describe "$image_ref" \
@@ -549,7 +549,7 @@ if [[ "$REQUIRE_DIGEST_BINDING" == "1" ]]; then
   if [[ "$DRY_RUN" == "1" ]]; then
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PLATFORM_ROOT" "$PYTHON_BIN" \
       -m infra.deploy.provenance_check check-compose \
-      --compose-file "$COMPOSE_FILE" "${digest_binding_service_args[@]}"
+      --compose-file "$COMPOSE_FILE" ${digest_binding_service_args[@]+"${digest_binding_service_args[@]}"}
     echo "dry-run: selected image references checked; provenance not verified (no evidence written)."
   else
     verify_digest_binding

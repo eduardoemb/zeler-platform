@@ -102,6 +102,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-043 | ZelerData | Re-check eligibility at claim and cap serial warming in `all` mode | active |
 | L-044 | ZelerData | Size reader age limits to on-demand acquisition and compare only stored fields | active |
 | L-045 | ZelerData | Serve a source-declared absence as NA instead of recovering it | active |
+| L-046 | Shell tests | Keep deploy scripts bash 3.2-safe and sandbox GNU-only calls on macOS | active |
 
 ## Cloud Build and VM deployment
 
@@ -749,4 +750,23 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `test_formula_handlers_remaining_phase4.py`,
   `test_formula_handlers_quality_calculator.py`,
   `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
+- status: active
+
+### L-046 — Keep deploy scripts bash 3.2-safe and sandbox GNU-only calls on macOS
+- area: Shell scripts / local tests on macOS
+- proven path: Expand a possibly empty array as
+  `${arr[@]+"${arr[@]}"}` under `set -u` (macOS bash 3.2 aborts on
+  `"${arr[@]}"`; the VM's bash 5 does not). Apply it to every copy:
+  `platform-vm-startup.sh` embeds `docker-deploy-preflight.sh` and a test
+  requires the copies to be identical. A wrapper test that must run the
+  production file on a host without GNU `stat -c`, `sha256sum` or fractional
+  `read -t` swaps those calls only in its sandbox copy, and only when the host
+  lacks them, so the VM and Linux run the exact production lines.
+- failed path: Assuming every macOS failure of a deploy script is the empty
+  array: the DLQ snapshot wrapper never had one; it failed on `read -t 0.01`,
+  `stat -c` and `sha256sum`. Relaxing `set -u` or rewriting the production
+  wrapper's absolute-path commands to make a laptop pass.
+- verification/source: `tests/test_deployment_preflight.py`,
+  `tests/operations/test_sheets_dlq_snapshot_execute.py`
+  (`_host_portability_substitutions`, `_interpreter_injected_names`).
 - status: active

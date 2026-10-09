@@ -33,6 +33,49 @@ _WRAPPER_DOCKER_MARKER = "SHEETS_DLQ_SNAPSHOT_EXEC_DOCKER_BIN"
 _TOKEN_DIRECTORY = "/var/lib/zeler-platform/sheets-dlq-snapshot"  # noqa: S105
 
 
+def _host_portability_substitutions(tmp_path: Path) -> list[tuple[str, str]]:
+    """Return sandbox-only replacements for GNU/bash-4 features the host lacks.
+
+    The production wrapper targets the VM (GNU userland, bash 5). On other hosts
+    (macOS: BSD ``stat``, no ``sha256sum``, bash 3.2) only the sandbox copy swaps
+    those calls for equivalents; on the VM-like hosts nothing is replaced and the
+    exact production lines run.
+    """
+    substitutions: list[tuple[str, str]] = []
+    bash_major = subprocess.run(  # noqa: S603 - fixed argv, no operator input.
+        ["/usr/bin/env", "bash", "-c", "echo ${BASH_VERSINFO[0]}"],  # the shebang's bash
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if int(bash_major) < 4:
+        substitutions.append(("read -r -t 0.01 ", "read -r -t 1 "))
+    if not Path("/usr/bin/sha256sum").exists():
+        substitutions.append(("/usr/bin/sha256sum", "/usr/bin/shasum -a 256"))
+    gnu_stat = subprocess.run(  # noqa: S603 - fixed argv, no operator input.
+        ["/usr/bin/stat", "-c", "%u", "/"], capture_output=True, check=False
+    )
+    if gnu_stat.returncode != 0:
+        fake_stat = tmp_path / "fake-stat"
+        fake_stat.write_text(
+            "#!/usr/bin/python3\n"
+            "import os\n"
+            "import stat\n"
+            "import sys\n"
+            "_, _flag, fmt, path = sys.argv\n"
+            "info = os.stat(path)\n"
+            "kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'regular file'\n"
+            "fields = {'%u': str(info.st_uid), '%a': format(info.st_mode & 0o7777, 'o'),\n"
+            "          '%F': kind, '%s': str(info.st_size)}\n"
+            "for code, value in fields.items():\n"
+            "    fmt = fmt.replace(code, value)\n"
+            "print(fmt)\n"
+        )
+        fake_stat.chmod(0o700)
+        substitutions.append(("/usr/bin/stat -c", f"{fake_stat} -c"))
+    return substitutions
+
+
 def _sandboxed_wrapper(
     tmp_path: Path, *, docker_exit: int = 0, cleanup_failure: bool = False, term: bool = False
 ) -> tuple[Path, Path, Path, Path]:
@@ -85,10 +128,28 @@ def _sandboxed_wrapper(
     sandbox_source = sandbox_source.replace(
         f"DOCKER_BIN=/usr/bin/docker # {_WRAPPER_DOCKER_MARKER}", replacement, 1
     )
+    for needle, host_equivalent in _host_portability_substitutions(tmp_path):
+        assert needle in sandbox_source
+        sandbox_source = sandbox_source.replace(needle, host_equivalent)
     assert sandbox_source.count(_WRAPPER_DOCKER_MARKER) == 1
     sandbox.write_text(sandbox_source)
     sandbox.chmod(0o700)
     return sandbox, argv_file, environment_file, token_directory
+
+
+def _interpreter_injected_names() -> set[str]:
+    """Names the fake docker's interpreter adds itself under an empty environment.
+
+    Python coerces ``LC_CTYPE`` and the macOS ``/usr/bin/python3`` shim adds
+    ``SDKROOT``-style variables; none of them come from the wrapper.
+    """
+    completed = subprocess.run(  # noqa: S603 - fixed argv, empty environment.
+        ["/usr/bin/env", "-i", "/usr/bin/python3", "-c", "import os; print(*os.environ)"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return set(completed.stdout.split())
 
 
 def _null_fields(path: Path) -> list[str]:
@@ -161,7 +222,7 @@ def test_wrapper_uses_a_sanitized_environment_and_exact_bare_compose_authority_a
     ]
     environment = _null_fields(environment_file)
     environment_names = {field.split("=", 1)[0] for field in environment}
-    assert environment_names - {"LC_CTYPE"} == {
+    expected_names = {
         "PATH",
         "HOME",
         "DOCKER_HOST",
@@ -169,6 +230,7 @@ def test_wrapper_uses_a_sanitized_environment_and_exact_bare_compose_authority_a
         "SHEETS_DLQ_SNAPSHOT_EXEC_DIGEST",
         "SHEETS_DLQ_SNAPSHOT_EXEC_TOKEN_FILE",
     }
+    assert environment_names - (_interpreter_injected_names() - expected_names) == expected_names
     assert not any(
         forbidden in "\n".join(environment)
         for forbidden in ("RABBITMQ_URL=", "UNTRUSTED_OPERATOR_VARIABLE=", "operator-digest")
