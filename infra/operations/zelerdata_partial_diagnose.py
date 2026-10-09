@@ -56,6 +56,7 @@ from zeler_sheets.formulas.handlers_returns_histories_withdrawals import (
     build_returns_histories_withdrawals_formula_handlers,
 )
 from zeler_sheets.formulas.read_models import (
+    CATALOG_BUYBOX_CACHE_MAX_AGE,
     FormulaReadModelRepository,
     _read_model_freshness_marker_covers,
     _safe_utc_datetime,
@@ -869,14 +870,11 @@ async def _section_catalog(
             continue
         observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
         synced = _safe_utc_datetime(source.get("last_meli_sync_at"))
+        # Same rules as the reader: its own age and fields, never the re-sync cut.
         if observed is None or synced is None:
             states["no_timestamp"] += 1
-        elif not now - FRESH < observed <= now:
-            states[
-                "snapshot_older_than_15m" + ("_item_synced_after" if synced > observed else "")
-            ] += 1
-        elif synced > observed:
-            states["invalidated_by_later_item_sync"] += 1
+        elif not now - CATALOG_BUYBOX_CACHE_MAX_AGE < observed <= now:
+            states["snapshot_older_than_cache_limit"] += 1
         elif not (
             snapshot.get("_id") == f"{seller_id}:{item_id}"
             and snapshot.get("source") in SNAPSHOT_SOURCES
@@ -886,7 +884,7 @@ async def _section_catalog(
         ):
             states["snapshot_does_not_match_item"] += 1
         else:
-            states["ready"] += 1
+            states["ready_current" if now - FRESH < observed else "ready_cached"] += 1
             shared = snapshot.get("competitors_sharing_first_place", "key_absent")
             offers_at = snapshot.get("offers_snapshot_at", snapshot.get("snapshot_at"))
             ready_fields[

@@ -503,6 +503,7 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
 
     from zeler_sheets.app import build_app
     from zeler_sheets.extension_tokens import ExtensionTokenService, SellerScope
+    from zeler_sheets.formulas.read_models import CATALOG_BUYBOX_CACHE_MAX_AGE
     from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
     from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
     from zeler_sheets.sheetseller_backfill import run_sheetseller_backfill
@@ -632,11 +633,15 @@ async def test_buybox_http_recovers_current_membership_then_reuses_mongo(
             )
         else:
             changed_fields = {
-                "expired": {"snapshot_at": now - timedelta(minutes=16)},
+                "expired": {
+                    "snapshot_at": now - CATALOG_BUYBOX_CACHE_MAX_AGE - timedelta(minutes=1)
+                },
                 "future": {"snapshot_at": now + timedelta(hours=1)},
                 "foreign": {"seller_id": "42"},
                 "partial": {"only_competitor": None},
-                "expired_offers": {"offers_snapshot_at": now - timedelta(minutes=16)},
+                "expired_offers": {
+                    "offers_snapshot_at": now - CATALOG_BUYBOX_CACHE_MAX_AGE - timedelta(minutes=1)
+                },
                 "missing_offers": {"offers_snapshot_at": None},
             }[mutation]
             await recovery_db.sheets_catalog_buybox_snapshots.update_one(

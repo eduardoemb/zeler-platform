@@ -12,7 +12,10 @@ import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ServerSelectionTimeoutError
 
-from zeler_sheets.formulas.read_models import FormulaReadModelRepository
+from zeler_sheets.formulas.read_models import (
+    CATALOG_BUYBOX_CACHE_MAX_AGE,
+    FormulaReadModelRepository,
+)
 from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
 from zeler_sheets.item_projection import stamp_item_projection
 
@@ -40,8 +43,14 @@ async def buybox_db() -> AsyncIterator[Any]:
         client.close()
 
 
-async def _seed(db: Any, *, snapshot_title: str = "Producto catalogo") -> None:
-    # The snapshot was taken 8 minutes ago; a base sweep re-synced the item 2 minutes ago.
+async def _seed(
+    db: Any,
+    *,
+    snapshot_title: str = "Producto catalogo",
+    snapshot_age: timedelta = timedelta(minutes=8),
+) -> None:
+    # By default the snapshot was taken 8 minutes ago; a base sweep re-synced
+    # the item 2 minutes ago.
     item = {
         "_id": "MLA1",
         "seller_id": SELLER,
@@ -66,7 +75,7 @@ async def _seed(db: Any, *, snapshot_title: str = "Producto catalogo") -> None:
         "current": {"title": item["title"], "status": "active"},
     }
     stamp_item_projection([row], item)
-    snapshot_at = NOW - timedelta(minutes=8)
+    snapshot_at = NOW - snapshot_age
     await db["items"].insert_one(item)
     await db["sheets_item_formula_rows"].insert_one(row)
     await db["sheets_catalog_buybox_snapshots"].insert_one(
@@ -119,6 +128,35 @@ async def test_unchanged_publication_resynced_after_snapshot_keeps_its_buybox(
 @pytest.mark.asyncio
 async def test_publication_whose_title_changed_still_discards_its_buybox(buybox_db: Any) -> None:
     await _seed(buybox_db, snapshot_title="Titulo anterior")
+
+    _, (ready, missing, _invalid, _current) = await FormulaReadModelRepository(
+        db=buybox_db
+    ).find_recent_catalog_inventory(seller_id=SELLER, formula="ZELERDATA_CATALOGOBUYBOX", now=NOW)
+
+    assert ready == [] and missing == ("MLA1",)
+
+
+@pytest.mark.asyncio
+async def test_hours_old_snapshot_of_unchanged_publication_is_served_with_its_offers(
+    buybox_db: Any,
+) -> None:
+    # A full buybox pass over ~940 publications takes hours, so a 15-minute
+    # window could never be satisfied for the whole inventory.
+    await _seed(buybox_db, snapshot_age=timedelta(hours=6))
+
+    _, (ready, missing, invalid, _current) = await FormulaReadModelRepository(
+        db=buybox_db
+    ).find_recent_catalog_inventory(seller_id=SELLER, formula="ZELERDATA_CATALOGOBUYBOX", now=NOW)
+
+    assert [snapshot["item_id"] for snapshot in ready] == ["MLA1"]
+    assert ready[0]["snapshot_at"].replace(tzinfo=UTC) == NOW - timedelta(hours=6)
+    assert ready[0]["competitor_count"] == 2 and ready[0]["only_competitor"] is False
+    assert missing == () and invalid == ()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_older_than_the_cache_limit_needs_recovery(buybox_db: Any) -> None:
+    await _seed(buybox_db, snapshot_age=CATALOG_BUYBOX_CACHE_MAX_AGE + timedelta(minutes=1))
 
     _, (ready, missing, _invalid, _current) = await FormulaReadModelRepository(
         db=buybox_db

@@ -28,6 +28,7 @@ from zeler_sheets.formulas.read_models import (
     ORDERS_READ_MODEL,
     SHIPMENTS_READ_MODEL,
     FormulaReadModelRepository,
+    cached_buybox_observed_at,
     normalize_sku,
 )
 
@@ -436,6 +437,7 @@ class ItemShippingCatalogFormulaHandlers:
     async def sheetseller_catalogo_buybox(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
+        now = _as_utc_datetime(self._now_fn())
         (
             snapshots,
             missing,
@@ -444,8 +446,9 @@ class ItemShippingCatalogFormulaHandlers:
         ) = await self._repository.find_recent_catalog_buybox_inventory(
             seller_id=context.seller_id,
             formula=context.contract.name,
-            now=_as_utc_datetime(self._now_fn()),
+            now=now,
         )
+        cached = cached_buybox_observed_at(snapshots, now=now)
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), list(CATALOGOBUYBOX_VISIBLE_HEADERS)
         )
@@ -496,7 +499,9 @@ class ItemShippingCatalogFormulaHandlers:
                 "inventory_enumeration_current": current,
                 "unavailable_items": len(missing_items),
                 "unavailable_buybox_items": len(recoverable),
-                "buybox_complete": not inventory_gap and not recoverable,
+                "cached_buybox_items": len(cached),
+                "cached_buybox_observed_at": cached,
+                "buybox_complete": not inventory_gap and not recoverable and not cached,
                 **({"unavailable_reason": reason} if recovery else {}),
             },
         )

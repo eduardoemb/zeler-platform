@@ -38,6 +38,13 @@ SHIPMENTS_COLLECTION = "shipments"
 STOCK_TIME_METRICS_COLLECTION = "sheets_stock_time_metrics"
 STOCKOUT_SNAPSHOTS_COLLECTION = "sheets_stockout_snapshots"
 CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL = "catalog_buybox_snapshots"
+# Buybox is acquired only on demand, and one pass over ~940 publications takes
+# hours, so a 15-minute window could never cover a whole inventory. A snapshot
+# whose product, title and quantity still match is served for a day, flagged as
+# cached with its acquisition time; only absent, older or mismatched snapshots
+# request recovery, so each publication costs at most one acquisition per day.
+CATALOG_BUYBOX_CURRENT_AGE = timedelta(minutes=15)
+CATALOG_BUYBOX_CACHE_MAX_AGE = timedelta(hours=24)
 CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
 CATALOG_PRODUCT_CURRENT_AGE = timedelta(minutes=15)
 CATALOG_PRODUCT_CACHE_MAX_AGE = timedelta(hours=4)
@@ -951,7 +958,7 @@ class FormulaReadModelRepository:
                 source
                 and observed is not None
                 and synced is not None
-                and now - timedelta(minutes=15) < observed <= now
+                and now - CATALOG_BUYBOX_CACHE_MAX_AGE < observed <= now
                 # A periodic base re-sync only moves the item's observation cut, so
                 # the snapshot is judged by the fields it carries (product, title,
                 # quantity), not by whether the item was re-read after it.
@@ -966,7 +973,8 @@ class FormulaReadModelRepository:
                 offers_at = _safe_utc_datetime(snapshot.get("offers_snapshot_at", observed))
                 ready.append(
                     snapshot
-                    if offers_at is not None and now - timedelta(minutes=15) < offers_at <= now
+                    if offers_at is not None
+                    and now - CATALOG_BUYBOX_CACHE_MAX_AGE < offers_at <= now
                     else {**snapshot, "competitor_count": None, "only_competitor": None}
                 )
         missing = set(participating) - {row["item_id"] for row in ready}
@@ -1908,6 +1916,18 @@ def _first_utc_datetime(*values: Any) -> datetime | None:
         if (date_value := _safe_utc_datetime(value)) is not None:
             return date_value
     return None
+
+
+def cached_buybox_observed_at(
+    snapshots: Sequence[dict[str, Any]], *, now: datetime
+) -> dict[str, datetime]:
+    """Acquisition time of each served buybox snapshot that is no longer current."""
+    cached = {}
+    for snapshot in snapshots:
+        observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
+        if observed is not None and observed <= now - CATALOG_BUYBOX_CURRENT_AGE:
+            cached[str(snapshot["item_id"])] = observed
+    return dict(sorted(cached.items()))
 
 
 def _safe_utc_datetime(value: Any) -> datetime | None:

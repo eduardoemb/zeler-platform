@@ -507,6 +507,35 @@ async def test_catalogo_buybox_does_not_infer_shared_count_from_legacy_totals() 
 
 
 @pytest.mark.asyncio
+async def test_catalogo_buybox_serves_hours_old_snapshot_and_reports_its_age() -> None:
+    db = FakeDb()
+    db["sheets_catalog_buybox_snapshots"].documents["snapshot"] = {
+        "item_id": "MLA1",
+        "title": "Publication",
+        "available_quantity": 7,
+        "buybox_status": "winning",
+        "price": 120,
+        "winning_price": 119,
+        "competitors_sharing_first_place": 0,
+        "competitor_count": 2,
+    }
+    _seed_buybox_inventory(db)
+    observed = NOW - timedelta(hours=6)
+    db["sheets_catalog_buybox_snapshots"].documents["snapshot"]["snapshot_at"] = observed
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGOBUYBOX", {"encabezados": False})
+    )
+
+    assert result.values == [["Publication", "MLA1", "MLM1", 7, "winning", 120, 119, 0, False]]
+    assert result.recovery is None
+    assert result.meta["cached_buybox_items"] == 1
+    assert result.meta["cached_buybox_observed_at"] == {"MLA1": observed}
+    assert result.meta["buybox_complete"] is False
+    assert "unavailable_reason" not in result.meta
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["transient", "missing", "mismatched_cut", "cached", "primary"])
 async def test_buybox_missing_price_requests_recovery_or_uses_verified_cache(
     state: str,

@@ -16,8 +16,8 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 |---|---|---|
 | `ZELERDATA_CALCULADORA` | `=ZELERDATA_CALCULADORA("cuenta", "MLA1", "actual", "si")` | Modern cost projection from local item rows: selected price, seller shipping cost, listing fees, category/catalog/logistics fields, total costs, and estimated net. Missing cost source cells return `NA`. |
 | `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
-| `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows. |
-| `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Current catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. |
+| `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows; verified buybox snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
+| `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. Verified snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGOSINVINCULAR` | `=ZELERDATA_CATALOGOSINVINCULAR("cuenta", "si")` | Current publications locally marked as catalog-link suggestions. |
 | `ZELERDATA_CATALOGOTIEMPO` | `=ZELERDATA_CATALOGOTIEMPO("cuenta", "2026-01-01", "2026-01-31", "todos", "si")` | Catalog winning-time metrics from local catalog time summaries; no formula-time historical MercadoLibre calls. |
@@ -210,9 +210,22 @@ were switched off after the VM froze for about five hours.
 - **A base re-sync does not discard buybox snapshots.** The inventory sweep
   rewrites every publication's `last_meli_sync_at`, so the reader's old
   `synced <= observed` check dropped 934 of 940 snapshots. The reader now judges
-  a snapshot by the fields it carries (product, title, quantity), its own 15
-  minute age and its offers' age. A changed title, quantity or product still
-  discards it (`test_formula_buybox_item_resync.py`).
+  a snapshot by the fields it carries (product, title, quantity), its own age
+  and its offers' age. A changed title, quantity or product still discards it
+  (`test_formula_buybox_item_resync.py`).
+- **Buybox is served from a 24-hour cache (9 October 2026).** Nothing sweeps
+  buybox: it is acquired only when a formula requests recovery, and one pass
+  over about 940 publications takes hours (L-020), so the former 15-minute
+  window left 934 of 935 publications unavailable and could never cover a whole
+  inventory. A snapshot younger than `CATALOG_BUYBOX_CACHE_MAX_AGE` (24 hours)
+  whose product, title and quantity still match the current item is served;
+  offers follow the same limit. `CATALOGOBUYBOX` and `CATALOGO` report
+  `cached_buybox_items` and `cached_buybox_observed_at` (acquisition time per
+  publication older than 15 minutes) in response metadata, and
+  `CATALOGOBUYBOX` keeps `buybox_complete=false` while any row is cached. Only
+  absent, older or mismatched snapshots request recovery, so each publication
+  costs at most one acquisition per day, and only while someone reads these
+  formulas. The cells carry no age; the metadata is the only age signal.
 - **Still open.** `resolve_item_history_sources` (stock-time and history
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,

@@ -560,12 +560,54 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
         "unavailable_shared_users": 0,
         "inventory_enumeration_current": True,
         "unavailable_buybox_items": 0,
+        "cached_buybox_items": 0,
+        "cached_buybox_observed_at": {},
         "unavailable_winning_time_items": 1,
         "winning_time_unavailable_reason": "catalog_history_not_reconciled",
         "unavailable_reason": "catalog_history_not_reconciled",
         "sales_as_of": NOW.isoformat(),
         "unavailable_sales_windows": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_catalogo_serves_hours_old_buybox_and_reports_its_age() -> None:
+    db = FakeDb()
+    _mark_read_model_fresh(db, ORDERS_READ_MODEL)
+    db["sheets_item_formula_rows"].documents = {
+        "82453304:SKU-1:MLA1": _item_row(
+            item_id="MLA1",
+            sku="sku-1",
+            title="Catalog item",
+            catalog_product_id="CAT-1",
+            price=Decimal("100"),
+        ),
+    }
+    db["sheets_catalog_buybox_snapshots"].documents = {
+        "82453304:MLA1": {
+            "_id": "82453304:MLA1",
+            "seller_id": "82453304",
+            "item_id": "MLA1",
+            "buybox_status": "winning",
+            "winning_price": Decimal("95"),
+            "winning_user_id": "82453304",
+            "competitors_sharing_first_place": 0,
+            "price_to_win": Decimal("94"),
+        }
+    }
+    _seed_catalog_inventory(db)
+    observed = NOW - timedelta(hours=6)
+    db["sheets_catalog_buybox_snapshots"].documents["82453304:MLA1"]["snapshot_at"] = observed
+
+    result = await _dispatcher(db).execute(
+        _context("ZELERDATA_CATALOGO", {"tipo_precio": "base", "encabezados": False})
+    )
+
+    assert result.values[0][16] == "winning"
+    assert result.values[0][18:] == [95, 100, "82453304", 0, 94, False]
+    assert result.meta["unavailable_buybox_items"] == 0
+    assert result.meta["cached_buybox_items"] == 1
+    assert result.meta["cached_buybox_observed_at"] == {"MLA1": observed}
 
 
 @pytest.mark.asyncio

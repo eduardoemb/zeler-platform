@@ -24,6 +24,7 @@ from zeler_sheets.formulas.read_models import (
     STOCK_TIME_METRICS_READ_MODEL,
     STOCKOUT_SNAPSHOTS_READ_MODEL,
     FormulaReadModelRepository,
+    cached_buybox_observed_at,
     normalize_sku,
 )
 
@@ -169,6 +170,7 @@ class RemainingPhase4FormulaHandlers:
         }
         participating = set(buybox_by_item_id) | set(missing_buybox)
         catalog_rows = [row for row in rows if row.get("item_id") in participating]
+        cached_buybox = cached_buybox_observed_at(buybox_rows, now=now)
         orders = (
             await self._repository.find_orders(
                 seller_id=context.seller_id,
@@ -255,6 +257,8 @@ class RemainingPhase4FormulaHandlers:
                 "unavailable_shared_users": unavailable_shared,
                 "inventory_enumeration_current": current and rows_current,
                 "unavailable_buybox_items": len(recoverable),
+                "cached_buybox_items": len(cached_buybox),
+                "cached_buybox_observed_at": cached_buybox,
                 "unavailable_winning_time_items": len(catalog_rows),
                 **(
                     {"winning_time_unavailable_reason": "catalog_history_not_reconciled"}

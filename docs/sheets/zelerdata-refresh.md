@@ -47,8 +47,9 @@ slow-moving history is still covered without paying that cost every 15 minutes.
 Item rows and catalog snapshots have no freshness marker, and none is
 published (see the item readiness rules in `zelerdata-formulas.md`). Their
 readers check how recent each acquisition is: the inventory enumeration, each
-publication's base row, quality, cost fields and buybox must be at most 15
-minutes old, and a catalog product snapshot at most 4 hours old. A daily sweep
+publication's base row, quality and cost fields must be at most 15 minutes
+old, a catalog product snapshot at most 4 hours old, and a buybox snapshot at
+most 24 hours old (served as cached after 15 minutes). A daily sweep
 would therefore keep those formulas `OK` only for minutes a day.
 
 Since L-021, the every-cycle bulk planner is off
@@ -74,7 +75,8 @@ it finishes:
   when every-cycle bulk sweeps ran alongside buybox jobs.
 - Buybox is never scheduled. Keeping roughly 900 publications within 15 minutes
   would require about 150 sustained requests per minute, which L-021 rules out.
-  `CATALOGOBUYBOX` and `CATALOGO` remain on demand.
+  `CATALOGOBUYBOX` and `CATALOGO` remain on demand and serve a snapshot for up
+  to 24 hours, so one on-demand pass covers a day of reads.
 - Bulk and spaced sweeps are mutually exclusive; enabling both fails startup.
 
 ## Freshness validity

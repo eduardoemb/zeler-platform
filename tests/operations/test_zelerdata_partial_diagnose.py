@@ -215,3 +215,48 @@ async def test_diagnose_survives_an_empty_seller(diag_db: Any) -> None:
     assert report["inventory_enumeration"]["present"] is False
     assert report["item_verification"]["universe"] == 0
     assert "error" not in report["item_verification"]
+
+
+@pytest.mark.asyncio
+async def test_diagnose_classifies_buybox_with_the_reader_cache_limit(diag_db: Any) -> None:
+    from zeler_sheets.formulas.read_models import CATALOG_BUYBOX_CACHE_MAX_AGE
+
+    ages = {
+        "MLA900001": timedelta(minutes=5),
+        "MLA900002": timedelta(hours=6),
+        "MLA900003": CATALOG_BUYBOX_CACHE_MAX_AGE + timedelta(minutes=1),
+    }
+    items = [
+        _item(
+            item_id,
+            synced=NOW - timedelta(minutes=1),
+            catalog_listing=True,
+            catalog_product_id="MLA77",
+        )
+        for item_id in ages
+    ]
+    await diag_db.items.insert_many(items)
+    await diag_db.sheets_catalog_buybox_snapshots.insert_many(
+        [
+            {
+                "_id": f"{SELLER}:{item_id}",
+                "seller_id": SELLER,
+                "item_id": item_id,
+                "catalog_product_id": "MLA77",
+                "title": "Titulo secreto",
+                "available_quantity": 3,
+                "buybox_status": "winning",
+                "snapshot_at": NOW - age,
+                "source": "sheets_backfill",
+            }
+            for item_id, age in ages.items()
+        ]
+    )
+
+    report = await diagnose(diag_db, seller_id=SELLER, now=NOW)
+
+    assert report["catalog"]["buybox_by_reader_state"] == {
+        "ready_current": 1,
+        "ready_cached": 1,
+        "snapshot_older_than_cache_limit": 1,
+    }
