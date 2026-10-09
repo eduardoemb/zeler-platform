@@ -22,6 +22,7 @@ from zeler_sheets.formulas.matrix_contracts import (
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.pricing import promo_price
 from zeler_sheets.formulas.read_models import (
+    ITEM_ENRICHMENT_CACHE_MAX_AGE,
     ITEM_FORMULA_ROWS_READ_MODEL,
     FormulaReadModelRepository,
 )
@@ -347,7 +348,7 @@ def _quality_row(row: Mapping[str, Any], *, now: datetime) -> list[Any]:
     ):
         return [*base, *["DATA_UNAVAILABLE"] * 12]
     if bound_item_id != str(row.get("item_id")) or not (
-        now - timedelta(minutes=15) < quality.observed_at <= now
+        now - ITEM_ENRICHMENT_CACHE_MAX_AGE < quality.observed_at <= now
     ):
         return [*base, *["DATA_UNAVAILABLE"] * 12]
     return [

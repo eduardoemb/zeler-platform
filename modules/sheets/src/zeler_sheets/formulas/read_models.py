@@ -45,6 +45,11 @@ CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL = "catalog_buybox_snapshots"
 # request recovery, so each publication costs at most one acquisition per day.
 CATALOG_BUYBOX_CURRENT_AGE = timedelta(minutes=15)
 CATALOG_BUYBOX_CACHE_MAX_AGE = timedelta(hours=24)
+# Publication enrichment (quality and costs) is also acquired only on demand,
+# and a pass over a whole inventory takes hours. Base re-syncs keep each state
+# trusted only while its basis still matches the publication, so a trusted
+# acquisition is served for a day instead of the base row's 15 minutes.
+ITEM_ENRICHMENT_CACHE_MAX_AGE = timedelta(hours=24)
 CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
 CATALOG_PRODUCT_CURRENT_AGE = timedelta(minutes=15)
 CATALOG_PRODUCT_CACHE_MAX_AGE = timedelta(hours=4)

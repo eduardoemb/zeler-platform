@@ -259,3 +259,35 @@ async def test_repeated_basic_acquisition_renews_only_the_observed_base(
     assert second.items_updated == 1
     assert stored["last_meli_sync_at"] == clock[0]
     assert stored["enrichment_state"]["seller_shipping_cost"]["synced_at"] == NOW
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [None, "thumbnail", "title"])
+async def test_repeated_basic_acquisition_keeps_quality_of_an_unchanged_publication(
+    change: str | None,
+) -> None:
+    # Mercado Libre item details carry `pictures`, which the canonical item
+    # document never stores. Comparing them made every base re-sync invalidate
+    # quality even when nothing changed.
+    db, gateway, detail = acquisition()
+    detail["pictures"] = [{"id": "P1", "url": "https://img.example/P1.jpg"}]
+    await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, base_only=True
+    )
+    stored = db["items"].documents["MLA1"]
+    assert "pictures" not in stored
+    stored["enrichment_state"]["quality_projection"] = trusted_state(
+        source="/item/{id}/performance", synced_at=NOW
+    )
+    if change == "thumbnail":
+        detail["thumbnail"] = "https://img.example/P2.jpg"
+    elif change == "title":
+        detail["title"] = "Changed title"
+
+    await run_item_detail_enrichment(
+        db=db, gateway=gateway, seller_id="82453304", dry_run=False, base_only=True
+    )
+
+    state = db["items"].documents["MLA1"]["enrichment_state"]["quality_projection"]
+    assert state["status"] == ("trusted" if change is None else "basis_mismatch")
+    assert state["synced_at"] == NOW

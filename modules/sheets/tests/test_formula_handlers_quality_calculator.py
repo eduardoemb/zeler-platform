@@ -298,7 +298,9 @@ async def test_calidad_uses_modern_local_quality_projection_without_suggested_pr
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("condition", ["fresh", "missing", "expired", "wrong_item", "future"])
+@pytest.mark.parametrize(
+    "condition", ["fresh", "hours_old", "missing", "expired", "wrong_item", "future"]
+)
 async def test_calidad_only_uses_owned_current_acquisition(condition: str) -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, ITEM_FORMULA_ROWS_READ_MODEL)
@@ -314,8 +316,10 @@ async def test_calidad_only_uses_owned_current_acquisition(condition: str) -> No
     }
     if condition == "missing":
         quality = {}
+    elif condition == "hours_old":
+        quality["observed_at"] = NOW - timedelta(hours=6)
     elif condition == "expired":
-        quality["observed_at"] = NOW - timedelta(minutes=15)
+        quality["observed_at"] = NOW - timedelta(hours=24)
     elif condition == "wrong_item":
         quality["entity_id"] = "MLA2"
     elif condition == "future":
@@ -332,7 +336,7 @@ async def test_calidad_only_uses_owned_current_acquisition(condition: str) -> No
     }
     result = await _dispatcher(db).execute(_context("ZELERDATA_CALIDAD", {"encabezados": "no"}))
     assert result.values[0][:4] == ["MLA1", "sku-1", "Known title", "active"]
-    if condition == "fresh":
+    if condition in {"fresh", "hours_old"}:
         assert result.values[0][7:9] == [69, "Good"]
         assert result.values[0][10:] == ["NA"] * 9
         assert result.recovery is None

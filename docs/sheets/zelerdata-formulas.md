@@ -15,7 +15,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | Formula | Example Google Sheets formula | Expected behavior |
 |---|---|---|
 | `ZELERDATA_CALCULADORA` | `=ZELERDATA_CALCULADORA("cuenta", "MLA1", "actual", "si")` | Modern cost projection from local item rows: selected price, seller shipping cost, listing fees, category/catalog/logistics fields, total costs, and estimated net. Missing cost source cells return `NA`. |
-| `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
+| `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. A trusted quality acquisition younger than 24 hours whose basis still matches the publication is served; `CALCULADO EN` shows when Mercado Libre calculated it. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
 | `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows; verified buybox snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. Verified snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
@@ -226,6 +226,16 @@ were switched off after the VM froze for about five hours.
   absent, older or mismatched snapshots request recovery, so each publication
   costs at most one acquisition per day, and only while someone reads these
   formulas. The cells carry no age; the metadata is the only age signal.
+- **Quality survives unchanged base re-syncs (9 October 2026).** A base
+  re-sync marks quality `basis_mismatch` when the publication's title,
+  thumbnail, attributes, shipping, user product or category changed. It also
+  compared `pictures`, which the canonical item never stores, so every re-sync
+  invalidated the quality of every publication (2,887 of 2,912 rows) and
+  `CALIDAD` had no row to show. The thumbnail now stands for the pictures
+  (`test_layered_basic_acquisition.py`). The reader also serves a trusted
+  acquisition for `ITEM_ENRICHMENT_CACHE_MAX_AGE` (24 hours) instead of 15
+  minutes: quality is acquired only on demand, and a pass over a whole
+  inventory takes hours.
 - **Still open.** `resolve_item_history_sources` (stock-time and history
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,

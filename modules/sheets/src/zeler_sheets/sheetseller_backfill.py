@@ -3721,11 +3721,13 @@ def _base_acquisition_enrichment_state(
         )
         and existing.get("status") == detail.get("status")
         and existing.get("currency_id") == detail.get("currency_id"),
+        # The canonical item never stores `pictures`, so comparing them made every
+        # base re-sync invalidate quality. `thumbnail` is the stored main picture.
         "quality_projection": all(
             _formula_row_values_equal(existing.get(field), detail.get(field))
             for field in (
                 "title",
-                "pictures",
+                "thumbnail",
                 "attributes",
                 "shipping",
                 "user_product_id",
