@@ -155,6 +155,14 @@ cualquiera de las rutas siguientes el mensaje pasa a decir desde cuándo hay dat
 
 ### `TIEMPOSTOCKACTIVO` y `SEMANASCONSTOCK`: acumular hacia adelante (M, SDD ligero)
 
+**Estado 2026-10-09: implementado en código, pendiente de rollout.** Colección
+`sheets_item_availability_transitions`; diseño y decisiones en
+`openspec/changes/zelerdata-availability-history/` y
+[zelerdata-formulas.md](zelerdata-formulas.md#availability-history-9-october-2026).
+Se eligió el mensaje (no la parte cubierta) y el latido observed-only de
+`item_status_states` como gate. Las series son por publicación o variación (ID
+de Mercado Libre), no por SKU.
+
 Una sola fuente para las dos. Cuando `record_stockout_observation` ve una publicación
 (o SKU de variación) cuyo `disponible = estado activo y stock > 0` cambió respecto de
 la última entrada, agrega una fila a una colección nueva append-only (nombre

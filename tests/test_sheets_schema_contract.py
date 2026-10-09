@@ -507,6 +507,47 @@ def test_remaining_phase4_read_model_indexes_match_formula_access_patterns() -> 
         assert [index["options"]["name"] for index in indexes] == expected_names
 
 
+def test_item_availability_transitions_schema_and_index_match_change_only_log() -> None:
+    validator = json.loads(
+        (ROOT / "infra/mongo/schemas/sheets_item_availability_transitions.json").read_text()
+    )
+    schema = validator["$jsonSchema"]
+
+    result = validate_document_against_schema({"_id": "doc-1"}, validator)
+
+    assert result.missing_required_fields == [
+        "seller_id",
+        "item_id",
+        "variation_id",
+        "available",
+        "status",
+        "available_quantity",
+        "observed_at",
+        "source",
+        "schema_version",
+    ]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["variation_id"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["sku"] == {"bsonType": ["string", "null"]}
+    assert schema["properties"]["available"] == {"bsonType": "bool"}
+    assert schema["properties"]["available_quantity"] == {
+        "bsonType": ["int", "long"],
+        "minimum": 0,
+    }
+    assert schema["properties"]["source"] == {
+        "enum": ["sheets_event_persistence", "sheets_backfill"]
+    }
+    indexes = json.loads(
+        (ROOT / "infra/mongo/indexes/sheets_item_availability_transitions.json").read_text()
+    )
+    assert indexes == [
+        {
+            "keys": {"seller_id": 1, "item_id": 1, "variation_id": 1, "observed_at": 1},
+            "options": {"name": "idx_sheets_item_availability_transitions_seller_series_observed"},
+        }
+    ]
+
+
 def test_seller_unit_costs_validator_and_indexes_match_contract() -> None:
     validator = json.loads((ROOT / "infra/mongo/schemas/seller_unit_costs.json").read_text())
     indexes = json.loads((ROOT / "infra/mongo/indexes/seller_unit_costs.json").read_text())

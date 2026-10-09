@@ -38,6 +38,7 @@ FORWARD_CANDIDATES: tuple[tuple[str, str | None, str | None], ...] = (
     ("item_status_states", "last_observed_at", "current_status"),
     ("item_status_transitions", "observed_at", "to_status"),
     ("sheets_stockout_snapshots", "observed_at", "stock_state"),
+    ("sheets_item_availability_transitions", "observed_at", "available"),
     ("sheets_price_history_snapshots", "snapshot_at", None),
     ("sheets_catalog_competition_observations", "observed_at", "status"),
     ("sheets_catalog_buybox_snapshots", "snapshot_at", "buybox_status"),

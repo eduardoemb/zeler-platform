@@ -8,6 +8,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
 
+from zeler_sheets.formulas.availability_metrics import (
+    AvailabilitySeries,
+    AvailabilityWindow,
+    SeriesHistory,
+    iso_weeks,
+    lacks_history,
+    load_availability,
+    seller_timezone,
+    semanas_con_stock_row,
+    tiempo_stock_activo_row,
+)
 from zeler_sheets.formulas.catalog_values import (
     catalog_only_competitor,
     catalog_shared_users,
@@ -29,8 +40,8 @@ from zeler_sheets.formulas.read_models import (
     CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
     FULL_WITHDRAWALS_READ_MODEL,
     ITEM_FORMULA_ROWS_READ_MODEL,
+    ITEM_STATUS_STATES_READ_MODEL,
     PRICE_HISTORY_SNAPSHOTS_READ_MODEL,
-    STOCK_TIME_METRICS_READ_MODEL,
     STOCKOUT_SNAPSHOTS_READ_MODEL,
     FormulaReadModelRepository,
     cached_buybox_observed_at,
@@ -395,63 +406,82 @@ class RemainingPhase4FormulaHandlers:
     async def sheetseller_tiempo_stock_activo(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_reconciled_range(
-            seller_id=context.seller_id,
-            read_model=STOCK_TIME_METRICS_READ_MODEL,
-            date_from=date_from,
-            date_to=date_to,
-            formula=context.contract.name,
-        )
+        window = await self._availability_window(context)
         item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones", "todos"))
-        metrics = await self._repository.find_stock_time_metrics(
+        series = await load_availability(
+            self._repository,
             seller_id=context.seller_id,
-            date_from=date_from,
-            date_to=date_to,
             item_ids=item_ids,
-            limit=None,
+            window_start=window.start,
+            window_end=window.end,
         )
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), TIEMPO_STOCK_ACTIVO_HEADERS
         )
         header_rows = len(values)
-        values.extend(_stock_time_row(metric) for metric in metrics)
+        values.extend(
+            tiempo_stock_activo_row(entry, history, window=window) for entry, history in series
+        )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(metrics), "columns": "stock_time_metrics"},
+            meta=_availability_meta(series, window=window, columns="availability_history"),
         )
 
     async def sheetseller_semanas_con_stock(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_reconciled_range(
-            seller_id=context.seller_id,
-            read_model=STOCK_TIME_METRICS_READ_MODEL,
-            date_from=date_from,
-            date_to=date_to,
-            formula=context.contract.name,
-        )
+        window = await self._availability_window(context)
+        weeks = iso_weeks(*window.local_dates)
         item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones", "todos"))
         skus = _normalize_optional_skus(context.args.get("skus", "todos"))
-        metrics = await self._repository.find_stock_time_metrics(
+        series = await load_availability(
+            self._repository,
             seller_id=context.seller_id,
-            date_from=date_from,
-            date_to=date_to,
             item_ids=item_ids,
-            skus=skus,
-            limit=None,
+            window_start=window.week_window_start(weeks),
+            window_end=window.end,
         )
-        week_headers = _week_headers(metrics)
-        headers = [*SEMANAS_CON_STOCK_BASE_HEADERS, *week_headers]
+        if skus is not None:
+            requested = set(skus)
+            series = [
+                (entry, history)
+                for entry, history in series
+                if history is not None and normalize_sku(history.sku) in requested
+            ]
+        headers = [*SEMANAS_CON_STOCK_BASE_HEADERS, *(week.header for week in weeks)]
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), headers)
         header_rows = len(values)
-        values.extend(_weekly_stock_row(metric, week_headers=week_headers) for metric in metrics)
+        values.extend(
+            semanas_con_stock_row(entry, history, weeks=weeks, window=window)
+            for entry, history in series
+        )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(metrics), "columns": "weekly_stock_presence"},
+            meta=_availability_meta(series, window=window, columns="weekly_stock_presence"),
+        )
+
+    async def _availability_window(self, context: FormulaExecutionContext) -> AvailabilityWindow:
+        now = _as_utc_datetime(self._now_fn())
+        try:
+            # The log is silent while nothing changes, so only the status
+            # observation heartbeat can prove that changes are being recorded.
+            await self._repository.require_read_model_productive(
+                seller_id=context.seller_id,
+                read_model=ITEM_STATUS_STATES_READ_MODEL,
+                date_to=now,
+                formula=context.contract.name,
+            )
+        except FormulaDataUnavailableError as unavailable:
+            raise FormulaDataUnavailableError(
+                context.contract.name,
+                "Las observaciones de disponibilidad no están al día; vuelve a intentar más tarde.",
+                read_model=ITEM_STATUS_STATES_READ_MODEL,
+            ) from unavailable
+        return AvailabilityWindow.from_arguments(
+            context.args.get("fecha_inicial"),
+            context.args.get("fecha_final"),
+            timezone=seller_timezone(context.seller_timezone),
+            now=now,
         )
 
     async def sheetseller_precio_historico(
@@ -578,6 +608,21 @@ class RemainingPhase4FormulaHandlers:
         )
 
 
+def _availability_meta(
+    series: Sequence[tuple[AvailabilitySeries, SeriesHistory | None]],
+    *,
+    window: AvailabilityWindow,
+    columns: str,
+) -> dict[str, Any]:
+    return {
+        "rows_count": len(series),
+        "rows_without_history": sum(
+            lacks_history(history, since=window.start) for _, history in series
+        ),
+        "columns": columns,
+    }
+
+
 class _OrderLine:
     def __init__(self, *, item_id: str, quantity: Decimal) -> None:
         self.item_id = item_id
@@ -676,28 +721,6 @@ def _stockout_row(snapshot: Mapping[str, Any], *, now: datetime, tipo_precio: An
     ]
 
 
-def _stock_time_row(metric: Mapping[str, Any]) -> list[Any]:
-    return [
-        _document_item_id(metric),
-        _snapshot_value(metric, "sku", "normalized_sku"),
-        _snapshot_value(metric, "title"),
-        _snapshot_value(metric, "url", "permalink"),
-        _sheet_optional_number(metric.get("active_stock_hours")),
-        _sheet_optional_number(metric.get("total_hours")),
-        _sheet_optional_number(metric.get("active_stock_percent")),
-    ]
-
-
-def _weekly_stock_row(metric: Mapping[str, Any], *, week_headers: Sequence[str]) -> list[Any]:
-    weeks_by_header = {_week_header(week): week for week in _weeks(metric)}
-    return [
-        _document_item_id(metric),
-        _snapshot_value(metric, "sku", "normalized_sku"),
-        _snapshot_value(metric, "title"),
-        *[_weekly_stock_cell(weeks_by_header.get(header)) for header in week_headers],
-    ]
-
-
 def _price_history_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]:
     prices = _history_entries(row, preferred_key="prices", fallback_key=f"{tipo_precio}_prices")[:3]
     flattened: list[Any] = []
@@ -787,37 +810,6 @@ def _is_currently_out_of_stock(snapshot: Mapping[str, Any]) -> bool:
         _first_value(snapshot, "current_stock", "available_quantity", "stock")
     )
     return current_stock == Decimal("0")
-
-
-def _week_headers(metrics: Sequence[Mapping[str, Any]]) -> list[str]:
-    for metric in metrics:
-        headers = [_week_header(week) for week in _weeks(metric)]
-        if headers:
-            return headers
-    return []
-
-
-def _weeks(metric: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    raw_weeks = metric.get("weeks") or []
-    if not isinstance(raw_weeks, Sequence) or isinstance(raw_weeks, (str, bytes)):
-        return []
-    return [week for week in raw_weeks if isinstance(week, Mapping)]
-
-
-def _week_header(week: Mapping[str, Any]) -> str:
-    start = _sheet_optional_number(_first_value(week, "start_day", "start"))
-    end = _sheet_optional_number(_first_value(week, "end_day", "end"))
-    return f"{start} - {end}"
-
-
-def _weekly_stock_cell(week: Mapping[str, Any] | None) -> str:
-    if week is None:
-        return NA_VALUE
-    for key in ("label", "status"):
-        value = week.get(key)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return "Con stock" if bool(week.get("has_stock")) else "Sin stock"
 
 
 def _history_entries(

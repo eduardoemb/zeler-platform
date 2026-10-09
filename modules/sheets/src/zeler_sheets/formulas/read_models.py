@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -25,6 +25,7 @@ from zeler_sheets.formulas.schemas import FormulaContract
 from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
 
+ITEM_AVAILABILITY_TRANSITIONS_COLLECTION = "sheets_item_availability_transitions"
 ITEM_FORMULA_ROWS_COLLECTION = "sheets_item_formula_rows"
 ITEM_SKU_INDEX_COLLECTION = "sheets_item_sku_index"
 CATALOG_BUYBOX_SNAPSHOTS_COLLECTION = "sheets_catalog_buybox_snapshots"
@@ -1103,6 +1104,33 @@ class FormulaReadModelRepository:
             [("item_id", 1), ("normalized_sku", 1), ("date_from", 1), ("_id", 1)]
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def iter_item_availability_identities(
+        self, *, seller_id: str, item_ids: Sequence[str] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream current publications projected to what availability rows show."""
+        filter_spec: dict[str, Any] = {"seller_id": seller_id}
+        if item_ids:
+            filter_spec["_id"] = {"$in": list(dict.fromkeys(item_ids))}
+        cursor = self._db["items"].find(
+            filter_spec, {"_id": 1, "title": 1, "permalink": 1, "variations.id": 1}
+        )
+        async for item in cursor.sort([("_id", 1)]):
+            yield cast("dict[str, Any]", item)
+
+    async def iter_item_availability_transitions(
+        self, *, seller_id: str, item_ids: Sequence[str] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream the seller's availability changes in series order."""
+        filter_spec: dict[str, Any] = {"seller_id": seller_id}
+        if item_ids:
+            filter_spec["item_id"] = {"$in": list(dict.fromkeys(item_ids))}
+        cursor = self._db[ITEM_AVAILABILITY_TRANSITIONS_COLLECTION].find(
+            filter_spec,
+            {"_id": 0, "item_id": 1, "variation_id": 1, "sku": 1, "available": 1, "observed_at": 1},
+        )
+        async for row in cursor.sort([("item_id", 1), ("variation_id", 1), ("observed_at", 1)]):
+            yield cast("dict[str, Any]", row)
 
     async def find_full_withdrawals(
         self,

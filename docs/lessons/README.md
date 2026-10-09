@@ -104,6 +104,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-045 | ZelerData | Serve a source-declared absence as NA instead of recovering it | active |
 | L-046 | Shell tests | Keep deploy scripts bash 3.2-safe and sandbox GNU-only calls on macOS | active |
 | L-047 | ZelerData | Compute interval metrics from observations at read time, not from import markers | active |
+| L-048 | ZelerData | Gate a change-only history on its observation heartbeat | active |
 
 ## Cloud Build and VM deployment
 
@@ -787,4 +788,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `modules/sheets/tests/test_catalog_winning_time.py`,
   `docs/sheets/zelerdata-time-metrics-plan.md` ("Avance 2026-10-09"). Not yet
   observed in production.
+- status: active
+
+### L-048 — Gate a change-only history on its observation heartbeat
+- area: ZelerData availability history (`TIEMPOSTOCKACTIVO`, `SEMANASCONSTOCK`)
+- proven path: Accumulate forward a log that writes a row only when a series'
+  state changes, keyed by Mercado Libre identity (publication or variation),
+  and compute the metrics at read time. Prove freshness with the observation
+  heartbeat (`item_status_states` observed-only marker), and show
+  `Sin histórico antes de <fecha hora>` for time before a series' first row.
+- failed path: Gating on the log's own newest row: a change-only log is silent
+  while nothing changes, so a healthy pipeline would look stale. Filling
+  uncovered time with the current state presents it as history (rejected
+  2026-09-24). Reading at request time instead of from import markers is L-047.
+- verification/source: `modules/sheets/tests/test_availability_history_writer.py`
+  (real Mongo, strict validator), `test_formula_availability_history.py`,
+  `test_availability_metrics.py`, `docs/sheets/zelerdata-formulas.md`
+  ("Availability history"). Not yet observed in production.
 - status: active

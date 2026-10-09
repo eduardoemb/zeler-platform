@@ -16,7 +16,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 |---|---|---|
 | `ZELERDATA_CALCULADORA` | `=ZELERDATA_CALCULADORA("cuenta", "MLA1", "actual", "si")` | Modern cost projection from local item rows: selected price, seller shipping cost, listing fees, category/catalog/logistics fields, total costs, and estimated net. Missing cost source cells return `NA`. |
 | `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. A trusted quality acquisition younger than 24 hours whose basis still matches the publication is served; `CALCULADO EN` shows when Mercado Libre calculated it. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
-| `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows; verified buybox snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. `% TIEMPO GANANDO` uses the same observed calculation as `ZELERDATA_CATALOGOTIEMPO` over the rolling last 30 days, or `Sin histórico antes de <fecha>` when observations start inside that window. |
+| `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows; verified buybox snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. `% TIEMPO GANANDO` uses the same observed calculation as `ZELERDATA_CATALOGOTIEMPO` over the rolling last 30 days, or `Sin histórico antes de <fecha hora>` when observations start inside that window. |
 | `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. Verified snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
 | `ZELERDATA_CATALOGOSINVINCULAR` | `=ZELERDATA_CATALOGOSINVINCULAR("cuenta", "si")` | Current publications locally marked as catalog-link suggestions. |
@@ -50,14 +50,14 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | Current publication table. Pause-duration columns use the same Zeler-observed current pause basis as `ZELERDATA_PAUSADAS`. |
 | `ZELERDATA_PUBLICACIONESDESCUIDADAS` | `=ZELERDATA_PUBLICACIONESDESCUIDADAS("cuenta", "base", "si")` | Full paused out-of-stock publications older than 10 days, using the shared Zeler-observed current pause basis from current item rows and unavailable-detail fields. |
 | `ZELERDATA_RETIROS` | `=ZELERDATA_RETIROS("cuenta", "2026-01-01", "2026-01-31", "si")` | Declared unavailable: Mercado Libre does not expose the Full withdrawal identifier, so every call answers `DATA_UNAVAILABLE` with that reason and requests no recovery. |
-| `ZELERDATA_SEMANASCONSTOCK` | `=ZELERDATA_SEMANASCONSTOCK("cuenta", "todos", "todos", "2026-01-01", "2026-01-31", "si")` | Weekly dynamic stock-presence matrix from local stock time metrics; cells emit `Con stock` or `Sin stock`. |
+| `ZELERDATA_SEMANASCONSTOCK` | `=ZELERDATA_SEMANASCONSTOCK("cuenta", "todos", "todos", "2026-01-01", "2026-01-31", "si")` | One column per ISO week of the range (`<año> - <semana>`), per publication or variation, from the Zeler availability log: `Con stock` or `Sin stock` at the week's end, `Sin histórico antes de <fecha hora>` before the first observation, `NA` for weeks not started. See [Availability history](#availability-history-9-october-2026). |
 | `ZELERDATA_SKU` | `=ZELERDATA_SKU("cuenta")` | Unique SKU list. |
 | `ZELERDATA_STATUS` | `=ZELERDATA_STATUS("cuenta", "MLA1")` | Current publication status. |
 | `ZELERDATA_STOCK` | `=ZELERDATA_STOCK("cuenta", "SKU-1", "MLA1")` | Stock by SKU and item ID. |
 | `ZELERDATA_SUPERMERCADO` | `=ZELERDATA_SUPERMERCADO("cuenta", "MLA1")` | `Supermercado` when local item tags include `supermarket_eligible`; `Normal` when the item exists without it; `N/A` when the item is missing. |
 | `ZELERDATA_TIEMPOACTIVA` | `=ZELERDATA_TIEMPOACTIVA("cuenta", "MLA1")` | Current active-status days from `item_status_states`; missing or non-active rows return `NA`. |
 | `ZELERDATA_TIEMPOSINSTOCK` | `=ZELERDATA_TIEMPOSINSTOCK("cuenta", "base", "si")` | Current out-of-stock duration rows from local stockout snapshots. |
-| `ZELERDATA_TIEMPOSTOCKACTIVO` | `=ZELERDATA_TIEMPOSTOCKACTIVO("cuenta", "2026-01-01", "2026-01-31", "todos", "si")` | Active-stock time metrics from bounded local stock/status history summaries. |
+| `ZELERDATA_TIEMPOSTOCKACTIVO` | `=ZELERDATA_TIEMPOSTOCKACTIVO("cuenta", "2026-01-01", "2026-01-31", "todos", "si")` | Hours available (active with stock), hours in the range and the percentage, per publication or variation, from the Zeler availability log; `Sin histórico antes de <fecha hora>` when the log starts after the range. See [Availability history](#availability-history-9-october-2026). |
 | `ZELERDATA_TITULO` | `=ZELERDATA_TITULO("cuenta", "MLA1")` | Current listing title. |
 | `ZELERDATA_TOPVENTASDINERO` | `=ZELERDATA_TOPVENTASDINERO("cuenta", "2026-01-01", "2026-01-31", 10, "si")` | Top revenue table for a date range. |
 | `ZELERDATA_TOPVENTASUNIDADES` | `=ZELERDATA_TOPVENTASUNIDADES("cuenta", "2026-01-01", "2026-01-31", 10, "si")` | Top units-sold table for a date range. |
@@ -136,6 +136,7 @@ Pause-duration outputs are not historical Mercado Libre truth unless Mercado Lib
 | `ZELERDATA_DEVOLUCIONES` | One joint `devoluciones` marker over `claims` and `orders`; returned quantities must come from explicit positive integral `return_quantity`. |
 | `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` from scoped item rows with `catalog_product_id`, fetched from `/products/{catalog_product_id}`. |
 | `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` from scoped item rows, fetched from `/items/{item_id}/price_to_win?version=v2`. |
+| `ZELERDATA_TIEMPOSTOCKACTIVO` / `ZELERDATA_SEMANASCONSTOCK` | The observed-only `item_status_states` heartbeat certifying a read at now; values come from `sheets_item_availability_transitions` and are never recovered. |
 
 ### DEVOLUCIONES joint readiness
 
@@ -275,6 +276,46 @@ were switched off after the VM froze for about five hours.
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,
   because the acquired-price proof is bound to the item's observation cut.
+
+## Availability history (9 October 2026)
+
+`TIEMPOSTOCKACTIVO` and `SEMANASCONSTOCK` read `sheets_item_availability_transitions`,
+an append-only log that Zeler started accumulating itself; Mercado Libre has no
+such history and the legacy `variations_history` is not imported.
+
+- **What is recorded.** A publication, or each of its variations when it has
+  any, is *available* while it is `active` and its `available_quantity` is
+  above zero (the legacy definition). Every accepted item observation (item
+  events, the inventory sweep and item recovery) appends a row only when a
+  series has none yet or its availability changed. Retries and older
+  observations add nothing. Precision is the observation cycle, not the minute.
+- **Variations.** A series is keyed by publication and variation ID, not by SKU.
+  The SKU shown is the one recorded at the newest change, so a rename without an
+  availability change shows the old SKU until the next change.
+- **Ranges.** From local midnight of `fecha_inicial` to local midnight after
+  `fecha_final` in the seller's time zone, clipped to now. Hours and percentage
+  are numbers with two decimals.
+- **No invented history.** Before a series' first row nothing is known: the row
+  shows `Sin histórico antes de <fecha hora>` (`Sin histórico` if it has no row at
+  all) instead of a value, in `TIEMPO ACTIVA` or in each uncovered week. The
+  current state is never presented as history (decision of 2026-09-24).
+  `rows_without_history` in the metadata counts rows whose history starts after
+  the range start.
+- **Gate.** A change-only log is silent while nothing changes, so it cannot
+  prove its own freshness. Both formulas require the observed-only
+  `item_status_states` marker to certify a read at now (the same heartbeat as
+  `TIEMPOACTIVA`) and otherwise answer `DATA_UNAVAILABLE` without recovery.
+- **Cost.** Each call streams the seller's transitions once with a projection,
+  keeping per series only its first row, the state at the window start, the
+  changes inside it and the newest SKU, plus the projected `items` (title,
+  permalink, variation IDs). A seller with millions of transitions would need a
+  pre-aggregated opening state.
+
+Rollout: apply the `sheets_item_availability_transitions` validator and index
+(`infra/mongo/apply_validators.py`) before the new `sheets-api` and
+`sheets-worker` images. Coverage starts when the new worker first observes each
+publication; `infra/operations/zelerdata_time_metrics_probe.py` reports the
+log's rows, publications and date range.
 
 ## Deferred formulas
 

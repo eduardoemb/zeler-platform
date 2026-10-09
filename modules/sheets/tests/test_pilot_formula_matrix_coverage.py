@@ -19,6 +19,7 @@ HANDLER_TEST_FILES = [
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_orders_questions.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_item_shipping_catalog.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_remaining_phase4.py",
+    REPO_ROOT / "modules/sheets/tests/test_formula_availability_history.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_returns_histories_withdrawals.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_quality_calculator.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_read_models.py",

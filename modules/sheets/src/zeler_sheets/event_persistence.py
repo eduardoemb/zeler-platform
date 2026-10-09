@@ -24,6 +24,7 @@ from zeler_platform_core.models import (
     Shipment,
 )
 from zeler_platform_core.models.base import current_schema_version
+from zeler_sheets.availability_history import record_availability_observation
 from zeler_sheets.enrichment import (
     enrichment_basis_matches,
     enrichment_state,
@@ -230,6 +231,13 @@ class SheetsEventPersistence:
             observed_at=observed_at,
             source="sheets_backfill",
             observation_basis="current_observed",
+        )
+        await record_availability_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_backfill",
         )
 
     async def _legacy_status_history_blocks_item_replace(
@@ -588,6 +596,13 @@ class SheetsEventPersistence:
             observed_at=observed_at,
             source="sheets_event_persistence",
             observation_basis="event_observed",
+        )
+        await record_availability_observation(
+            self._db,
+            item,
+            seller_id=seller_id,
+            observed_at=observed_at,
+            source="sheets_event_persistence",
         )
         sku_index_docs = build_sku_index_docs(item, seller_id=seller_id)
         item_id = str(item["_id"])

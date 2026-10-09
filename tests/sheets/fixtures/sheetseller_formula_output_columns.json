@@ -136,25 +136,25 @@
     },
     "ZELERDATA_TIEMPOSTOCKACTIVO": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_TIEMPOSTOCKACTIVO",
-      "compatibility_note": "Active-stock time metrics from bounded local stock/status history summaries.",
+      "compatibility_note": "Computed at read time from the sheets_item_availability_transitions change log per publication or variation; time before the first observation is reported as missing history.",
       "columns": [
-        {"name": "ID PUBLICACION", "source": "sheets_stock_time_metrics.item_id", "status": "mvp"},
-        {"name": "SKU", "source": "sheets_stock_time_metrics.sku | normalized_sku", "status": "mvp"},
-        {"name": "TITULO", "source": "sheets_stock_time_metrics.title", "status": "mvp"},
-        {"name": "URL", "source": "sheets_stock_time_metrics.url", "status": "mvp"},
-        {"name": "TIEMPO ACTIVA", "source": "sheets_stock_time_metrics.active_stock_hours", "status": "mvp"},
-        {"name": "TIEMPO TOTAL", "source": "sheets_stock_time_metrics.total_hours", "status": "mvp"},
-        {"name": "% TIEMPO ACTIVA", "source": "sheets_stock_time_metrics.active_stock_percent", "status": "mvp"}
+        {"name": "ID PUBLICACION", "source": "items._id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_availability_transitions.sku (newest change)", "status": "mvp"},
+        {"name": "TITULO", "source": "items.title", "status": "mvp"},
+        {"name": "URL", "source": "items.permalink", "status": "mvp"},
+        {"name": "TIEMPO ACTIVA", "source": "sheets_item_availability_transitions.available intervals (hours)", "status": "mvp"},
+        {"name": "TIEMPO TOTAL", "source": "requested range in seller time zone, clipped to now (hours)", "status": "mvp"},
+        {"name": "% TIEMPO ACTIVA", "source": "TIEMPO ACTIVA / TIEMPO TOTAL", "status": "mvp"}
       ]
     },
     "ZELERDATA_SEMANASCONSTOCK": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_SEMANASCONSTOCK",
-      "compatibility_note": "Weekly dynamic headers are derived from local stock time metric week buckets and cells emit Con stock/Sin stock.",
+      "compatibility_note": "Weekly dynamic headers are the ISO weeks of the range; cells emit Con stock/Sin stock from the sheets_item_availability_transitions state at each week end.",
       "columns": [
-        {"name": "ID PUBLICACION", "source": "sheets_stock_time_metrics.item_id", "status": "mvp"},
-        {"name": "SKU", "source": "sheets_stock_time_metrics.sku | normalized_sku", "status": "mvp"},
-        {"name": "TITULO", "source": "sheets_stock_time_metrics.title", "status": "mvp"},
-        {"name": "SEMANAS DINAMICAS", "source": "sheets_stock_time_metrics.weeks[].has_stock", "status": "mvp"}
+        {"name": "ID PUBLICACION", "source": "items._id", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_availability_transitions.sku (newest change)", "status": "mvp"},
+        {"name": "TITULO", "source": "items.title", "status": "mvp"},
+        {"name": "SEMANAS DINAMICAS", "source": "sheets_item_availability_transitions.available at each ISO week end", "status": "mvp"}
       ]
     },
     "ZELERDATA_PRECIOHISTORICO": {

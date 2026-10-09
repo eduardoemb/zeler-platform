@@ -2,6 +2,7 @@ from zeler_platform_core.models.base import current_schema_version
 from zeler_platform_core.models.entities import (
     Claim,
     Item,
+    ItemAvailabilityTransition,
     ItemEnrichmentBasis,
     ItemEnrichmentFieldState,
     ItemEnrichmentState,
@@ -67,6 +68,7 @@ __all__ = [
     "ItemEnrichmentFieldState",
     "ItemEnrichmentState",
     "ItemStatusState",
+    "ItemAvailabilityTransition",
     "ItemStatusTransition",
     "ListingFeeProjection",
     "ListingPriceFixedFeeProjection",

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.events.claims import ClaimOutcome
 from zeler_sheets import consumer
@@ -48,6 +49,11 @@ class FakeCollection:
 
     def find(self, query: dict[str, Any]) -> FakeCursor:
         return FakeCursor([doc for doc in self.docs if _matches_filter(doc, query)])
+
+    async def insert_one(self, document: dict[str, Any]) -> None:
+        if any(doc.get("_id") == document["_id"] for doc in self.docs):
+            raise DuplicateKeyError("duplicate key")
+        self.docs.append(dict(document))
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False

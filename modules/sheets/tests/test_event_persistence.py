@@ -671,6 +671,45 @@ async def test_accepted_item_events_project_observed_price_history_and_stockout_
     assert stockout_document["out_of_stock_since"] == datetime(2026, 6, 17, 11, 0, tzinfo=UTC)
     assert stockout_document["observed_at"] == datetime(2026, 6, 17, 12, 0, tzinfo=UTC)
     assert stockout_document["observation_basis"] == "event_observed"
+    availability = sorted(
+        db["sheets_item_availability_transitions"].documents.values(),
+        key=lambda row: row["observed_at"],
+    )
+    assert [
+        (row["available"], row["status"], row["available_quantity"], row["observed_at"])
+        for row in availability
+    ] == [
+        (True, "active", 7, datetime(2026, 6, 17, 10, 0, tzinfo=UTC)),
+        (False, "paused", 0, datetime(2026, 6, 17, 11, 0, tzinfo=UTC)),
+    ]
+    assert {row["source"] for row in availability} == {"sheets_event_persistence"}
+    assert {(row["item_id"], row["variation_id"], row["sku"]) for row in availability} == {
+        ("MLA1", None, "sku-1")
+    }
+
+
+@pytest.mark.asyncio
+async def test_acquired_item_projection_records_availability_once_at_its_observation() -> None:
+    synced_at = datetime(2026, 6, 17, 10, 0, tzinfo=UTC)
+    db = FakeDb()
+    db["items"].documents["MLA1"] = {
+        **event_persistence_module._canonical_item_document(
+            {**_item_resource("active"), "available_quantity": 0},
+            seller_id="82453304",
+            synced_at=synced_at,
+        ),
+    }
+    persistence = SheetsEventPersistence(
+        db=db, clock=lambda: datetime(2026, 6, 18, 0, 0, tzinfo=UTC)
+    )
+
+    await persistence.project_acquired_item_history(seller_id="82453304", item_id="MLA1")
+    await persistence.project_acquired_item_history(seller_id="82453304", item_id="MLA1")
+
+    rows = list(db["sheets_item_availability_transitions"].documents.values())
+    assert [(row["available"], row["observed_at"], row["source"]) for row in rows] == [
+        (False, synced_at, "sheets_backfill")
+    ]
 
 
 class FakeDb:

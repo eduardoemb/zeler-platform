@@ -1175,6 +1175,36 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             **SCHEMA_VERSION,
         },
     },
+    # Append-only: one row each time a publication or variation starts or stops
+    # being available (status active and stock above zero).
+    "sheets_item_availability_transitions": {
+        "additionalProperties": False,
+        "required": [
+            "_id",
+            "seller_id",
+            "item_id",
+            "variation_id",
+            "available",
+            "status",
+            "available_quantity",
+            "observed_at",
+            "source",
+            "schema_version",
+        ],
+        "properties": {
+            **ID_STRING,
+            "seller_id": {"bsonType": "string"},
+            "item_id": {"bsonType": "string"},
+            "variation_id": {"bsonType": ["string", "null"]},
+            "sku": {"bsonType": ["string", "null"]},
+            "available": {"bsonType": "bool"},
+            "status": {"bsonType": "string"},
+            "available_quantity": {"bsonType": ["int", "long"], "minimum": 0},
+            "observed_at": DATE,
+            "source": {"enum": ["sheets_event_persistence", "sheets_backfill"]},
+            **SCHEMA_VERSION,
+        },
+    },
     "claims": {
         "required": [
             "_id",

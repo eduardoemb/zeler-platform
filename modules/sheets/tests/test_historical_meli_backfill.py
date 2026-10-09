@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from bson.decimal128 import Decimal128
+from pymongo.errors import DuplicateKeyError
 
 import zeler_sheets.claim_projection as claim_projection_module
 import zeler_sheets.event_persistence as event_persistence_module
@@ -112,6 +113,11 @@ class FakeCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self._documents = documents
 
+    def sort(self, fields: list[tuple[str, int]]) -> FakeCursor:
+        for field, direction in reversed(fields):
+            self._documents.sort(key=lambda doc: str(doc.get(field) or ""), reverse=direction < 0)
+        return self
+
     async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
         return self._documents[:length]
 
@@ -179,6 +185,11 @@ class FakeCollection:
             if _matches_filter(document, filter_spec):
                 return dict(document)
         return None
+
+    async def insert_one(self, document: dict[str, Any]) -> None:
+        if str(document["_id"]) in self.documents:
+            raise DuplicateKeyError("duplicate key")
+        self.documents[str(document["_id"])] = dict(document)
 
     def find(
         self, filter_spec: dict[str, Any], projection: dict[str, int] | None = None

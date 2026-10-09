@@ -588,6 +588,39 @@ class ItemStatusTransition(UtcDatetimeMixin, SellerScopedDocument):
         return normalized
 
 
+class ItemAvailabilityTransition(UtcDatetimeMixin, SellerScopedDocument):
+    """One change of `available` (status active and stock above zero).
+
+    A row is per publication, or per variation when the publication has any.
+    """
+
+    item_id: str
+    variation_id: str | None
+    sku: str | None = None
+    available: bool
+    status: str
+    available_quantity: int = Field(ge=0)
+    observed_at: datetime
+    source: Literal["sheets_event_persistence", "sheets_backfill"]
+
+    @field_validator("item_id", "status", mode="before")
+    @classmethod
+    def _coerce_required_string(cls, value: object) -> str:
+        normalized = _coerce_str(value).strip()
+        if not normalized:
+            msg = "availability transition fields must not be blank"
+            raise ValueError(msg)
+        return normalized
+
+    @field_validator("variation_id", mode="before")
+    @classmethod
+    def _coerce_variation_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = _coerce_str(value).strip()
+        return normalized or None
+
+
 class ItemStatusState(UtcDatetimeMixin, SellerScopedDocument):
     item_id: str
     current_status: str

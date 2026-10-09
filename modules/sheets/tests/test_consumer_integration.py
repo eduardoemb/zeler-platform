@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.clients.meli_gateway_client import MeliGatewayClient
 from zeler_sheets import consumer
@@ -22,6 +23,11 @@ class FakeAuth:
 class FakeCursor:
     def __init__(self, documents: list[dict[str, Any]]) -> None:
         self._documents = documents
+
+    def sort(self, fields: list[tuple[str, int]]) -> FakeCursor:
+        for field, direction in reversed(fields):
+            self._documents.sort(key=lambda doc: str(doc.get(field) or ""), reverse=direction < 0)
+        return self
 
     async def to_list(self, *, length: int | None = None) -> list[dict[str, Any]]:
         return self._documents[:length]
@@ -50,6 +56,11 @@ class FakeCollection:
         return FakeCursor(
             [document for document in self.documents if _matches_filter(document, query)]
         )
+
+    async def insert_one(self, document: dict[str, Any]) -> None:
+        if any(existing.get("_id") == document["_id"] for existing in self.documents):
+            raise DuplicateKeyError("duplicate key")
+        self.documents.append(dict(document))
 
     async def replace_one(
         self, filter_spec: dict[str, Any], replacement: dict[str, Any], *, upsert: bool = False
