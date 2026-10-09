@@ -26,7 +26,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_CODIGOML2SKUID` | `=ZELERDATA_CODIGOML2SKUID("cuenta", "INV-1", "si")` | Code, item ID, and SKU rows. |
 | `ZELERDATA_COMISION` | `=ZELERDATA_COMISION("cuenta", "MLA1", "si")` | Publication commission table for the requested item IDs, backed by listing-price projections. Missing values return `NA`. |
 | `ZELERDATA_COMPRADORES` | `=ZELERDATA_COMPRADORES("cuenta", "ORDER-1", "si")` | Buyer/address table with the eight approved fields: Nombre Comprador, Calle, Número, Colonia, Código Postal, Ciudad, Estado, and País. Missing values return `NA`. |
-| `ZELERDATA_COSTOENVIOVENDEDOR` | `=ZELERDATA_COSTOENVIOVENDEDOR("cuenta", "SKU-1", "MLA1")` | Latest realized seller-paid shipment cost per unit from local orders and shipment cost snapshots. |
+| `ZELERDATA_COSTOENVIOVENDEDOR` | `=ZELERDATA_COSTOENVIOVENDEDOR("cuenta", "SKU-1", "MLA1")` | Latest realized seller-paid shipment cost per unit from local orders and shipment cost snapshots. A cost not yet acquired is `DATA_UNAVAILABLE` for that pair and requests shipment recovery; a cost the source declared unavailable, or a pair without a shipment, is `NA`. |
 | `ZELERDATA_DASHBOARD` | `=ZELERDATA_DASHBOARD("cuenta", "todos", "todos", "base", "si")` | Current item dashboard table with sales-window metrics. Cart IDs are intentionally omitted. |
 | `ZELERDATA_DASHBOARDSINCATALOGO` | `=ZELERDATA_DASHBOARDSINCATALOGO("cuenta", "todos", "todos", "base", "si")` | Dashboard table excluding catalog items, with sales-window metrics. Cart IDs are intentionally omitted. |
 | `ZELERDATA_DIASDESDEULTIMAVENTA` | `=ZELERDATA_DIASDESDEULTIMAVENTA("cuenta", "SKU-1", "MLA1")` | Days since the last sale for a SKU and item ID. |
@@ -236,6 +236,20 @@ were switched off after the VM froze for about five hours.
   acquisition for `ITEM_ENRICHMENT_CACHE_MAX_AGE` (24 hours) instead of 15
   minutes: quality is acquired only on demand, and a pass over a whole
   inventory takes hours.
+- **Calculator costs follow the same 24-hour limit (9 October 2026).** Seller
+  shipping cost, listing fees, the fixed fee and the current promotion were
+  `trusted` on 2,911 of 2,912 rows, yet `CALCULADORA` discarded them because
+  their acquisition was older than 15 minutes; nothing but formula recovery
+  re-acquires them. Base re-syncs already mark each one `basis_mismatch` when
+  its price, category, listing type, logistics, weight, tags or currency
+  change, so a trusted cost is now served for `ITEM_ENRICHMENT_CACHE_MAX_AGE`.
+- **COSTOENVIOVENDEDOR is per pair (9 October 2026).** Shipment costs come
+  only from shipment recovery (`/shipments/{id}/costs`); no sweep acquires
+  them. The formula used to fail as a whole when any selected shipment lacked a
+  cost, and requested recovery even for costs the source had declared
+  unavailable, so one such shipment kept it unavailable and re-requesting
+  forever. It now serves every known cost, marks the missing ones, and recovers
+  only costs never acquired.
 - **Still open.** `resolve_item_history_sources` (stock-time and history
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,

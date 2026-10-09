@@ -228,27 +228,40 @@ class ItemShippingCatalogFormulaHandlers:
                 read_model="orders",
                 order_ids=missing_order_ids,
             )
-        real_shipping_costs = await _real_shipping_costs_for_orders(
+        real_shipping_costs, recoverable = await _real_shipping_costs_for_orders(
             repository=self._repository,
             seller_id=context.seller_id,
             orders=[order for order, _line in selected.values()],
         )
-        latest_cost_by_pair = {
-            pair: real_shipping_costs[_shipment_id(order)] / line.quantity
-            for pair, (order, line) in selected.items()
-        }
         values: list[list[Any]] = []
         misses = 0
         for pair in pairs:
-            cost = latest_cost_by_pair.get((pair.sku, pair.item_id))
-            if cost is None:
+            order_line = selected.get((pair.sku, pair.item_id))
+            shipment_id = _shipment_id(order_line[0]) if order_line else None
+            cost = real_shipping_costs.get(shipment_id) if shipment_id else None
+            if cost is not None and order_line is not None:
+                values.append([_sheet_number(cost / order_line[1].quantity)])
+            elif shipment_id in recoverable:
+                values.append(["DATA_UNAVAILABLE"])
+            else:
+                # No relevant shipment, or the source declared it has no cost.
                 misses += 1
                 values.append([NA_VALUE])
-                continue
-            values.append([_sheet_number(cost)])
         return FormulaExecutionResult(
             values=values,
-            meta={"partial_misses": misses, "orders_count": len(orders)},
+            recovery=FormulaDataUnavailableError(
+                context.contract.name,
+                "Shipping costs are missing and must be recovered.",
+                read_model=SHIPMENTS_READ_MODEL,
+                shipment_ids=recoverable,
+            )
+            if recoverable
+            else None,
+            meta={
+                "partial_misses": misses,
+                "orders_count": len(orders),
+                **({"unavailable_shipments": len(recoverable)} if recoverable else {}),
+            },
         )
 
     async def sheetseller_envios_mercadoenvios(
@@ -558,15 +571,23 @@ async def _real_shipping_costs_for_orders(
     repository: FormulaReadModelRepository,
     seller_id: str,
     orders: Sequence[Mapping[str, Any]],
-) -> dict[str, Decimal]:
+) -> tuple[dict[str, Decimal], tuple[str, ...]]:
+    """Serve every known cost; only costs never acquired are recoverable.
+
+    A cost the source declared unavailable is not requested again, so a single
+    such shipment cannot keep the formula in a permanent recovery loop.
+    """
     shipment_ids = list(
         dict.fromkeys(shipment_id for order in orders if (shipment_id := _shipment_id(order)))
     )
-    return await repository.find_shipment_real_shipping_costs(
+    if not shipment_ids:
+        return {}, ()
+    costs, recoverable, _declared = await repository.find_shipment_real_shipping_costs_partial(
         seller_id=seller_id,
         shipment_ids=shipment_ids,
         limit=max(1000, len(shipment_ids)),
     )
+    return costs, recoverable
 
 
 async def _shipments_for_orders(

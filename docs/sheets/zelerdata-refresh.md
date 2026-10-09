@@ -46,12 +46,12 @@ slow-moving history is still covered without paying that cost every 15 minutes.
 
 Item rows and catalog snapshots have no freshness marker, and none is
 published (see the item readiness rules in `zelerdata-formulas.md`). Their
-readers check how recent each acquisition is: the inventory enumeration, each
-publication's base row and cost fields must be at most 15 minutes old, a
-catalog product snapshot at most 4 hours old, and a quality acquisition and a
-buybox snapshot at most 24 hours old (buybox is served as cached after 15
-minutes). A daily sweep
-would therefore keep those formulas `OK` only for minutes a day.
+readers check how recent each acquisition is: the inventory enumeration and
+each publication's base row must be at most 15 minutes old, a catalog product
+snapshot at most 4 hours old, and quality, cost fields and a buybox snapshot
+at most 24 hours old (buybox is served as cached after 15 minutes). Quality
+and costs stay valid across base re-syncs only while their basis matches. A
+daily sweep would therefore keep the item formulas `OK` only for minutes a day.
 
 Since L-021, the every-cycle bulk planner is off
 (`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED=false`). Two whole-seller sweeps can

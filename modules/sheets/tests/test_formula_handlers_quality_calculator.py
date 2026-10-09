@@ -75,8 +75,10 @@ NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
 QUALITY_CALCULATED_AT = datetime(2026, 6, 14, 9, 30, tzinfo=UTC)
 
 
-@pytest.mark.parametrize("minutes", [-1, -16, 1, None])
+@pytest.mark.parametrize("minutes", [-1, -16, -360, -1440, 1, None])
 def test_source_bound_calculator_requires_recent_cost_acquisition(minutes: int | None) -> None:
+    # Base re-syncs keep a trusted cost only while its basis matches, so the
+    # acquisition is served for a day instead of the base row's 15 minutes.
     from zeler_sheets.formulas.handlers_quality_calculator import _calculator_row
 
     row = _item_row(
@@ -96,7 +98,7 @@ def test_source_bound_calculator_requires_recent_cost_acquisition(minutes: int |
         }
     values = _calculator_row(row, tipo_precio="actual", now=NOW)
     assert values[4] == 100
-    assert values[5] == (10 if minutes == -1 else "DATA_UNAVAILABLE")
+    assert values[5] == (10 if minutes in {-1, -16, -360} else "DATA_UNAVAILABLE")
     assert values[13] == values[14] == "DATA_UNAVAILABLE"
 
 

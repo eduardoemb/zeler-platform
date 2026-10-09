@@ -589,7 +589,9 @@ async def test_buybox_missing_price_requests_recovery_or_uses_verified_cache(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("latest_state", ["ready", "missing_cost", "missing_identity"])
+@pytest.mark.parametrize(
+    "latest_state", ["ready", "missing_cost", "declared_missing_cost", "missing_identity"]
+)
 async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
     latest_state: str,
 ) -> None:
@@ -646,6 +648,11 @@ async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
     )
     if latest_state == "missing_cost":
         del db["shipments"].documents["SHIP-LATEST"]
+    elif latest_state == "declared_missing_cost":
+        db["shipments"].documents["SHIP-LATEST"] = {
+            **_shipment_doc("SHIP-LATEST"),
+            "unavailable_fields": ["real_shipping_cost"],
+        }
     elif latest_state == "missing_identity":
         db["orders"].documents["latest"].pop("shipment_id")
         db["orders"].documents["latest"]["unavailable_fields"] = ["shipment_id"]
@@ -654,18 +661,34 @@ async def test_costo_envio_vendedor_uses_latest_realized_shipment_cost_per_unit(
         "ZELERDATA_COSTOENVIOVENDEDOR",
         {"skus": ["sku-1", "missing"], "id_publicaciones": ["MLA1", "MLA-X"]},
     )
-    if latest_state != "ready":
+    if latest_state == "missing_identity":
         with pytest.raises(FormulaDataUnavailableError) as missing:
             await dispatcher.execute(context)
-        if latest_state == "missing_cost":
-            assert missing.value.shipment_ids == ("SHIP-LATEST",)
-        else:
-            assert missing.value.read_model == "orders"
-            assert missing.value.order_ids == ("ORDER-LATEST",)
+        assert missing.value.read_model == "orders"
+        assert missing.value.order_ids == ("ORDER-LATEST",)
         return
     result = await dispatcher.execute(context)
 
+    if latest_state == "missing_cost":
+        # One shipment without its cost must not blank every other pair.
+        assert result.values == [["DATA_UNAVAILABLE"], ["NA"]]
+        assert result.recovery is not None
+        assert result.recovery.read_model == SHIPMENTS_READ_MODEL
+        assert result.recovery.shipment_ids == ("SHIP-LATEST",)
+        assert result.meta == {
+            "partial_misses": 1,
+            "orders_count": 4,
+            "unavailable_shipments": 1,
+        }
+        return
+    if latest_state == "declared_missing_cost":
+        # The source declared no cost: recovering it again would loop forever.
+        assert result.values == [["NA"], ["NA"]]
+        assert result.recovery is None
+        assert result.meta == {"partial_misses": 2, "orders_count": 4}
+        return
     assert result.values == [[12.25], ["NA"]]
+    assert result.recovery is None
     assert result.meta == {"partial_misses": 1, "orders_count": 4}
     assert db["shipments"].last_find_filter == {
         "seller_id": "seller-1",
@@ -1204,11 +1227,12 @@ async def test_shipping_formulas_require_only_relevant_shipments_after_orders_ar
         assert result.values == []
         assert result.recovery is None
         return
-    with pytest.raises(FormulaDataUnavailableError) as error:
-        await dispatcher.execute(_context(formula, args))
+    result = await dispatcher.execute(_context(formula, args))
 
-    assert error.value.read_model == SHIPMENTS_READ_MODEL
-    assert error.value.shipment_ids == ("LATEST",)
+    assert result.values == [["DATA_UNAVAILABLE"]]
+    assert result.recovery is not None
+    assert result.recovery.read_model == SHIPMENTS_READ_MODEL
+    assert result.recovery.shipment_ids == ("LATEST",)
 
 
 def _dispatcher(db: Any) -> FormulaDispatcher:

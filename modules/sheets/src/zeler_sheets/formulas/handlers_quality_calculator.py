@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -382,7 +382,7 @@ def _calculator_row(
         ):
             state = _optional_mapping(states.get(field)) or {}
             observed = bson_ms_utc_datetime(state.get("synced_at"))
-            if observed is None or not now - timedelta(minutes=15) < observed <= now:
+            if observed is None or not now - ITEM_ENRICHMENT_CACHE_MAX_AGE < observed <= now:
                 states[field] = {"status": "unavailable", "reason": "stale_or_unverified"}
         current = {**current, "enrichment_state": states}
     price = _selected_price(current, tipo_precio=tipo_precio)
