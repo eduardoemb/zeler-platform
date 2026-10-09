@@ -539,6 +539,7 @@ async def test_refresh_cycle_reports_seller_count_and_duration() -> None:
             "event": "zelerdata.refresh_cycle_completed",
             "log_level": "info",
             "sellers": 3,
+            "warm_deferred": 0,
             "elapsed_seconds": 7.5,
         }
     ]
@@ -570,3 +571,78 @@ async def test_eligibility_queries_match_real_mongo_semantics() -> None:
         await client.drop_database(db.name)
     finally:
         client.close()
+
+
+class _Sellers:
+    def __init__(self, sellers: tuple[str, ...]) -> None:
+        self._sellers = sellers
+
+    async def discover_sellers(self) -> tuple[str, ...]:
+        return self._sellers
+
+
+class _NoPlan:
+    async def plan(self, *, seller_id: str, mode: str = "fast") -> bool:
+        return False
+
+
+def _warm_supervisor(
+    sellers: tuple[str, ...], clock: list[float], warmed: list[str], markers: list[str]
+) -> ZelerDataRefreshSupervisor:
+    async def warm(seller_id: str) -> int:
+        warmed.append(seller_id)
+        clock[0] += 200  # a pilot-sized seller costs minutes of serial CPU
+        return 1
+
+    async def publish(seller_id: str) -> tuple[str, ...]:
+        markers.append(seller_id)
+        return ()
+
+    return ZelerDataRefreshSupervisor(
+        explorer=_Sellers(sellers),
+        planner=_NoPlan(),
+        observed_marker_publisher=publish,
+        precalculated_warmer=warm,
+        interval_seconds=900,
+        monotonic=lambda: clock[0],
+        now=lambda: NOW,
+    )
+
+
+@pytest.mark.asyncio
+async def test_precalculated_warm_budget_caps_the_cycle_and_rotates_fairly() -> None:
+    """Warming is serial per seller; it must not push marker renewal past its lease.
+
+    A cycle that lasts D renews each marker every D + interval, and markers last
+    two intervals, so D has to stay under one interval whatever N is.
+    """
+    clock = [0.0]
+    warmed: list[str] = []
+    markers: list[str] = []
+    supervisor = _warm_supervisor(("1", "2", "3", "4", "5"), clock, warmed, markers)
+
+    await supervisor.run_cycle()
+
+    # Budget is half an interval (450 s): the check runs before each seller, so
+    # three 200 s warms fit and the rest wait. Cheap steps still cover everyone.
+    assert warmed == ["1", "2", "3"]
+    assert markers == ["1", "2", "3", "4", "5"]
+    assert clock[0] == 600
+
+    warmed.clear()
+    await supervisor.run_cycle()
+
+    # The next cycle resumes where the last one stopped, so nobody starves.
+    assert warmed == ["4", "5", "1"]
+
+
+@pytest.mark.asyncio
+async def test_precalculated_warm_budget_does_not_touch_a_small_fleet() -> None:
+    clock = [0.0]
+    warmed: list[str] = []
+    supervisor = _warm_supervisor(("1", "2"), clock, warmed, [])
+
+    await supervisor.run_cycle()
+    await supervisor.run_cycle()
+
+    assert warmed == ["1", "2", "1", "2"]

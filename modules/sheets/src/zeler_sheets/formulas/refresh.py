@@ -525,6 +525,7 @@ class ZelerDataRefreshSupervisor:
         history_backfill: Callable[[str], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         inventory_interval_seconds: float = DEFAULT_INVENTORY_INTERVAL_SECONDS,
+        warm_budget_seconds: float | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] | None = None,
         daily_hour_utc: int = DEFAULT_DAILY_HOUR_UTC,
@@ -550,6 +551,15 @@ class ZelerDataRefreshSupervisor:
         self._inventory_refresher = inventory_refresher
         self._history_backfill = history_backfill
         self._inventory_interval = inventory_interval_seconds
+        # Markers last two intervals and a cycle is followed by one interval of
+        # rest, so a cycle must stay under one interval. Warming is the only
+        # step whose cost scales with catalog size; give it half an interval.
+        self._warm_budget = (
+            interval_seconds / 2 if warm_budget_seconds is None else warm_budget_seconds
+        )
+        if self._warm_budget <= 0:
+            raise ValueError("warm budget must be positive")
+        self._warm_resume_from: str | None = None
         self._monotonic = monotonic
         self._now = now or (lambda: datetime.now(UTC))
         self._daily_hour = daily_hour_utc
@@ -654,6 +664,13 @@ class ZelerDataRefreshSupervisor:
         now = self._now().astimezone(UTC)
         modes = self._due_modes(now)
         sellers = await self._explorer.discover_sellers()
+        if self._warm_resume_from in sellers:
+            # Resume warming where the last budgeted cycle stopped.
+            start = sellers.index(self._warm_resume_from)
+            sellers = sellers[start:] + sellers[:start]
+        self._warm_resume_from = None
+        warm_spent = 0.0
+        warm_deferred = 0
         admitted = False
         for seller_id in sellers:
             for mode in modes:
@@ -692,7 +709,14 @@ class ZelerDataRefreshSupervisor:
                         admitted = True
                 except Exception:  # noqa: BLE001 - one step must not stop the loop
                     logger.warning("zelerdata.history_backfill_failed", seller_id=seller_id)
-            if self._precalculated_warmer is not None:
+            if self._precalculated_warmer is not None and warm_spent >= self._warm_budget:
+                # Over budget: the seller keeps its other steps, and its cached
+                # results fall back to the on-demand path once they expire.
+                warm_deferred += 1
+                if self._warm_resume_from is None:
+                    self._warm_resume_from = seller_id
+            elif self._precalculated_warmer is not None:
+                warm_started = self._monotonic()
                 try:
                     # Q3/Q8/Q16: the heavy aggregate formulas are computed here,
                     # where the refresh already reads the same data, so the sheet
@@ -701,6 +725,7 @@ class ZelerDataRefreshSupervisor:
                         admitted = True
                 except Exception:  # noqa: BLE001 - one formula must not stop the loop
                     logger.warning("zelerdata.precalculated_warm_failed", seller_id=seller_id)
+                warm_spent += self._monotonic() - warm_started
             if self._freshness_alarm_reporter is not None:
                 try:
                     # Q21-a: a model that stopped refreshing past its own marker
@@ -729,6 +754,7 @@ class ZelerDataRefreshSupervisor:
         logger.info(
             "zelerdata.refresh_cycle_completed",
             sellers=len(sellers),
+            warm_deferred=warm_deferred,
             elapsed_seconds=round(self._monotonic() - started, 3),
         )
         self.health_status = "ok"

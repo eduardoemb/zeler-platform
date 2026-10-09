@@ -99,6 +99,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-040 | ZelerData | Retire pre-v2 return rows the tail inventory omits | active |
 | L-041 | ZelerData | Bound whole-inventory reads and do not tie snapshots to the re-sync cut | active |
 | L-042 | VM deploy | Codify memory mitigations instead of leaving VM-only overlays | active |
+| L-043 | ZelerData | Re-check eligibility at claim and cap serial warming in `all` mode | active |
 
 ## Cloud Build and VM deployment
 
@@ -687,4 +688,24 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `modules/sheets/tests/test_formula_read_memory_bounds.py`,
   `modules/sheets/tests/test_formula_buybox_item_resync.py`,
   `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
+
+### L-043 — Re-check eligibility at claim and cap serial warming in `all` mode
+- area: ZelerData seller scope (`all` mode) / refresh cycle
+- proven path: In `all` mode `FormulaRecoveryQueue.claim` closes a job whose
+  seller stopped being eligible (`failed`, `seller_not_eligible`) and claims the
+  next one, so no request is made for it. The refresh cycle gives the serial
+  precalculated warmer half an interval per cycle and resumes from the first
+  deferred seller. A cycle plus its rest must stay under the 30-minute marker
+  lease. Run `infra/operations/zelerdata_all_sellers_dry_run.py` before
+  switching the scope.
+- failed path: Relying on the gateway to reject queued work of a paused seller
+  (it still cost a claim, an attempt and a request per job), and warming every
+  seller inline: about 7 pilot-sized sellers push the cycle past one interval
+  and expire every seller's markers.
+- verification/source: `modules/sheets/tests/test_formula_recovery.py`
+  (`all_mode_claim`, `all_mode_worker`),
+  `modules/sheets/tests/test_zelerdata_all_sellers.py` (`warm_budget`),
+  `tests/operations/test_zelerdata_all_sellers_dry_run.py`,
+  `docs/sheets/zelerdata-refresh.md` ("Scale analysis"). Capacity figures come
+  from code, not production.
 - status: active

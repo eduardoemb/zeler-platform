@@ -973,31 +973,52 @@ class FormulaRecoveryQueue:
             },
             "$inc": {"attempts": 1},
         }
-        claimed = None
-        if lane == "ranges" and not history and "orders" in self.enabled_models:
-            # A full historical range can occupy the only range worker for the
-            # entire job deadline. Give a ready, one-hour creation-tail sweep a
-            # turn before older work so live formulas can regain source proof.
-            # The ordinary claim below still drains all other eligible work.
-            claimed = await self.collection.find_one_and_update(
-                {
-                    **claim_filter,
-                    "read_model": "orders",
-                    "date_from": {"$gte": now - timedelta(hours=3)},
-                    "date_to": {"$gte": now - timedelta(hours=2)},
+        while True:
+            claimed = None
+            if lane == "ranges" and not history and "orders" in self.enabled_models:
+                # A full historical range can occupy the only range worker for the
+                # entire job deadline. Give a ready, one-hour creation-tail sweep a
+                # turn before older work so live formulas can regain source proof.
+                # The ordinary claim below still drains all other eligible work.
+                claimed = await self.collection.find_one_and_update(
+                    {
+                        **claim_filter,
+                        "read_model": "orders",
+                        "date_from": {"$gte": now - timedelta(hours=3)},
+                        "date_to": {"$gte": now - timedelta(hours=2)},
+                    },
+                    claim_update,
+                    sort=[("date_to", -1), ("available_at", 1), ("_id", 1)],
+                    return_document=ReturnDocument.AFTER,
+                )
+            if claimed is None:
+                claimed = await self.collection.find_one_and_update(
+                    claim_filter,
+                    claim_update,
+                    sort=[("available_at", 1), ("_id", 1)],
+                    return_document=ReturnDocument.AFTER,
+                )
+            if claimed is None:
+                return None
+            # `all` mode: eligibility can change while a job waits in the queue.
+            # Close it here so a paused or token-less seller never reaches the source.
+            if self.seller_gate is None or await self.seller_gate(claimed["seller_id"]):
+                return dict(claimed)
+            await self._close_ineligible(claimed, now)
+
+    async def _close_ineligible(self, job: dict[str, Any], now: datetime) -> None:
+        await self.collection.update_one(
+            self._owned(job, now),
+            {
+                "$set": {
+                    "state": "failed",
+                    "failure_reason": "seller_not_eligible",
+                    "updated_at": now,
+                    "available_at": now + COOLDOWN,
                 },
-                claim_update,
-                sort=[("date_to", -1), ("available_at", 1), ("_id", 1)],
-                return_document=ReturnDocument.AFTER,
-            )
-        if claimed is None:
-            claimed = await self.collection.find_one_and_update(
-                claim_filter,
-                claim_update,
-                sort=[("available_at", 1), ("_id", 1)],
-                return_document=ReturnDocument.AFTER,
-            )
-        return dict(claimed) if claimed is not None else None
+                "$unset": {"lease_until": "", "attempt_token": ""},
+            },
+        )
 
     def _shipment_cursor_binding(self, job: dict[str, Any]) -> tuple[dict[str, Any], int]:
         requested = ShipmentIdsRecoveryRequest(job["seller_id"], tuple(job["shipment_ids"]))

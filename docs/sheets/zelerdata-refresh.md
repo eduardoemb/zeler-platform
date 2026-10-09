@@ -342,11 +342,16 @@ A seller is eligible when both conditions hold:
 
 `eligible_sellers` in `modules/sheets/src/zeler_sheets/formulas/seller_scope.py`
 implements this rule. Refresh reads it again on every cycle. Recovery admission
-caches it for 30 seconds per process. Pausing a seller or revoking its last
-token removes it without a restart. A job that was already queued when its
-seller became ineligible goes to the gateway. The gateway answers 423
-`seller_paused` or 412 `account_not_active` without calling Mercado Libre, and
-the job ends `failed` with `source_rejected` and is not retried.
+and claiming share a cache of 30 seconds per process. Pausing a seller or
+revoking its last token removes it without a restart.
+
+A job that was already queued when its seller became ineligible is closed when
+a lane claims it: `state` `failed`, `failure_reason` `seller_not_eligible`,
+`available_at` one cooldown (15 minutes) later, and the claim moves on to the
+next job in the same call. No request reaches the gateway or Mercado Libre for
+it. If the seller becomes eligible again, the next refresh re-admits the work
+after the cooldown. The gateway's own 423 `seller_paused` and 412
+`account_not_active` answers remain as a second guard for the cache window.
 
 The numeric allowlist does not check eligibility, so the pilot behaves exactly
 as before.
@@ -404,11 +409,80 @@ sweep. As a reference, an inventory sweep for a seller with about 1,900
 listings costs about 12 requests per minute. Roughly 15 sellers of that size
 would fill the 180 reservation with inventory alone.
 
-No new limit is needed now. The global 180/min reservation is the cap and
-protects the gateway. Every cycle logs `zelerdata.refresh_cycle_completed` with
-`sellers` and `elapsed_seconds`. Revisit capacity when:
+### Scale analysis (N eligible sellers)
 
-- a cycle takes more than about 5 minutes,
+Measured from the code, not in production. Every cycle logs
+`zelerdata.refresh_cycle_completed` with `sellers`, `warm_deferred` and
+`elapsed_seconds`; use it to confirm these figures.
+
+**Everything is serial, and nothing chains.** The refresh loop is one task. A
+cycle visits sellers one after another, and the next broad cycle starts one
+interval *after the previous one ends* (`next_cycle = finished + interval`).
+Cycles therefore never overlap and never run back to back, however long they
+take. The 10-minute inventory tick follows the same rule, so a long cycle only
+delays it. The period of a seller's refresh is `cycle duration + interval`.
+
+**What costs time per seller in the cycle:**
+
+| Step | Cost | Scales with |
+| --- | --- | --- |
+| Planning (orders and questions ranges), observed markers, freshness alarms | A few Mongo reads and two enqueues, each capped at 2 s | N, in milliseconds |
+| DEVOLUCIONES runner | Three Mongo reads for a seller without certificates; it admits and advances a tail only for certificate sellers, which is the pilot today | Number of certificate sellers |
+| Precalculated formulas | 10 dispatcher runs (5 formulas × 2 header variants), reading the seller's local catalog. It dominates the roughly 130 s cycle of the pilot | Catalog size of each seller |
+
+**The concrete risk was the warmer.** Markers and precalculated entries last 30
+minutes. With period `D + 900 s`, they survive only while `D` stays under one
+interval (900 s). Five sellers of pilot size already pushed `D` to about 650 s
+and a seventh would have crossed it, after which *every* seller's observed
+markers would expire between renewals, not just the warmed ones. Because the
+warmer ran inline, the sellers at the end of the list were also the last to be
+planned.
+
+**Limit added.** Warming has a per-cycle budget of half an interval (450 s by
+default; `warm_budget_seconds` on the supervisor). The check runs before each
+seller, so a cycle ends at most one warm after the budget. A seller over budget
+keeps every other step and is counted in `warm_deferred`. The next cycle starts
+from the first deferred seller, so everyone is warmed in turn. A deferred
+seller's precalculated results expire after 30 minutes and its sheet calls fall
+back to the on-demand path, the existing degradation. The pilot alone (about
+130 s) never reaches the budget. Covered by
+`test_precalculated_warm_budget_*`.
+
+**Recovery worker and sweeps.** These are bounded by design, so nothing else
+needed a limit:
+
+- The pacer is one bucket per worker process: the total stays at 180 requests
+  per minute whatever N is, so no seller's gateway quota of 600 per minute is
+  approached. Lanes rotate (`inventory`, `ids`, `ids`, `ranges`), and idle lanes
+  lend their slots to the others. A job that waits more than 239 s for budget
+  is deferred without using an attempt.
+- Each lane runs one job at a time (three in total), claimed FIFO across
+  sellers. Active jobs are capped at 20 per seller, so the queue holds at most
+  `N × 20`, and a full seller simply stops being re-planned.
+- Spaced sweeps (inventory every 10 minutes, catalog every 3 hours) never
+  overlap for a seller: `sweep_status` refuses a new pass while one is in
+  flight and counts the spacing from the previous pass. At the first tick all N
+  sellers are admitted at once, but the single inventory lane drains them in
+  order, so later passes start staggered. If N sellers need more inventory
+  requests than the budget gives the lane (about 45 per minute while other
+  lanes are busy, up to 180 when idle), the passes stretch beyond 10 minutes
+  and item freshness degrades. Nothing queues up behind it. At about 12 requests
+  per minute for a 1,900-listing seller, 15 such sellers saturate the whole
+  reservation. Keep the sweeps off in `all` mode until the first cycles are
+  measured.
+- Memory does not grow with N: the warmer and each lane handle one seller at a
+  time, so the peak follows the largest seller's catalog. The worker also hosts
+  consumers and three lanes in one process on a 3.9 GB VM that Mongo shares.
+  Watch `docker stats` for `sheets-worker` during the first warm cycles; this
+  document has no production measurement of it.
+- DEVOLUCIONES: only certificate sellers advance or admit a tail, and the tail
+  runs inside the refresh cycle. If more sellers gain certificates, their
+  advances add to `D` and are not covered by the warm budget.
+
+Revisit capacity when:
+
+- `elapsed_seconds` exceeds about 300 s, or `warm_deferred` is above 0 for
+  several cycles in a row,
 - pending `ranges` jobs wait longer than one interval, or
 - freshness alarms fire for sellers whose refresh is healthy.
 
@@ -426,51 +500,62 @@ merged and with explicit authorization. An image without this change rejects
 1. **Images.** Build and deploy `sheets-worker` and `sheets-api` from `main`
    without changing any variable. Behavior stays identical. Verify health and
    that the pilot is still served.
-2. **Read-only preflight** (runtime container, sanitized output):
-   - Read the current values of `ZELERDATA_REFRESH_ENABLED`,
-     `ZELERDATA_REFRESH_SELLERS` and `ZELERDATA_FORMULA_RECOVERY_SELLERS` on
-     both services.
-   - Confirm that `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
-     `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED`,
-     `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED`,
-     `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED`,
-     `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` and
-     `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` are off.
-   - List the eligible sellers and confirm the pilot is among them. If the
-     pilot has no active extension token, it would stop being refreshed in
-     `all` mode. Run this inside `sheets-worker`; it prints only seller IDs:
+2. **Read-only dry run** inside `sheets-worker` (sanitized: counts only, no
+   seller IDs, nicknames or tokens):
 
-     ```bash
-     .venv/bin/python -c "
-     import asyncio, os
-     from motor.motor_asyncio import AsyncIOMotorClient
-     from zeler_sheets.formulas.seller_scope import eligible_sellers
-     async def main():
-         client = AsyncIOMotorClient(os.environ['MONGO_URI'])
-         print(await eligible_sellers(client[os.environ['MONGO_DB']]))
-         client.close()
-     asyncio.run(main())"
-     ```
+   ```bash
+   .venv/bin/python -m infra.operations.zelerdata_all_sellers_dry_run \
+     --seller-id 82453304
+   ```
 
-3. **Worker.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and, if refresh is
-   enabled, `ZELERDATA_REFRESH_SELLERS=all`. Restart only `sheets-worker`.
-   Verify:
+   It prints how many sellers would be eligible, how many are excluded for
+   each reason (`account_paused`, `no_extension_token`,
+   `extension_token_expired`, ...), the active recovery jobs that belong to
+   ineligible sellers, the current scope and flag values (kind and on/off, not
+   IDs), and whether the requested seller is eligible. Continue only if:
+   - the pilot is eligible (otherwise `all` would stop refreshing it),
+   - `matches_runtime_rule` is `true`,
+   - `eligible_sellers` is a number the capacity figures above can carry.
+3. **Preflight of flags** in the same output: `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
+   `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED`,
+   `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED`,
+   `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED`,
+   `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` and
+   `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` must read `false`.
+4. **Worker first.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and
+   `ZELERDATA_REFRESH_SELLERS=all` together (refresh requires recovery to be
+   `all`, or startup fails). Leave every other variable as it is. Restart only
+   `sheets-worker`. Verify:
    - the `formula_recovery` and `zelerdata_refresh` components,
    - delivery progress (L-027),
-   - `zelerdata.refresh_cycle_completed` with the expected `sellers`,
-   - jobs for every eligible seller reaching `completed`.
-4. **API.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and restart only
-   `sheets-api`. Verify `/health` and a `formula_recovery_admission` with
+   - `zelerdata.refresh_cycle_completed` with `sellers` equal to the dry-run
+     count, `warm_deferred` and `elapsed_seconds` (target: under 300 s; the
+     cycle that follows the restart is the first full measurement),
+   - jobs for every eligible seller reaching `completed`, and `docker stats`
+     for `sheets-worker` memory over the first warm cycles.
+5. **API second.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and restart
+   only `sheets-api`. Verify `/health` and a `formula_recovery_admission` with
    outcome `admitted` for a seller other than the pilot.
+6. **Sweeps stay off** until at least a day of cycles shows `warm_deferred` at
+   0 and a short `elapsed_seconds`. Turn on one sweep at a time afterwards and
+   compare the figures in the scale analysis.
 
-Rollback reverses the order. Set the API back to `82453304` and restart it,
-then do the same for the worker. Change the variables before any image
-rollback. No data migration is involved. Jobs queued for other sellers stay
-`pending` and unclaimed while the allowlist is numeric. `ZELERDATA_REFRESH_ENABLED=false`
-remains the kill switch for the loop.
+**Back to the pilot.** Reverse the order and restore the value on each
+service, then restart only that service:
+
+1. `sheets-api`: `ZELERDATA_FORMULA_RECOVERY_SELLERS=82453304`.
+2. `sheets-worker`: `ZELERDATA_FORMULA_RECOVERY_SELLERS=82453304` and
+   `ZELERDATA_REFRESH_SELLERS=82453304`.
+
+Change the variables before any image rollback. No data migration is involved.
+Jobs queued for other sellers stay `pending` and unclaimed while the allowlist
+is numeric. `ZELERDATA_REFRESH_ENABLED=false` remains the kill switch for the
+loop.
 
 Verification for this mode:
 
 ```bash
-uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py
+uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py \
+  tests/operations/test_zelerdata_all_sellers_dry_run.py
+uv run pytest modules/sheets/tests/test_formula_recovery.py -k "all_mode or numeric_allowlist_claim"
 ```

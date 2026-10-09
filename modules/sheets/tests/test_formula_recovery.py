@@ -7227,3 +7227,81 @@ async def test_orders_recovery_does_not_withdraw_a_devoluciones_proof_it_cannot_
     await FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue).process_one()
 
     assert invalidate_options == [False]
+
+
+async def _gated_queue(
+    recovery_db: Any, eligible: set[str], *, now: datetime
+) -> FormulaRecoveryQueue:
+    async def gate(seller_id: str) -> bool:
+        return seller_id in eligible
+
+    queue = FormulaRecoveryQueue(
+        recovery_db, allowed_sellers=None, seller_gate=gate, now=lambda: now
+    )
+    await queue.ensure_indexes()
+    return queue
+
+
+@pytest.mark.asyncio
+async def test_all_mode_claim_closes_job_of_seller_that_stopped_being_eligible(
+    recovery_db: Any,
+) -> None:
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    eligible = {"1", "2"}
+    queue = await _gated_queue(recovery_db, eligible, now=now)
+    paused = RecoveryRequest("1", "orders", now - timedelta(hours=2), now - timedelta(hours=1))
+    served = RecoveryRequest("2", "orders", now - timedelta(hours=1), now)
+    await queue.enqueue(paused)
+    await queue.enqueue(served)
+    eligible.discard("1")  # the seller is paused after its job was queued
+
+    claimed = await queue.claim()
+
+    assert claimed is not None and claimed["seller_id"] == "2"
+    closed = await recovery_db.sheets_formula_recovery_jobs.find_one({"_id": paused.key})
+    assert closed["state"] == "failed"
+    assert closed["failure_reason"] == "seller_not_eligible"
+    assert "attempt_token" not in closed and "lease_until" not in closed
+    assert closed["available_at"] == (now + timedelta(minutes=15)).replace(tzinfo=None)
+    # Nothing else is left to claim, and the closed job is not retried.
+    assert await queue.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_all_mode_worker_never_calls_the_source_for_an_ineligible_seller(
+    recovery_db: Any,
+) -> None:
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    eligible = {"1"}
+    queue = await _gated_queue(recovery_db, eligible, now=now)
+    request = RecoveryRequest("1", "orders", now - timedelta(hours=1), now)
+    await queue.enqueue(request)
+    eligible.clear()
+
+    class Gateway:
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"an ineligible seller must not reach Mercado Libre ({name})")
+
+    worker = FormulaRecoveryWorker(db=recovery_db, gateway=Gateway(), queue=queue)
+
+    assert await worker.process_one() is False
+    job = await recovery_db.sheets_formula_recovery_jobs.find_one({"_id": request.key})
+    assert (job["state"], job["failure_reason"]) == ("failed", "seller_not_eligible")
+
+
+@pytest.mark.asyncio
+async def test_numeric_allowlist_claim_does_not_check_eligibility(recovery_db: Any) -> None:
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+    queue = FormulaRecoveryQueue(
+        recovery_db, allowed_sellers=frozenset({"82453304"}), now=lambda: now
+    )
+    await queue.ensure_indexes()
+    request = RecoveryRequest("82453304", "orders", now - timedelta(hours=1), now)
+    await queue.enqueue(request)
+
+    claimed = await queue.claim()
+
+    assert claimed is not None and claimed["_id"] == request.key
+    assert claimed["state"] == "running"
