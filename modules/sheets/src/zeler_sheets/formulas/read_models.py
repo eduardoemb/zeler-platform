@@ -13,6 +13,10 @@ from zeler_sheets.devoluciones_reconciliation import (
     read_devoluciones_claims_keyset,
     read_devoluciones_orders_by_id_keyset,
 )
+from zeler_sheets.formulas.catalog_winning_time import (
+    CatalogWinningTime,
+    find_catalog_winning_times,
+)
 from zeler_sheets.formulas.dispatcher import FormulaDataUnavailableError
 from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
@@ -1015,6 +1019,40 @@ class FormulaReadModelRepository:
             [("item_id", 1), ("date_from", 1), ("_id", 1)]
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_catalog_winning_times(
+        self,
+        *,
+        seller_id: str,
+        date_from: datetime,
+        date_to: datetime,
+        item_ids: Sequence[str] | None = None,
+    ) -> dict[str, CatalogWinningTime]:
+        return await find_catalog_winning_times(
+            self._db,
+            seller_id=seller_id,
+            date_from=date_from,
+            date_to=date_to,
+            item_ids=item_ids,
+        )
+
+    async def find_item_titles(
+        self, *, seller_id: str, item_ids: Sequence[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return the current title and permalink of each publication."""
+        if not item_ids:
+            return {}
+        cursor = _find_with_optional_projection(
+            self._item_formula_rows,
+            _seller_item_filter(seller_id=seller_id, item_ids=list(item_ids)),
+            {"_id": 0, "item_id": 1, "current.title": 1, "current.permalink": 1},
+        )
+        titles: dict[str, dict[str, Any]] = {}
+        for row in await cursor.to_list(length=None):
+            current = row.get("current")
+            if isinstance(current, dict):
+                titles.setdefault(str(row.get("item_id") or ""), current)
+        return titles
 
     async def find_price_history_snapshots(
         self,

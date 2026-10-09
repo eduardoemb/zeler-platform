@@ -13,6 +13,26 @@ en la base productiva
 medición de hoy"). El 2026-09-24 se aceptó UNAVAILABLE mientras falte el
 histórico (misma nota, "Aceptación de fórmulas sin histórico").
 
+## Avance 2026-10-09
+
+La sonda (seller 82453304) encontró 260.576 observaciones de 938 publicaciones
+desde 2026-09-09 y ninguna fuente de retiros. Con eso:
+
+- `CATALOGOTIEMPO` ya no exige el marcador `legacy_imported`: calcula al leer desde
+  `sheets_catalog_competition_observations` (`formulas/catalog_winning_time.py`),
+  con el mapeo del legado, días en zona del seller y fin recortado a ahora. Usa el
+  índice existente `(seller_id, item_id, observed_at)`: el estado inicial sale de
+  una entrada de índice por publicación y el rango se suma en el servidor (~0,4 s
+  con 270 mil observaciones en local).
+- Cobertura: se eligió el **mensaje**. Si una publicación no tiene observación en
+  o antes del inicio del rango, sus tres columnas dicen
+  `Sin histórico antes de <fecha hora>` (zona del seller) y no se suma la parte
+  cubierta; sin ninguna observación, `Sin histórico de catálogo`.
+- La columna `% TIEMPO GANANDO` de `CATALOGO` usa el mismo cálculo sobre los
+  últimos 30 días móviles (el legado usaba 30 días), con el mismo mensaje.
+- `RETIROS` queda declarada no disponible con el motivo "Mercado Libre no expone
+  el identificador del retiro de Full".
+
 ## Resumen y recomendación
 
 | Fórmula | Ruta mínima | Tamaño | ¿SDD? |

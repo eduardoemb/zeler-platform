@@ -23,6 +23,7 @@ HANDLER_TEST_FILES = [
     REPO_ROOT / "modules/sheets/tests/test_formula_handlers_quality_calculator.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_read_models.py",
     REPO_ROOT / "modules/sheets/tests/test_formula_recovery.py",
+    REPO_ROOT / "modules/sheets/tests/test_catalog_winning_time.py",
 ]
 
 

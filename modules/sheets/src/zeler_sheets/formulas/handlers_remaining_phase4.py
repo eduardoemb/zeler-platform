@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bson.decimal128 import Decimal128
 
@@ -11,6 +12,11 @@ from zeler_sheets.formulas.catalog_values import (
     catalog_only_competitor,
     catalog_shared_users,
     catalog_winner_user,
+)
+from zeler_sheets.formulas.catalog_winning_time import (
+    CatalogWinningTime,
+    catalog_winning_percent_cell,
+    catalog_winning_time_cells,
 )
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -21,7 +27,6 @@ from zeler_sheets.formulas.dispatcher import (
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
     CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
-    CATALOG_TIME_METRICS_READ_MODEL,
     FULL_WITHDRAWALS_READ_MODEL,
     ITEM_FORMULA_ROWS_READ_MODEL,
     PRICE_HISTORY_SNAPSHOTS_READ_MODEL,
@@ -121,6 +126,13 @@ RETIROS_HEADERS = [
 SEMANAS_CON_STOCK_BASE_HEADERS = ["ID PUBLICACION", "SKU", "TITULO"]
 NON_PRODUCTIVE_ORDER_STATUSES = frozenset({"cancelled", "canceled"})
 CATALOGO_SALES_WINDOWS = (7, 15, 30, 60, 90, 365)
+# The legacy CATALOGO percentage covered the last 30 days. A rolling window keeps
+# the precalculated and the on-demand result independent of the seller's zone.
+CATALOGO_WINNING_TIME_WINDOW = timedelta(days=30)
+RETIROS_UNAVAILABLE_REASON = (
+    "Mercado Libre no expone el identificador del retiro de Full, "
+    "por lo que ZELERDATA_RETIROS no está disponible."
+)
 
 
 def build_remaining_phase4_formula_handlers(
@@ -198,6 +210,16 @@ class RemainingPhase4FormulaHandlers:
             else []
         )
         sales_by_item = _sales_windows_by_item(orders, now=sales_as_of)
+        winning_times = (
+            await self._repository.find_catalog_winning_times(
+                seller_id=context.seller_id,
+                date_from=now - CATALOGO_WINNING_TIME_WINDOW,
+                date_to=now,
+                item_ids=[str(row.get("item_id") or "").strip() for row in catalog_rows],
+            )
+            if catalog_rows
+            else {}
+        )
         values: list[list[Any]] = _header_row(context.args.get("encabezados"), CATALOGO_HEADERS)
         header_rows = len(values)
         values.extend(
@@ -206,8 +228,15 @@ class RemainingPhase4FormulaHandlers:
                 buybox=buybox_by_item_id.get(str(row.get("item_id") or "").strip()),
                 sales=sales_by_item.get(str(row.get("item_id") or "").strip(), {}),
                 tipo_precio=context.args.get("tipo_precio", "base"),
+                winning_time=winning_times.get(str(row.get("item_id") or "").strip()),
             )
             for row in catalog_rows
+        )
+        uncovered_winning_time = sum(
+            not (value is not None and value.covered)
+            for value in (
+                winning_times.get(str(row.get("item_id") or "").strip()) for row in catalog_rows
+            )
         )
         unavailable_shared = sum(row[21] == "DATA_UNAVAILABLE" for row in values[header_rows:])
         for value in values[header_rows:]:
@@ -263,12 +292,9 @@ class RemainingPhase4FormulaHandlers:
                 "unavailable_buybox_items": len(recoverable),
                 "cached_buybox_items": len(cached_buybox),
                 "cached_buybox_observed_at": cached_buybox,
-                "unavailable_winning_time_items": len(catalog_rows),
-                **(
-                    {"winning_time_unavailable_reason": "catalog_history_not_reconciled"}
-                    if catalog_rows
-                    else {}
-                ),
+                "winning_time_window_days": CATALOGO_WINNING_TIME_WINDOW.days,
+                "winning_time_coverage_basis": "observed_only",
+                "uncovered_winning_time_items": uncovered_winning_time,
                 "sales_as_of": sales_as_of.isoformat(),
                 "unavailable_sales_windows": [
                     days for days in CATALOGO_SALES_WINDOWS if days not in covered_windows
@@ -280,10 +306,8 @@ class RemainingPhase4FormulaHandlers:
                         else "buybox_missing_expired_or_incomplete"
                         if recoverable
                         else "catalog_sales_interval_not_reconciled"
-                        if recovery
-                        else "catalog_history_not_reconciled"
                     }
-                    if recovery or catalog_rows
+                    if recovery
                     else {}
                 ),
             },
@@ -504,55 +528,53 @@ class RemainingPhase4FormulaHandlers:
     async def sheetseller_catalogo_tiempo(
         self, context: FormulaExecutionContext
     ) -> FormulaExecutionResult:
-        date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_reconciled_range(
-            seller_id=context.seller_id,
-            read_model=CATALOG_TIME_METRICS_READ_MODEL,
-            date_from=date_from,
-            date_to=date_to,
-            formula=context.contract.name,
-        )
-        item_ids = _normalize_optional_item_ids(context.args.get("id_publicaciones", "todos"))
-        metrics = await self._repository.find_catalog_time_metrics(
+        timezone = _seller_timezone(context)
+        date_from = _local_day_start(context.args.get("fecha_inicial"), timezone)
+        date_to = _local_day_start(context.args.get("fecha_final"), timezone, days_after=1)
+        # Like the legacy add-on, a range that reaches today ends now.
+        date_to = max(date_from, min(date_to, _as_utc_datetime(self._now_fn())))
+        requested = _normalize_optional_item_ids(context.args.get("id_publicaciones", "todos"))
+        item_ids = None if requested is None else list(dict.fromkeys(i.upper() for i in requested))
+        times = await self._repository.find_catalog_winning_times(
             seller_id=context.seller_id,
             date_from=date_from,
             date_to=date_to,
             item_ids=item_ids,
-            limit=None,
         )
+        rows = list(times) if item_ids is None else item_ids
+        titles = await self._repository.find_item_titles(seller_id=context.seller_id, item_ids=rows)
         values: list[list[Any]] = _header_row(
             context.args.get("encabezados"), CATALOGOTIEMPO_HEADERS
         )
         header_rows = len(values)
-        values.extend(_catalog_time_row(metric) for metric in metrics)
+        values.extend(
+            _catalog_time_row(
+                item_id, titles.get(item_id, {}), times.get(item_id), timezone=timezone
+            )
+            for item_id in rows
+        )
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(metrics), "columns": "catalog_winning_time"},
+            meta={
+                "rows_count": len(rows),
+                "columns": "catalog_winning_time",
+                "coverage_basis": "observed_only",
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "uncovered_items": sum(
+                    not (value is not None and value.covered)
+                    for value in (times.get(item_id) for item_id in rows)
+                ),
+            },
         )
 
     async def sheetseller_retiros(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        date_from = _day_start(_parse_date(context.args.get("fecha_inicial")))
-        date_to = _day_after(_parse_date(context.args.get("fecha_final")))
-        await self._repository.require_read_model_reconciled_range(
-            seller_id=context.seller_id,
+        # Full operations do not carry a confirmed withdrawal identifier, bundle
+        # or requested quantity, so no source can produce these rows.
+        raise FormulaDataUnavailableError(
+            context.contract.name,
+            RETIROS_UNAVAILABLE_REASON,
             read_model=FULL_WITHDRAWALS_READ_MODEL,
-            date_from=date_from,
-            date_to=date_to,
-            formula=context.contract.name,
-        )
-        rows = await self._repository.find_full_withdrawals(
-            seller_id=context.seller_id,
-            date_from=date_from,
-            date_to=date_to,
-            limit=None,
-        )
-        values: list[list[Any]] = _header_row(context.args.get("encabezados"), RETIROS_HEADERS)
-        header_rows = len(values)
-        values.extend(_withdrawal_row(row) for row in rows)
-        return FormulaExecutionResult(
-            values=normalize_response_rows(values, header_rows=header_rows),
-            meta={"rows_count": len(rows), "columns": "full_withdrawals"},
         )
 
 
@@ -568,6 +590,7 @@ def _catalogo_row(
     buybox: Mapping[str, Any] | None,
     sales: Mapping[int, Decimal],
     tipo_precio: Any,
+    winning_time: CatalogWinningTime | None = None,
 ) -> list[Any]:
     current = _current_mapping(row)
     catalog_product_id = _current_value(current, "catalog_product_id")
@@ -584,10 +607,9 @@ def _catalogo_row(
         *[_sheet_optional_number(sales.get(window)) for window in CATALOGO_SALES_WINDOWS],
         _current_value(current, "status"),
         _first_value(buybox, "buybox_status", "winner_status", "status"),
-        # Current competition states do not establish time spent competing or
-        # winning. This column needs reconciled interval history, not a snapshot
-        # alias or a percentage inferred from a single acquired observation.
-        "DATA_UNAVAILABLE",
+        # Observed competition history only; a current snapshot never stands in
+        # for time spent winning.
+        catalog_winning_percent_cell(winning_time, timezone=UTC),
         _sheet_optional_number(_first_value(buybox, "winning_price", "winner_price")),
         _selected_price(current, tipo_precio=tipo_precio),
         catalog_winner_user(buybox),
@@ -691,28 +713,18 @@ def _price_history_row(row: Mapping[str, Any], *, tipo_precio: Any) -> list[Any]
     return [_document_item_id(row), _snapshot_value(row, "title"), *flattened]
 
 
-def _catalog_time_row(metric: Mapping[str, Any]) -> list[Any]:
+def _catalog_time_row(
+    item_id: str,
+    current: Mapping[str, Any],
+    winning_time: CatalogWinningTime | None,
+    *,
+    timezone: tzinfo,
+) -> list[Any]:
     return [
-        _document_item_id(metric),
-        _snapshot_value(metric, "title"),
-        _snapshot_value(metric, "url", "permalink"),
-        _sheet_optional_number(metric.get("winning_hours")),
-        _sheet_optional_number(_first_value(metric, "available_hours", "total_hours")),
-        _sheet_optional_number(_first_value(metric, "winning_percent", "winning_time_percent")),
-    ]
-
-
-def _withdrawal_row(row: Mapping[str, Any]) -> list[Any]:
-    return [
-        _snapshot_value(row, "withdrawal_id", "id"),
-        _snapshot_value(row, "withdrawal_detail_id", "detail_id", "secondary_id"),
-        _snapshot_value(row, "inventory_id", "codigo_ml"),
-        _document_item_id(row),
-        _snapshot_value(row, "sku", "normalized_sku"),
-        _snapshot_value(row, "title"),
-        _sheet_optional_number(_first_value(row, "requested_quantity", "quantity")),
-        _datetime_cell(row.get("created_at")),
-        _datetime_cell(row.get("delivered_at")),
+        item_id,
+        _current_value(current, "title"),
+        _current_value(current, "permalink", "url"),
+        *catalog_winning_time_cells(winning_time, timezone=timezone),
     ]
 
 
@@ -921,6 +933,30 @@ def _parse_date(value: Any) -> datetime:
         return _as_utc_datetime(datetime.fromisoformat(value.replace("Z", "+00:00")))
     msg = "expected date/datetime or ISO date string"
     raise TypeError(msg)
+
+
+def _seller_timezone(context: FormulaExecutionContext) -> tzinfo:
+    value = context.seller_timezone
+    if not isinstance(value, str) or not value.strip():
+        return UTC
+    try:
+        return ZoneInfo(value.strip())
+    except ZoneInfoNotFoundError:
+        return UTC
+
+
+def _local_day_start(value: Any, timezone: tzinfo, *, days_after: int = 0) -> datetime:
+    # A plain date is already the seller's day; an instant (a Sheets date cell
+    # arrives as one) falls on the seller's local day.
+    if isinstance(value, str) and len(value.strip()) == len("YYYY-MM-DD"):
+        day = date.fromisoformat(value.strip())
+    elif isinstance(value, date) and not isinstance(value, datetime):
+        day = value
+    else:
+        day = _parse_date(value).astimezone(timezone).date()
+    return datetime.combine(day + timedelta(days=days_after), time.min, tzinfo=timezone).astimezone(
+        UTC
+    )
 
 
 def _day_start(value: datetime) -> datetime:

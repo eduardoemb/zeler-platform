@@ -103,6 +103,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-044 | ZelerData | Size reader age limits to on-demand acquisition and compare only stored fields | active |
 | L-045 | ZelerData | Serve a source-declared absence as NA instead of recovering it | active |
 | L-046 | Shell tests | Keep deploy scripts bash 3.2-safe and sandbox GNU-only calls on macOS | active |
+| L-047 | ZelerData | Compute interval metrics from observations at read time, not from import markers | active |
 
 ## Cloud Build and VM deployment
 
@@ -769,4 +770,21 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `tests/test_deployment_preflight.py`,
   `tests/operations/test_sheets_dlq_snapshot_execute.py`
   (`_host_portability_substitutions`, `_interpreter_injected_names`).
+- status: active
+
+### L-047 — Compute interval metrics from observations at read time, not from import markers
+- area: ZelerData time formulas (`CATALOGOTIEMPO`, `CATALOGO` winning percent)
+- proven path: Sum time per publication from the acquired observations when the
+  formula is read: the state at the range start is the last observation at or
+  before it (a full reverse index walk with `$first`, served as `DISTINCT_SCAN`),
+  and the range is summed by the server with `$setWindowFields`/`$shift` on the
+  existing `(seller_id, item_id, observed_at)` index, with no blocking sort.
+  About 0.4 s for 270k observations locally. A publication with no observation
+  at or before the start reports where its history begins instead of a sum.
+- failed path: Requiring the `legacy_imported` marker and a derived metrics
+  collection kept these formulas `DATA_UNAVAILABLE` although 260k observations
+  existed; the importer's sources do not exist in production.
+- verification/source: `modules/sheets/tests/test_catalog_winning_time.py`,
+  `docs/sheets/zelerdata-time-metrics-plan.md` ("Avance 2026-10-09"). Not yet
+  observed in production.
 - status: active

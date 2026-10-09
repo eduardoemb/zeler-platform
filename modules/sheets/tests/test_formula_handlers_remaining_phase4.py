@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from bson.int64 import Int64
 
+from zeler_sheets.formulas.catalog_winning_time import CatalogWinningTime
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
     FormulaDispatcher,
@@ -70,6 +71,11 @@ class FakeCollection:
                 return dict(doc)
         return None
 
+    def aggregate(self, pipeline: list[dict[str, Any]]) -> FakeCursor:
+        # Only competition observations are aggregated; these fakes hold none.
+        del pipeline
+        return FakeCursor([])
+
 
 class FakeDb:
     def __init__(self) -> None:
@@ -100,7 +106,35 @@ def test_catalog_current_snapshot_does_not_certify_historical_percentage(
 
     result = _catalogo_row({"item_id": "MLA1"}, buybox=snapshot, sales={}, tipo_precio="base")
     assert len(result) == 24
-    assert result[17] == "DATA_UNAVAILABLE"
+    assert result[17] == "Sin histórico de catálogo"
+
+
+def test_catalog_percentage_comes_from_observed_winning_time() -> None:
+    from zeler_sheets.formulas.handlers_remaining_phase4 import _catalogo_row
+
+    def row(value: CatalogWinningTime) -> list[Any]:
+        return _catalogo_row(
+            {"item_id": "MLA1"},
+            buybox={"winning_time_percent": Decimal("75.5")},
+            sales={},
+            tipo_precio="base",
+            winning_time=value,
+        )
+
+    observed = CatalogWinningTime(
+        winning=timedelta(hours=9),
+        with_stock=timedelta(hours=12),
+        covered=True,
+        history_from=NOW - timedelta(days=40),
+    )
+    late = CatalogWinningTime(
+        winning=timedelta(hours=9),
+        with_stock=timedelta(hours=9),
+        covered=False,
+        history_from=datetime(2026, 6, 1, 15, 30, tzinfo=UTC),
+    )
+    assert row(observed)[17] == 75
+    assert row(late)[17] == "Sin histórico antes de 2026-06-01 15:30"
 
 
 @pytest.mark.parametrize(
@@ -227,6 +261,14 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
     )
     repository.find_orders.return_value = []
     repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)
+    repository.find_catalog_winning_times.return_value = {
+        "MLA1": CatalogWinningTime(
+            winning=timedelta(hours=18),
+            with_stock=timedelta(hours=24),
+            covered=True,
+            history_from=NOW - timedelta(days=45),
+        )
+    }
     result = await RemainingPhase4FormulaHandlers(
         repository, now_fn=lambda: NOW
     ).sheetseller_catalogo(_context("ZELERDATA_CATALOGO", {"encabezados": False}))
@@ -242,12 +284,20 @@ async def test_catalogo_uses_verified_inventory_and_requests_missing_competition
     else:
         assert result.recovery is None
     if state == "ready":
-        assert result.values[0][17] == "DATA_UNAVAILABLE"
-        assert result.meta["unavailable_winning_time_items"] == 1
-        assert result.meta["winning_time_unavailable_reason"] == "catalog_history_not_reconciled"
-        assert result.meta["unavailable_reason"] == "catalog_history_not_reconciled"
+        assert result.values[0][17] == 75
+        assert result.meta["uncovered_winning_time_items"] == 0
+        assert "unavailable_reason" not in result.meta
+        repository.find_catalog_winning_times.assert_awaited_once_with(
+            seller_id="82453304",
+            date_from=NOW - timedelta(days=30),
+            date_to=NOW,
+            item_ids=["MLA1"],
+        )
     if state == "not_catalog":
-        assert "winning_time_unavailable_reason" not in result.meta
+        assert "uncovered_winning_time_items" not in result.meta or (
+            result.meta["uncovered_winning_time_items"] == 0
+        )
+        repository.find_catalog_winning_times.assert_not_called()
     repository.find_catalog_buybox_snapshots.assert_not_called()
 
 
@@ -303,6 +353,7 @@ async def test_catalog_recovery_does_not_starve_known_items_behind_inventory_gap
     )
     repository.find_orders.return_value = []
     repository.catalog_sales_coverage.return_value = (NOW, (7, 15, 30, 60, 90, 365), None)
+    repository.find_catalog_winning_times.return_value = {}
     handlers = build_item_shipping_catalog_formula_handlers(repository, now_fn=lambda: NOW)
     handlers.update(build_remaining_phase4_formula_handlers(repository, now_fn=lambda: NOW))
     result = await FormulaDispatcher(handlers).execute(_context(formula, {"encabezados": False}))
@@ -345,8 +396,6 @@ async def test_catalog_recovery_does_not_starve_known_items_behind_inventory_gap
         ("ZELERDATA_TIEMPOSTOCKACTIVO", "stock_time_metrics"),
         ("ZELERDATA_SEMANASCONSTOCK", "stock_time_metrics"),
         ("ZELERDATA_PRECIOHISTORICO", "price_history_snapshots"),
-        ("ZELERDATA_CATALOGOTIEMPO", "catalog_time_metrics"),
-        ("ZELERDATA_RETIROS", "full_withdrawals"),
     ],
 )
 async def test_history_formulas_do_not_truncate_complete_read_models(
@@ -545,7 +594,7 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
             21,
             "active",
             "sharing_first_place",
-            "DATA_UNAVAILABLE",
+            "Sin histórico de catálogo",
             95,
             100,
             "seller-competitor",
@@ -562,9 +611,9 @@ async def test_catalogo_uses_local_item_catalog_buybox_and_sales_snapshots(
         "unavailable_buybox_items": 0,
         "cached_buybox_items": 0,
         "cached_buybox_observed_at": {},
-        "unavailable_winning_time_items": 1,
-        "winning_time_unavailable_reason": "catalog_history_not_reconciled",
-        "unavailable_reason": "catalog_history_not_reconciled",
+        "winning_time_window_days": 30,
+        "winning_time_coverage_basis": "observed_only",
+        "uncovered_winning_time_items": 1,
         "sales_as_of": NOW.isoformat(),
         "unavailable_sales_windows": [],
     }
@@ -878,15 +927,9 @@ async def test_stock_history_formulas_use_local_stock_read_models() -> None:
 
 
 @pytest.mark.asyncio
-async def test_price_and_catalog_time_formulas_use_local_history_read_models() -> None:
+async def test_price_history_formula_uses_local_history_read_model() -> None:
     db = FakeDb()
     _mark_read_model_fresh(db, PRICE_HISTORY_SNAPSHOTS_READ_MODEL)
-    _mark_read_model_fresh(
-        db,
-        CATALOG_TIME_METRICS_READ_MODEL,
-        date_from=datetime(2026, 6, 1, tzinfo=UTC),
-        fresh_until=datetime(2026, 6, 15, tzinfo=UTC),
-    )
     db["sheets_price_history_snapshots"].documents = {
         "82453304:MLA1": {
             "_id": "82453304:MLA1",
@@ -900,37 +943,12 @@ async def test_price_and_catalog_time_formulas_use_local_history_read_models() -
             ],
         }
     }
-    db["sheets_catalog_time_metrics"].documents = {
-        "82453304:MLA1": {
-            "_id": "82453304:MLA1",
-            "seller_id": "82453304",
-            "item_id": "MLA1",
-            "title": "Catalog winner",
-            "url": "https://meli.example/MLA1",
-            "date_from": datetime(2026, 6, 1, tzinfo=UTC),
-            "date_to": datetime(2026, 6, 15, tzinfo=UTC),
-            "winning_hours": Decimal("12"),
-            "available_hours": Decimal("24"),
-            "winning_percent": Decimal("50"),
-        }
-    }
     dispatcher = _dispatcher(db)
 
     price_history = await dispatcher.execute(
         _context(
             "ZELERDATA_PRECIOHISTORICO",
             {"id_publicaciones": "todos", "tipo_precio": "base", "encabezados": "si"},
-        )
-    )
-    catalog_time = await dispatcher.execute(
-        _context(
-            "ZELERDATA_CATALOGOTIEMPO",
-            {
-                "fecha_inicial": "2026-06-01",
-                "fecha_final": "2026-06-14",
-                "id_publicaciones": "todos",
-                "encabezados": "si",
-            },
         )
     )
 
@@ -947,78 +965,6 @@ async def test_price_and_catalog_time_formulas_use_local_history_read_models() -
         ],
         ["MLA1", "Price item", 120, "active", 115, "promotion", 130, "paused"],
     ]
-    assert catalog_time.values == [
-        [
-            "ID PUBLICACION",
-            "TITULO",
-            "URL",
-            "TIEMPO GANANDO CATALOGO EN HORAS",
-            "TOTAL DE HORAS DISPONIBLE EN CATALOGO",
-            "% DE TIEMPO GANANDO CATALOGO",
-        ],
-        ["MLA1", "Catalog winner", "https://meli.example/MLA1", 12, 24, 50],
-    ]
-
-
-@pytest.mark.asyncio
-async def test_retiros_uses_local_full_withdrawal_read_model() -> None:
-    db = FakeDb()
-    _mark_read_model_fresh(db, FULL_WITHDRAWALS_READ_MODEL, fresh_until=NOW + timedelta(days=30))
-    db["sheets_full_withdrawals"].documents = {
-        "withdrawal-1": {
-            "_id": "withdrawal-1",
-            "seller_id": "82453304",
-            "withdrawal_id": "RET-1",
-            "withdrawal_detail_id": "RET-1-ITEM-1",
-            "inventory_id": "INV-MLA1",
-            "item_id": "MLA1",
-            "sku": "sku-1",
-            "title": "Withdrawal item",
-            "requested_quantity": 4,
-            "created_at": datetime(2026, 6, 2, 10, 0, tzinfo=UTC),
-            "delivered_at": datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
-        },
-        "withdrawal-outside": {
-            "_id": "withdrawal-outside",
-            "seller_id": "82453304",
-            "withdrawal_id": "RET-OLD",
-            "created_at": datetime(2026, 5, 1, tzinfo=UTC),
-        },
-    }
-    dispatcher = _dispatcher(db)
-
-    result = await dispatcher.execute(
-        _context(
-            "ZELERDATA_RETIROS",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-30", "encabezados": "si"},
-        )
-    )
-
-    assert result.values == [
-        [
-            "ID PRINCIPAL RETIRO",
-            "ID SECUNDARIO RETIRO",
-            "CODIGO ML",
-            "ID PUBLICACION",
-            "SKU",
-            "TITULO",
-            "UNIDADES SOLICITADAS",
-            "FECHA DE CREACION",
-            "FECHA DE ENTREGA",
-        ],
-        [
-            "RET-1",
-            "RET-1-ITEM-1",
-            "INV-MLA1",
-            "MLA1",
-            "sku-1",
-            "Withdrawal item",
-            4,
-            "2026-06-02T10:00:00+00:00",
-            "2026-06-10T11:00:00+00:00",
-        ],
-    ]
-    assert result.meta == {"rows_count": 1, "columns": "full_withdrawals"}
 
 
 @pytest.mark.asyncio
@@ -1038,16 +984,6 @@ async def test_retiros_uses_local_full_withdrawal_read_model() -> None:
             STOCK_TIME_METRICS_READ_MODEL,
         ),
         ("ZELERDATA_PRECIOHISTORICO", {}, PRICE_HISTORY_SNAPSHOTS_READ_MODEL),
-        (
-            "ZELERDATA_CATALOGOTIEMPO",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
-            CATALOG_TIME_METRICS_READ_MODEL,
-        ),
-        (
-            "ZELERDATA_RETIROS",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-30"},
-            FULL_WITHDRAWALS_READ_MODEL,
-        ),
     ],
 )
 async def test_remaining_phase4_formulas_require_fresh_read_model_marker(
@@ -1083,16 +1019,6 @@ async def test_remaining_phase4_formulas_require_fresh_read_model_marker(
             "ZELERDATA_SEMANASCONSTOCK",
             {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
             STOCK_TIME_METRICS_READ_MODEL,
-        ),
-        (
-            "ZELERDATA_CATALOGOTIEMPO",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
-            CATALOG_TIME_METRICS_READ_MODEL,
-        ),
-        (
-            "ZELERDATA_RETIROS",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-30"},
-            FULL_WITHDRAWALS_READ_MODEL,
         ),
     ],
 )
@@ -1184,16 +1110,6 @@ async def test_interval_aggregate_formula_rejects_broader_marker_and_metric_row(
             STOCK_TIME_METRICS_READ_MODEL,
         ),
         ("ZELERDATA_PRECIOHISTORICO", {}, PRICE_HISTORY_SNAPSHOTS_READ_MODEL),
-        (
-            "ZELERDATA_CATALOGOTIEMPO",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-14"},
-            CATALOG_TIME_METRICS_READ_MODEL,
-        ),
-        (
-            "ZELERDATA_RETIROS",
-            {"fecha_inicial": "2026-06-01", "fecha_final": "2026-06-30"},
-            FULL_WITHDRAWALS_READ_MODEL,
-        ),
     ],
 )
 async def test_remaining_phase4_formulas_reject_stale_read_model_marker(

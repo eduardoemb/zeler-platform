@@ -1375,7 +1375,7 @@ async def test_execute_questions_returns_data_unavailable_without_freshness_mark
 
 
 @pytest.mark.asyncio
-async def test_execute_retiros_requires_fresh_read_model_marker() -> None:
+async def test_execute_retiros_is_declared_unavailable_with_a_clear_reason() -> None:
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     app, _db, token = await _app_with_token(now=now)
 
@@ -1401,8 +1401,8 @@ async def test_execute_retiros_requires_fresh_read_model_marker() -> None:
     assert body["ok"] is False
     assert body["error"]["code"] == "DATA_UNAVAILABLE"
     assert body["error"]["message"] == (
-        "ZELERDATA_RETIROS data is not available yet: Read model "
-        "full_withdrawals has not passed freshness/reconciliation for the requested range."
+        "ZELERDATA_RETIROS data is not available yet: Mercado Libre no expone el "
+        "identificador del retiro de Full, por lo que ZELERDATA_RETIROS no está disponible."
     )
     assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
 
