@@ -48,7 +48,8 @@ Skill registry lives at `.atl/skill-registry.md`, relative to this checkout.
   not evidence of current health.
 - Conventional commits only.
 - No AI attribution in commits or pull requests.
-- Never commit without being asked.
+- Never commit without being asked, except that a worktree session integrates
+  its own branch as described in [Parallel sessions and worktrees](#parallel-sessions-and-worktrees-user-decision-oct-7-2026).
 - Never print secrets, tokens, connection strings, OAuth codes, cookies, or raw
   production environment values.
 - Never run local Docker builds. Use Cloud Build for production images only when
@@ -105,15 +106,42 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
   - The user creates the worktree in herdr (prefix + Shift+G, or
     `herdr worktree create --branch <type>/<name>` from the main checkout).
     herdr puts it in `~/.herdr/worktrees/zeler-platform/`. Agents do not create,
-    switch, or remove worktrees unless the user asks.
+    switch, or remove worktrees except as this section describes (launching
+    after the user's «sí», and cleanup of integrated worktrees).
+  - Or the main session launches it (user decision, Oct 9, 2026, taken from
+    `zeler-fabrica`, where it was checked on Oct 8, 2026). It does so only after
+    showing the prompt and getting the user's «sí», since each session spends
+    the plan:
+    1. `herdr workspace list`: take the `workspace_id` whose
+       `worktree.checkout_path` is the main checkout and whose
+       `is_linked_worktree` is false. The ID changes when herdr restarts.
+    2. `herdr worktree create --workspace <id> --branch <type>/<name>
+       --label <type>-<name> --base main --no-focus`. Its JSON gives
+       `root_pane.pane_id`.
+    3. `herdr agent start <type>-<name> --kind claude --pane <pane>
+       --timeout 60000 -- --model <model id> --effort <level> -n <type>-<name>`.
+       It answers `interactive_ready: true`.
+    4. `herdr agent prompt <type>-<name> "<prompt>"`. Pass a multi-line prompt
+       as one argument (`"$(cat <<'FIN_PROMPT' … FIN_PROMPT)"`); it arrives
+       intact, as a paste. `--wait --until idle` returns at once, so a few
+       seconds later confirm with
+       `herdr agent read <type>-<name> --source recent-unwrapped` that the
+       session received the prompt and is working.
+    - The user follows it in herdr's sidebar like any other worktree. If a step
+      fails, give the user a paste block for the worktree's terminal instead:
+      `claude --model … --effort … -n <type>-<name> "$(cat <<'FIN_PROMPT' … FIN_PROMPT)"`.
   - Branch prefixes: `feat/`, `fix/`, `docs/`, `chore/`, `test/`.
   - First step in a new worktree: `uv sync --all-packages`. Do not symlink the
     main checkout's `.venv`: its editable installs point at the main checkout's
     sources, so the worktree would run `main`'s code instead of its own.
 - Prompts for worktree sessions: the user usually asks the main session for a
-  complete prompt and pastes it into a worktree session. The prompt names the
-  branch, the goal, the files or areas, the checks to run, and what is out of
-  scope. It starts with a line `Recomendado: <model> · <effort>`:
+  complete prompt and pastes it into a worktree session, or the main session
+  launches it as above. The prompt names the branch, the goal, the files or
+  areas, the checks to run, and what is out of scope. It starts with a line
+  `Recomendado: <model> · <effort>` and comes with its launch command,
+  `claude --model <model id> --effort <level> -n <type>-<name>`, using the CLI's
+  effort names (low, medium, high, xhigh, max) and model IDs
+  (`claude-opus-5-5`, `claude-sonnet-5-5`):
   - Opus 5.5 xhigh: production data or operations, workers and concurrency
     (leases, cursors, retries, quotas), Mercado Libre behavior not yet
     explored, contracts or schemas, or wide multi-file changes.
@@ -129,29 +157,46 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
   - Engram memory and `docs/lessons/README.md`;
   - long shared docs such as the `docs/sheets/` ledgers; edit each in one
     session at a time.
-- Finishing ("integra a main"; this phrase is the request to commit, merge,
-  and push):
+- Finishing: the worktree session integrates on its own once its checks pass,
+  without waiting for the user to say "integra a main" (user decision, Oct 9,
+  2026, as in `zeler-fabrica`). Prompts for worktree sessions must not ask it to
+  wait. Build, deploy, and production changes keep their own authorization.
   1. Run the focused checks and the four root gates in the worktree, plus the
-     CI extras when they apply.
+     CI extras when they apply. If a check fails and the session cannot fix it,
+     stop and report; do not integrate.
   2. Commit on the branch, naming only your own paths.
   3. Rebase onto `main` if it moved and rerun the affected checks. Then run
      `git -C <main checkout> merge --ff-only <branch>`. Git refuses if the main
      checkout has uncommitted changes in the same files; in that case stop and
-     tell the user.
+     tell the user. If it is not a fast-forward because `main` moved again,
+     rebase and retry. If `.git/index.lock` exists, wait and retry; never
+     delete it.
   4. Push `main`. CI runs on the push.
   5. If runtime code changed, apply the end-of-session image drift rule. Build
      and deploy still need explicit authorization and run from the main session.
-  6. The user removes the worktree in herdr (`herdr worktree remove`); then
-     delete the merged branch.
+  6. Report to the user that the branch is integrated. The worktree session does
+     not remove its own worktree: the main session does, as below.
 - Two sessions in the same folder (small changes only):
   - announce the files and regions you will touch to the other session
     (SendMessage);
   - re-read a region right before editing it;
   - commit only your own hunks, naming the paths. Never use `git add -A` or
     `git commit -a`, and never commit another session's files.
-- Session close: list `git worktree list` and report which worktrees are clean
-  and merged so the user can remove them. Never remove a worktree with
-  uncommitted, unpushed, or unmerged work.
+- Cleanup of integrated worktrees (user decision, Oct 9, 2026): the main
+  session removes them on its own, without asking, whenever it reviews an
+  integration and at session close. It removes a linked worktree only when all
+  of these hold:
+  - `git -C <worktree> status --porcelain` is empty;
+  - its branch is an ancestor of `origin/main` (after `git fetch`);
+  - `git reflog show <branch>` has at least one `commit` or `rebase` entry, so
+    a fresh worktree whose session has not committed yet is never removed;
+  - its herdr agent is not `working` (`herdr workspace list`).
+  Then: if herdr has a workspace open for it (`herdr worktree list` →
+  `open_workspace_id`), `herdr worktree remove --workspace <id>`; otherwise
+  `git worktree remove <path>`. Never pass `--force`. Then `git branch -d
+  <branch>`, and `git push origin --delete <branch>` if it was pushed. Report
+  what was removed and list any worktree left with uncommitted, unpushed, or
+  unmerged work; never remove one of those.
 
 ## Stack summary
 
