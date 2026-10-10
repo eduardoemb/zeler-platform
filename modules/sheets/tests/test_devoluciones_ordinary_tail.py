@@ -431,8 +431,10 @@ async def test_tail_advance_uses_the_ordinary_runtime_source(
     # the pilot plan budget.
     assert "source" not in executed[0]
     assert executed[0]["window"] == {"index": 0}
-    # Only the tail retires pre-v2 rows its inventory no longer reports.
+    # Only the tail retires pre-v2 rows its inventory no longer reports, and
+    # only the tail excludes a listed claim whose detail Mercado Libre forbids.
     assert executed[0]["quarantine_legacy_claims"] is True
+    assert executed[0]["exclude_forbidden_claim_details"] is True
     assert admission.acquired[0]["source_fingerprint"] == "t" * 64
     assert admission.acquired[0]["require_coverage_compatible"] is True
     assert [call["succeeded"] for call in admission.finished] == [True]
@@ -518,6 +520,183 @@ async def test_tail_does_not_finalize_a_failed_or_unfinished_window(
         )
         assert outcome == {"advanced": advanced, "finalized": 0}
     assert finalized == []
+
+
+def _claim_detail_refusal() -> Exception:
+    import httpx
+
+    from zeler_sheets import devoluciones_reconciliation as source
+
+    request = httpx.Request("GET", "https://gateway.invalid/proxy/meli/post-purchase/v1/claims/1")
+    response = httpx.Response(403, headers={"X-Zeler-Upstream-Attempts": "1"}, request=request)
+    error = httpx.HTTPStatusError("upstream refused", request=request, response=response)
+    return source._tag_private_focused_devoluciones_failure(
+        error,
+        source._FocusedDevolucionesFailure.SOURCE,
+        source_stage=source._FocusedSourceStage.CLAIM_DETAIL,
+    )
+
+
+def _swallowing_advance(window: dict[str, Any]) -> Any:
+    # ``advance_devoluciones_quota_run`` turns every source failure into a
+    # failed run and keeps no trace of it.
+    async def advance(**kwargs: Any) -> dict[str, int]:
+        try:
+            await kwargs["source"](window=window, call_budget=104)
+        except Exception:  # noqa: BLE001 - mirrors the quota runner's terminal catch.
+            return {"advanced": 0, "finalized": 0}
+        return {"advanced": 1, "finalized": 0}
+
+    return advance
+
+
+@pytest.mark.asyncio
+async def test_tail_logs_the_window_failure_the_quota_runner_swallows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-09/10: the tail failed in the same minute two days running and
+    no log said why; a read-only replay found a 403 on one claim detail.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    _Admission(monkeypatch)
+
+    async def execute(**_: Any) -> dict[str, Any]:
+        raise _claim_detail_refusal()
+
+    monkeypatch.setattr(reconcile, "execute_devoluciones_quota_window", execute)
+    monkeypatch.setattr(
+        reconcile, "advance_devoluciones_quota_run", _swallowing_advance({"index": 2})
+    )
+    db = _runs_db(_run(_id="t" * 64, authorization_id=ORDINARY_TAIL_AUTHORIZATION))
+
+    with capture_logs() as logs:
+        outcome = await runner.advance_ordinary_devoluciones_tail(db, "t" * 64, now=lambda: NOW)
+
+    assert outcome == {"advanced": 0, "finalized": 0}
+    failures = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
+    assert failures == [
+        {
+            "event": "zelerdata.devoluciones_tail_failed",
+            "log_level": "warning",
+            "phase": "window",
+            "seller_id": SELLER,
+            "run_id": "t" * 64,
+            "window_index": 2,
+            "error_type": "HTTPStatusError",
+            "failure_class": "source_failure",
+            "source_stage": "claim_detail",
+            "source_family": "client_other",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tail_logs_the_proof_counts_of_an_incomplete_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    _Admission(monkeypatch)
+    counts = {"expected_count": 1, "persisted_count": 2, "complete_count": 2, "missing_count": 0}
+
+    async def execute(**_: Any) -> dict[str, Any]:
+        raise reconcile.DevolucionesQuotaProofError(counts)
+
+    monkeypatch.setattr(reconcile, "execute_devoluciones_quota_window", execute)
+    monkeypatch.setattr(
+        reconcile, "advance_devoluciones_quota_run", _swallowing_advance({"index": 0})
+    )
+    db = _runs_db(_run(_id="t" * 64, authorization_id=ORDINARY_TAIL_AUTHORIZATION))
+
+    with capture_logs() as logs:
+        await runner.advance_ordinary_devoluciones_tail(db, "t" * 64, now=lambda: NOW)
+
+    failure = next(log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed")
+    assert failure["error_type"] == "DevolucionesQuotaProofError"
+    assert {key: failure[key] for key in counts} == counts
+
+
+@pytest.mark.asyncio
+async def test_tail_logs_the_claim_it_excluded_because_mercado_libre_forbids_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    _Admission(monkeypatch)
+
+    async def execute(**_: Any) -> dict[str, Any]:
+        return {"excluded_claim_detail_forbidden": 1, "forbidden_claim_ids": ["5554522720"]}
+
+    async def advance(**kwargs: Any) -> dict[str, int]:
+        await kwargs["source"](window={"index": 0}, call_budget=104)
+        return {"advanced": 1, "finalized": 0}
+
+    monkeypatch.setattr(reconcile, "execute_devoluciones_quota_window", execute)
+    monkeypatch.setattr(reconcile, "advance_devoluciones_quota_run", advance)
+    db = _runs_db(_run(_id="t" * 64, authorization_id=ORDINARY_TAIL_AUTHORIZATION))
+
+    with capture_logs() as logs:
+        await runner.advance_ordinary_devoluciones_tail(db, "t" * 64, now=lambda: NOW)
+
+    assert [log for log in logs if log["event"].endswith("forbidden_claim_excluded")] == [
+        {
+            "event": "zelerdata.devoluciones_forbidden_claim_excluded",
+            "log_level": "warning",
+            "seller_id": SELLER,
+            "run_id": "t" * 64,
+            "window_index": 0,
+            "count": 1,
+            "claim_ids": ["5554522720"],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tail_logs_a_final_readback_that_does_not_certify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    _Admission(monkeypatch)
+    run = _run(
+        _id="t" * 64,
+        authorization_id=ORDINARY_TAIL_AUTHORIZATION,
+        window_count=1,
+        next_window_index=0,
+    )
+
+    async def advance(**kwargs: Any) -> dict[str, int]:
+        run.update(state="active", next_window_index=1)
+        return {"advanced": 1, "finalized": 0}
+
+    async def finalize(**kwargs: Any) -> dict[str, int]:
+        with pytest.raises(RuntimeError):
+            await kwargs["readback"](run=kwargs["run"], windows=[])
+        return {"advanced": 0, "finalized": 0}
+
+    async def readback(**_: Any) -> dict[str, Any]:
+        raise RuntimeError("readback failed")
+
+    monkeypatch.setattr(reconcile, "advance_devoluciones_quota_run", advance)
+    monkeypatch.setattr(reconcile, "_finalize_devoluciones_quota_run", finalize)
+    monkeypatch.setattr(reconcile, "readback_devoluciones_quota_run", readback)
+
+    with capture_logs() as logs:
+        outcome = await runner.advance_ordinary_devoluciones_tail(
+            _runs_db(run), "t" * 64, now=lambda: NOW
+        )
+
+    assert outcome == {"advanced": 1, "finalized": 0}
+    failures = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
+    assert [(log["phase"], log.get("error_type")) for log in failures] == [
+        ("readback", "RuntimeError"),
+        ("finalize", None),
+    ]
 
 
 @pytest.mark.asyncio

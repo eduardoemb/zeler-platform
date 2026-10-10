@@ -1231,6 +1231,7 @@ async def advance_ordinary_devoluciones_tail(
 ) -> dict[str, int]:
     """Advance one tail window through the ordinary runtime gateway."""
     from infra.operations.zelerdata_read_model_reconcile import (
+        DevolucionesQuotaProofError,
         _finalize_devoluciones_quota_run,
         advance_devoluciones_quota_run,
         execute_devoluciones_quota_window,
@@ -1241,18 +1242,32 @@ async def advance_ordinary_devoluciones_tail(
         new_devoluciones_attempt_token,
         stable_devoluciones_operation_id,
     )
+    from zeler_sheets.devoluciones_reconciliation import _private_focused_devoluciones_diagnostic
 
     clock = now or (lambda: datetime.now(UTC))
-
-    async def readback(**kwargs: Any) -> Mapping[str, Any]:
-        return await readback_devoluciones_quota_run(db=db, **kwargs)
 
     run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
     if not isinstance(run, Mapping) or run.get("authorization_id") != ORDINARY_TAIL_AUTHORIZATION:
         raise ValueError("run is not an ordinary tail run")
+    seller_id = str(run["seller_id"])
+
+    async def readback(**kwargs: Any) -> Mapping[str, Any]:
+        try:
+            return await readback_devoluciones_quota_run(db=db, **kwargs)
+        except Exception as exc:
+            # Finalization turns this into a failed run without a trace.
+            logger.warning(
+                "zelerdata.devoluciones_tail_failed",
+                phase="readback",
+                seller_id=seller_id,
+                run_id=run_id,
+                error_type=type(exc).__name__,
+            )
+            raise
+
     operation = await _acquire_onboarding_operation(
         db=db,
-        seller_id=str(run["seller_id"]),
+        seller_id=seller_id,
         scope="devoluciones",
         operation_id=stable_devoluciones_operation_id("refresh_tail_advance", run_id),
         attempt_token=new_devoluciones_attempt_token(),
@@ -1265,16 +1280,51 @@ async def advance_ordinary_devoluciones_tail(
         # No source override: the window uses the ordinary runtime gateway and
         # the existing per-window physical attempt ledger. A pre-v2 row the
         # inventory no longer reports would fail the final readback every day
-        # (2026-10-08), so the tail quarantines it.
-        proof = await execute_devoluciones_quota_window(
-            db=db, window=window, operation=operation, now=clock, quarantine_legacy_claims=True
-        )
+        # (2026-10-08), so the tail quarantines it. A listed claim whose detail
+        # Mercado Libre forbids failed the window every day (2026-10-09), so
+        # the tail excludes one such claim per window.
+        try:
+            proof = await execute_devoluciones_quota_window(
+                db=db,
+                window=window,
+                operation=operation,
+                now=clock,
+                quarantine_legacy_claims=True,
+                exclude_forbidden_claim_details=True,
+            )
+        except HistoryPolicyWaitError:
+            raise
+        except Exception as exc:
+            # The quota runner turns every source failure into a failed run
+            # without a trace (2026-10-09/10). Bounded fields only: no
+            # exception text, URL or token.
+            counts = exc.counts if isinstance(exc, DevolucionesQuotaProofError) else {}
+            logger.warning(
+                "zelerdata.devoluciones_tail_failed",
+                phase="window",
+                seller_id=seller_id,
+                run_id=run_id,
+                window_index=window.get("index"),
+                error_type=type(exc).__name__,
+                **_private_focused_devoluciones_diagnostic(exc),
+                **counts,
+            )
+            raise
         if proof.get("quarantined_legacy_claims"):
             logger.info(
                 "zelerdata.devoluciones_legacy_claims_quarantined",
-                seller_id=str(run["seller_id"]),
+                seller_id=seller_id,
                 run_id=run_id,
                 count=proof["quarantined_legacy_claims"],
+            )
+        if proof.get("excluded_claim_detail_forbidden"):
+            logger.warning(
+                "zelerdata.devoluciones_forbidden_claim_excluded",
+                seller_id=seller_id,
+                run_id=run_id,
+                window_index=window.get("index"),
+                count=proof["excluded_claim_detail_forbidden"],
+                claim_ids=proof.get("forbidden_claim_ids"),
             )
         return proof
 
@@ -1302,6 +1352,13 @@ async def advance_ordinary_devoluciones_tail(
                 db=db, run=advanced, operation=operation, current=clock(), readback=readback
             )
             outcome = {"advanced": outcome["advanced"], "finalized": finalized["finalized"]}
+            if not finalized["finalized"]:
+                logger.warning(
+                    "zelerdata.devoluciones_tail_failed",
+                    phase="finalize",
+                    seller_id=seller_id,
+                    run_id=run_id,
+                )
     except Exception:
         await _finish_onboarding_operation(
             db=db,

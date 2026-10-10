@@ -100,6 +100,13 @@ MAX_RETURNS_THROTTLE_RETRIES = 2
 # gateway already caps at 30 seconds; a throttled send that keeps failing past
 # its own allowance still fails closed.
 MAX_RETRY_AFTER_SECONDS = 30.0
+# Mercado Libre can list a claim in the seller's inventory and still answer 403
+# for its detail (2026-10-09: one dispute claim, on every claim endpoint). The
+# ordinary tail excludes at most one such claim per window, and only while it
+# stays a small share of the window inventory; more looks like an access
+# problem rather than one inaccessible claim, so the window fails closed.
+MAX_FORBIDDEN_CLAIM_DETAILS_PER_WINDOW = 1
+MAX_FORBIDDEN_CLAIM_DETAIL_PERCENT = 20
 
 
 class _FocusedDevolucionesFailure(StrEnum):
@@ -136,6 +143,7 @@ class InventoryExclusionReason(StrEnum):
     AUTHORITATIVE_NO_RETURN_MEDIATION = "authoritative_no_return_mediation"
     LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY = "low_cost_no_authoritative_item_identity"
     OUTSIDE_REQUESTED_RANGE = "outside_requested_range"
+    CLAIM_DETAIL_FORBIDDEN = "claim_detail_forbidden"
 
 
 class ClaimInventoryError(RuntimeError):
@@ -842,7 +850,9 @@ async def collect_devoluciones_snapshot(
     sleep: Callable[[float], Awaitable[None]] | None = None,
     returns_pacer: ReturnsAttemptPacer | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
+    exclude_forbidden_claim_details: bool = False,
 ) -> CollectedDevolucionesSnapshot:
+    """Collect one window; only the ordinary tail excludes forbidden claim details."""
     from zeler_sheets.claim_projection import (
         ReturnEvidenceDisposition,
         build_claim_projection,
@@ -873,6 +883,14 @@ async def collect_devoluciones_snapshot(
     projections: list[dict[str, Any]] = []
     orders_by_id: dict[str, dict[str, Any]] = {}
     exclusions: list[InventoryExclusionEvidence] = []
+    forbidden_allowance = (
+        min(
+            MAX_FORBIDDEN_CLAIM_DETAILS_PER_WINDOW,
+            len(inventory.entries) * MAX_FORBIDDEN_CLAIM_DETAIL_PERCENT // 100,
+        )
+        if exclude_forbidden_claim_details
+        else 0
+    )
     for entry in inventory.entries:
         if classify_inventory_relevance(entry) is InventoryRelevance.EXCLUDED_TERMINAL_CANCELLATION:
             exclusions.append(
@@ -905,6 +923,16 @@ async def collect_devoluciones_snapshot(
                 failure,
                 source_stage=_FocusedSourceStage.CLAIM_DETAIL,
             )
+            if forbidden_allowance > 0 and _is_authoritative_upstream_status(exc, 403):
+                forbidden_allowance -= 1
+                exclusions.append(
+                    InventoryExclusionEvidence(
+                        claim_id=entry.claim_id,
+                        last_updated=entry.last_updated,
+                        reason=InventoryExclusionReason.CLAIM_DETAIL_FORBIDDEN,
+                    )
+                )
+                continue
             raise
         if not _is_return_candidate(claim):
             raise ClaimInventoryError(
@@ -1076,6 +1104,10 @@ async def collect_devoluciones_snapshot(
         exclusion.reason is InventoryExclusionReason.OUTSIDE_REQUESTED_RANGE
         for exclusion in exclusions
     )
+    forbidden_detail_exclusions = sum(
+        exclusion.reason is InventoryExclusionReason.CLAIM_DETAIL_FORBIDDEN
+        for exclusion in exclusions
+    )
     return CollectedDevolucionesSnapshot(
         seller_id=str(seller_id),
         start=normalized_start,
@@ -1104,6 +1136,11 @@ async def collect_devoluciones_snapshot(
                 **(
                     {"excluded_outside_requested_range": outside_range_exclusions}
                     if outside_range_exclusions
+                    else {}
+                ),
+                **(
+                    {"excluded_claim_detail_forbidden": forbidden_detail_exclusions}
+                    if forbidden_detail_exclusions
                     else {}
                 ),
                 **(
@@ -1145,6 +1182,7 @@ async def revalidate_devoluciones_snapshot(
     monotonic: Callable[[], float] = time.monotonic,
     returns_pacer: ReturnsAttemptPacer | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    exclude_forbidden_claim_details: bool = False,
 ) -> CollectedDevolucionesSnapshot:
     if recorder.total != 0:
         raise SourceCallBudgetError("publication revalidation requires a fresh snapshot ledger")
@@ -1170,6 +1208,7 @@ async def revalidate_devoluciones_snapshot(
         monotonic=monotonic,
         returns_pacer=returns_pacer,
         heartbeat=heartbeat,
+        exclude_forbidden_claim_details=exclude_forbidden_claim_details,
     )
     if (
         current.source_fingerprint != snapshot.source_fingerprint
@@ -1181,6 +1220,8 @@ async def revalidate_devoluciones_snapshot(
         != snapshot.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
         or current.counters.get("excluded_outside_requested_range", 0)
         != snapshot.counters.get("excluded_outside_requested_range", 0)
+        or current.counters.get("excluded_claim_detail_forbidden", 0)
+        != snapshot.counters.get("excluded_claim_detail_forbidden", 0)
     ):
         raise DevolucionesReadModelVerificationError(
             "DEVOLUCIONES source, read-model fingerprint, or counter changed "
@@ -1894,10 +1935,19 @@ def _aware_claim_creation_time(value: Any) -> datetime:
 
 
 def _is_authoritative_upstream_not_found(exc: Exception) -> bool:
+    return _is_authoritative_upstream_status(exc, 404)
+
+
+def _is_authoritative_upstream_status(exc: Exception, status_code: int) -> bool:
+    """Mercado Libre's own answer: the gateway forwarded it after one attempt.
+
+    A refusal the gateway makes itself (scope, rate limit, policy) carries no
+    attempt or a zero attempt, so it never counts as the upstream's answer.
+    """
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
     return bool(
-        getattr(response, "status_code", None) == 404
+        getattr(response, "status_code", None) == status_code
         and isinstance(headers, Mapping)
         and headers.get("X-Zeler-Upstream-Attempts") == "1"
     )

@@ -607,3 +607,160 @@ async def test_pilot_windows_still_leave_legacy_claims_to_the_operator(
     assert await db.claims.find_one({"_id": legacy["_id"]}) == legacy
     assert await db[QUARANTINE].count_documents({}) == 0
     assert await db[CERTIFICATES].count_documents({}) == 0
+
+
+def _meli_time(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _upstream_refusal(status_code: int, path: str) -> Any:
+    import httpx
+
+    # Mercado Libre's own answer, forwarded by the gateway after one attempt.
+    request = httpx.Request("GET", f"https://gateway.invalid/proxy/meli{path}")
+    response = httpx.Response(
+        status_code, headers={"X-Zeler-Upstream-Attempts": "1"}, request=request
+    )
+    return httpx.HTTPStatusError("upstream refused", request=request, response=response)
+
+
+class ForbiddenClaimGateway:
+    """The 2026-07-31..08-10 tail window, shaped like production.
+
+    Six listed claims: one productive return, two closed mediations without a
+    return, two closed cancellations, and one dispute whose detail Mercado
+    Libre forbids (403 on every claim endpoint).
+    """
+
+    FORBIDDEN = "5554522720"
+
+    def __init__(self, created: datetime) -> None:
+        self.paths: list[str] = []
+        stamp = _meli_time(created)
+        self.rows = [
+            {"id": claim_id, "date_created": stamp, "last_updated": stamp, **shape}
+            for claim_id, shape in (
+                ("5550000001", {"type": "returns", "status": "closed"}),
+                ("5550000002", {"type": "mediations", "status": "closed"}),
+                ("5550000003", {"type": "mediations", "status": "closed"}),
+                (self.FORBIDDEN, {"type": "mediations", "status": "closed"}),
+                ("5550000005", {"type": "cancel_purchase", "status": "closed"}),
+                ("5550000006", {"type": "cancel_purchase", "status": "closed"}),
+            )
+        ]
+        players = [
+            {"user_id": 999, "role": "respondent", "type": "seller"},
+            {"user_id": 90001, "role": "complainant", "type": "buyer"},
+        ]
+        self.claims = {
+            "5550000001": {
+                "id": "5550000001",
+                "claim_version": 1,
+                "date_created": stamp,
+                "last_updated": stamp,
+                "order_id": "2000000001",
+                "item_id": "MLM1",
+                "status": "closed",
+                "stage": "claim",
+                "type": "returns",
+                "players": players,
+                "related_entities": [{"type": "return", "id": "RETURN-5550000001"}],
+            },
+            **{
+                claim_id: {
+                    "id": claim_id,
+                    "date_created": stamp,
+                    "last_updated": stamp,
+                    "resource": "order",
+                    "resource_id": order_id,
+                    "status": "closed",
+                    "stage": "dispute",
+                    "type": "mediations",
+                    "players": players,
+                }
+                for claim_id, order_id in (("5550000002", 2000000002), ("5550000003", 2000000003))
+            },
+        }
+        self.returns = {
+            "id": "RETURN-5550000001",
+            "status": "delivered",
+            "subtype": "return_total",
+            "last_updated": stamp,
+            "orders": [
+                {
+                    "order_id": "2000000001",
+                    "item_id": "MLM1",
+                    "context_type": "total",
+                    "return_quantity": "1.0",
+                    "total_quantity": 1,
+                }
+            ],
+        }
+        self.order = {
+            "id": 2000000001,
+            "seller": {"id": 999},
+            "buyer": {"id": 90001},
+            "status": "paid",
+            "date_created": stamp,
+            "last_updated": stamp,
+            "total_amount": 100,
+            "items": [
+                {
+                    "item": {"id": "MLM1", "seller_sku": "SKU-1", "title": "Title"},
+                    "quantity": 1,
+                    "unit_price": 100,
+                }
+            ],
+        }
+
+    async def fetch_resource_once(self, *, seller_id: str, path: str, **_: Any) -> dict[str, Any]:
+        assert seller_id == "999"
+        self.paths.append(path)
+        if path.startswith("/post-purchase/v1/claims/search?"):
+            return {"data": self.rows, "paging": {"offset": 0, "limit": 100, "total": 6}}
+        if path.startswith("/orders/"):
+            return dict(self.order)
+        claim_id = path.split("/")[4]
+        if claim_id == self.FORBIDDEN:
+            raise _upstream_refusal(403, path)
+        if path.endswith("/returns"):
+            if claim_id == "5550000001":
+                return dict(self.returns)
+            raise _upstream_refusal(404, path)
+        return dict(self.claims[claim_id])
+
+
+@pytest.mark.asyncio
+async def test_tail_excludes_a_claim_whose_detail_mercado_libre_forbids(
+    onboarding_claims_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-10-09/10: Mercado Libre answered 403 for one listed dispute claim,
+    so the tail window failed every day and coverage froze at 07-31.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    db = onboarding_claims_db
+    start, tail_start, settled = await paused_pilot_with_tail_due(db, monkeypatch)
+    gateway = ForbiddenClaimGateway(tail_start + timedelta(hours=6))
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+
+    assert await advance_due_devoluciones_run(db, "999", history_work_enabled=False) is True
+
+    tail = await db.sheets_devoluciones_runs.find_one(
+        {"authorization_id": ORDINARY_TAIL_AUTHORIZATION}
+    )
+    assert tail is not None and tail["state"] == "completed"
+    covering = await select_covering_proofs(db, "999", start, settled, datetime.now(UTC))
+    assert len(covering.proofs) == 2
+    window = await db.sheets_devoluciones_run_windows.find_one({"run_id": tail["_id"]})
+    assert window["expected_count"] == window["persisted_count"] == 1
+    assert window["counters"] == {"excluded_claim_detail_forbidden": 1}
+    assert await db.claims.distinct("_id", {"seller_id": "999"}) == ["5550000001"]
+    # Only the claim detail was asked for the forbidden claim, once per pass.
+    forbidden = [path for path in gateway.paths if ForbiddenClaimGateway.FORBIDDEN in path]
+    assert forbidden == [f"/post-purchase/v1/claims/{ForbiddenClaimGateway.FORBIDDEN}"] * 2
+    assert await db[QUARANTINE].count_documents({}) == 0

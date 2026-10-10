@@ -57,6 +57,16 @@ class HistoricalDevolucionesGuardError(RuntimeError):
         super().__init__(f"historical DEVOLUCIONES guard blocked: {reason}")
 
 
+class DevolucionesQuotaProofError(RuntimeError):
+    """A window readback that does not match its snapshot; keeps only counts."""
+
+    COUNT_KEYS = ("expected_count", "persisted_count", "complete_count", "missing_count")
+
+    def __init__(self, proof: Mapping[str, Any]) -> None:
+        super().__init__("quota window readback proof is incomplete")
+        self.counts = {key: proof.get(key) for key in self.COUNT_KEYS}
+
+
 READ_MODELS: tuple[str, ...] = (
     "orders",
     "shipments",
@@ -1191,16 +1201,20 @@ async def execute_devoluciones_quota_window(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     quarantine_legacy_claims: bool = False,
+    exclude_forbidden_claim_details: bool = False,
 ) -> dict[str, Any]:
     """Write and verify one exact quota window under an existing root lease.
 
-    Only the ordinary tail sets ``quarantine_legacy_claims``. Operator and
-    pilot runs keep failing closed on any non-canonical row in their range.
+    Only the ordinary tail sets ``quarantine_legacy_claims`` and
+    ``exclude_forbidden_claim_details``. Operator and pilot runs keep failing
+    closed on any non-canonical row in their range and on any claim detail
+    Mercado Libre refuses.
     """
     from zeler_sheets.devoluciones_reconciliation import (
         MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
         MAX_SOURCE_PHYSICAL_ATTEMPTS,
         GatewayDevolucionesSource,
+        InventoryExclusionReason,
         ReturnsAttemptPacer,
         SourceCallRecorder,
         SourceRunLedger,
@@ -1237,6 +1251,7 @@ async def execute_devoluciones_quota_window(
         absolute_deadline=absolute_deadline,
         monotonic=monotonic,
         returns_pacer=returns_pacer,
+        exclude_forbidden_claim_details=exclude_forbidden_claim_details,
     )
     window_operation = replace(operation, source_fingerprint=snapshot.source_fingerprint)
     request = ReconciliationRequest(
@@ -1280,6 +1295,7 @@ async def execute_devoluciones_quota_window(
             monotonic=monotonic,
             returns_pacer=returns_pacer,
             now=now,
+            exclude_forbidden_claim_details=exclude_forbidden_claim_details,
         )
         quarantined = 0
         if quarantine_legacy_claims:
@@ -1302,7 +1318,7 @@ async def execute_devoluciones_quota_window(
         (item for item in summary.aggregates if item.read_model == "claims"),
         None,
     )
-    proof = {
+    proof: dict[str, Any] = {
         "source_fingerprint": snapshot.source_fingerprint,
         "read_model_fingerprint": snapshot.read_model_fingerprint,
         "expected_count": aggregate.expected_count if aggregate else None,
@@ -1311,9 +1327,19 @@ async def execute_devoluciones_quota_window(
         "missing_count": aggregate.missing_count if aggregate else None,
     }
     if not _complete_quota_proof(proof):
-        raise RuntimeError("quota window readback proof is incomplete")
+        raise DevolucionesQuotaProofError(proof)
     if quarantined:
         proof["quarantined_legacy_claims"] = quarantined
+    # The forbidden claim stays out of the expected count; its exclusion is
+    # already part of the window's source fingerprint.
+    forbidden = sorted(
+        exclusion.claim_id
+        for exclusion in snapshot.exclusions
+        if exclusion.reason is InventoryExclusionReason.CLAIM_DETAIL_FORBIDDEN
+    )
+    if forbidden:
+        proof["excluded_claim_detail_forbidden"] = len(forbidden)
+        proof["forbidden_claim_ids"] = forbidden
     return proof
 
 
@@ -1405,13 +1431,17 @@ async def advance_devoluciones_quota_run(
                 **session_kwargs,
             )
             return
-        aggregate_proof: dict[str, int | str] = {
+        aggregate_proof: dict[str, Any] = {
             key: int(proof[key])
             for key in ("expected_count", "persisted_count", "complete_count", "missing_count")
         }
         aggregate_proof.update(
             {key: str(proof[key]) for key in ("source_fingerprint", "read_model_fingerprint")}
         )
+        excluded = proof.get("excluded_claim_detail_forbidden")
+        if isinstance(excluded, int) and excluded > 0:
+            # Durable trace of a listed claim the window could not read.
+            aggregate_proof["counters"] = {"excluded_claim_detail_forbidden": excluded}
         await db["sheets_devoluciones_run_windows"].update_one(
             {"_id": window["_id"]},
             {"$set": {"state": "completed", **aggregate_proof, "updated_at": current}},

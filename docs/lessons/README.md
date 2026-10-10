@@ -106,6 +106,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-047 | ZelerData | Compute interval metrics from observations at read time, not from import markers | active |
 | L-048 | ZelerData | Gate a change-only history on its observation heartbeat | active |
 | L-049 | Sheets DLQ | Archive on a per-resource read stamp, not on a window marker | active |
+| L-050 | ZelerData | Exclude one listed claim Mercado Libre forbids, and log what the quota runner swallows | active |
 
 ## Cloud Build and VM deployment
 
@@ -829,4 +830,25 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `tests/operations/test_sheets_dlq_archive_runtime.py` (real-Mongo lookup and
   index plan), `docs/ops/sheets-dlq-reconciliation.md`. Not yet run in
   production.
+- status: active
+
+### L-050 — Exclude one listed claim Mercado Libre forbids, and log what the quota runner swallows
+- area: ZelerData DEVOLUCIONES coverage
+- proven path: In the ordinary tail only, a claim-detail 403 that carries
+  `X-Zeler-Upstream-Attempts: 1` (Mercado Libre's own answer) becomes a
+  `claim_detail_forbidden` exclusion: fingerprinted, revalidated, counted in
+  the window's `counters` and logged with its claim id. Allow at most one per
+  window, and no more than 20 % of the listed claims. Log every tail failure with
+  its phase, error class and bounded diagnostic before the quota runner discards
+  it.
+- failed path: Treating any 4xx as tolerable, or excluding it in operator and
+  pilot runs, would certify ranges with access gaps. The quarantine collection
+  cannot record the claim: its strict validator allows one `reason` and
+  requires the archived row's BSON. Without the log, two daily failures in the
+  same minute left no cause; only a read-only replay found the 403.
+- verification/source: `modules/sheets/tests/test_devoluciones_forbidden_claim.py`,
+  `modules/sheets/tests/test_devoluciones_ordinary_tail.py` (logs),
+  `tests/integration/test_devoluciones_onboarding.py` (tail completes and
+  certifies with the 403), `docs/sheets/zelerdata-refresh.md`. Not yet observed
+  in production.
 - status: active

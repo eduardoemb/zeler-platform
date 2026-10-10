@@ -190,6 +190,36 @@ omits is not moved; the run still fails closed. Operator and pilot runs share
 the window executor without this step and keep failing on any non-canonical row.
 Restoring an archived row blocks the range again.
 
+##### A listed claim whose detail Mercado Libre forbids (2026-10-09)
+
+The tail for 2026-07-31..08-10 failed in the same minute on 9 and 10 October.
+Its inventory listed six claims; for one of them (stage `dispute`) Mercado
+Libre answered 403 on the claim, its v2 returns, its detail and its reputation
+impact. No endpoint returns data for that claim, so the window could never
+close, and the quota runner turned the failure into a failed run with no log.
+
+The tail now excludes such a claim from the window. The exclusion applies only
+to a 403 that Mercado Libre returns for the claim detail, which the gateway
+forwards with `X-Zeler-Upstream-Attempts: 1`. A 403 from the gateway itself,
+or a 401, 404, 429 or 5xx, still fails the window. The tail excludes at most one
+such claim per window, and only while it is at most 20 % of the window's listed
+claims; otherwise the window fails as before. The exclusion is part of the
+window's source fingerprint. Revalidation must see the same 403. The completed
+window stores `counters.excluded_claim_detail_forbidden`, and the worker logs
+`zelerdata.devoluciones_forbidden_claim_excluded` with the claim id. No row is
+written, so the claim is outside the expected count, the readback, the
+certificate and the `DEVOLUCIONES` total for that range. Nothing in the formula
+output marks the gap. If the claim already has a canonical row (for example,
+from an earlier webhook), the readback counts it, and the window still fails
+closed with `persisted_count` above `expected_count`. Operator and pilot runs
+keep failing closed.
+
+Any tail failure is now logged as `zelerdata.devoluciones_tail_failed` with its
+`phase` (`window`, `readback` or `finalize`). A window failure also logs the
+error class, the bounded source diagnostic (`failure_class`, `source_stage`,
+`source_family`) and, for an incomplete readback, the four proof counts. It
+never logs exception text, URLs or tokens.
+
 #### Renewing a settled marker
 
 The quota finalize publishes the `devoluciones` marker once, when the last window

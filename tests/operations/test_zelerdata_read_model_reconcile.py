@@ -1288,6 +1288,7 @@ async def test_quota_window_executor_reuses_root_fence_and_returns_markerless_pr
         expected_claim_ids=frozenset({"claim-1"}),
         source_fingerprint="source-window",
         read_model_fingerprint="read-window",
+        exclusions=(),
     )
     events: list[tuple[str, Any]] = []
 
@@ -1372,6 +1373,84 @@ async def test_quota_window_executor_reuses_root_fence_and_returns_markerless_pr
         "revalidate",
         "readback",
     ]
+
+
+@pytest.mark.asyncio
+async def test_quota_window_executor_reports_the_counts_of_an_incomplete_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A window whose readback differs from its snapshot must say by how much:
+    the ordinary tail logs these counts instead of a bare failed run.
+    """
+    from zeler_sheets import devoluciones_reconciliation as source_module
+
+    operation = _operation()
+    snapshot = SimpleNamespace(
+        seller_id=operation.seller_id,
+        start=_dt(1),
+        end=_dt(11),
+        captured_at=_dt(2),
+        expected_claim_ids=frozenset({"claim-1"}),
+        source_fingerprint="source-window",
+        read_model_fingerprint="read-window",
+        counters={},
+        exclusions=(),
+    )
+
+    async def collect_snapshot(**_: Any) -> Any:
+        return snapshot
+
+    async def write_snapshot(**_: Any) -> dict[str, int]:
+        return {"written_claims": 1}
+
+    async def collect_counts(**kwargs: Any) -> ReconciliationSummary:
+        request = kwargs["request"]
+        return ReconciliationSummary(
+            seller_id=request.seller_id,
+            date_from=request.date_range.date_from,
+            date_to=request.date_range.date_to,
+            dry_run=False,
+            approved_runtime=True,
+            write_enabled=True,
+            aggregates=(
+                ReadModelAggregate(
+                    read_model="claims",
+                    expected_count=1,
+                    persisted_count=2,
+                    missing_count=0,
+                    complete_count=2,
+                    truth_mode="expected",
+                ),
+            ),
+        )
+
+    @asynccontextmanager
+    async def heartbeat(**_: Any) -> Any:
+        yield
+
+    monkeypatch.setattr(source_module, "collect_devoluciones_snapshot", collect_snapshot)
+    monkeypatch.setattr(source_module, "write_devoluciones_snapshot", write_snapshot)
+    monkeypatch.setattr(source_module, "revalidate_devoluciones_snapshot", collect_snapshot)
+    monkeypatch.setattr(reconcile_operation_module, "collect_reconciliation_counts", collect_counts)
+    monkeypatch.setattr(reconcile_operation_module, "maintain_devoluciones_heartbeat", heartbeat)
+
+    with pytest.raises(reconcile_operation_module.DevolucionesQuotaProofError) as exc_info:
+        await reconcile_operation_module.execute_devoluciones_quota_window(
+            db=FakeAsyncDb({}),
+            window={"start": _dt(1), "end": _dt(11)},
+            operation=operation,
+            source=object(),
+            monotonic=lambda: 1.0,
+            now=lambda: _dt(2),
+        )
+
+    assert isinstance(exc_info.value, RuntimeError)
+    assert exc_info.value.counts == {
+        "expected_count": 1,
+        "persisted_count": 2,
+        "complete_count": 2,
+        "missing_count": 0,
+    }
 
 
 def _seller_doc(**values: Any) -> dict[str, Any]:
