@@ -296,10 +296,13 @@ queries, which is the split agreed after a production write aborted with
   forward tail per day from existing certified coverage. The legacy systemd
   timer is superseded.
 - The DLQ archive stays evidence-based: a message is only removed when a
-  reconciled marker already covers its window or it is past retention, the
-  sanitized record is written before the ack, and everything else is requeued
-  untouched. A misconfigured enable fails at build time instead of silently
-  skipping the pass.
+  reconciled marker already covers its window (questions only) or it is past
+  retention, the sanitized record is written before the ack, and everything
+  else is requeued untouched. The per-cycle pass does not read the platform's
+  read stamps, so `resource_reread` belongs to the operator runtime in
+  [`docs/ops/sheets-dlq-reconciliation.md`](../ops/sheets-dlq-reconciliation.md).
+  A misconfigured enable fails at build time instead of silently skipping the
+  pass.
 
 ## Verification
 

@@ -105,6 +105,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-046 | Shell tests | Keep deploy scripts bash 3.2-safe and sandbox GNU-only calls on macOS | active |
 | L-047 | ZelerData | Compute interval metrics from observations at read time, not from import markers | active |
 | L-048 | ZelerData | Gate a change-only history on its observation heartbeat | active |
+| L-049 | Sheets DLQ | Archive on a per-resource read stamp, not on a window marker | active |
 
 ## Cloud Build and VM deployment
 
@@ -805,4 +806,27 @@ repeat failures, and promote stable knowledge to its proper operational form.
   (real Mongo, strict validator), `test_formula_availability_history.py`,
   `test_availability_metrics.py`, `docs/sheets/zelerdata-formulas.md`
   ("Availability history"). Not yet observed in production.
+- status: active
+
+### L-049 — Archive a DLQ message on a per-resource read stamp, not on a window marker
+- area: Sheets DLQ archive
+- proven path: The event envelope carries no data and the worker always
+  re-reads the resource, so a message is safe to archive once the platform's
+  own read stamp for that resource is at least 15 minutes after `occurred_at`:
+  `items.last_meli_sync_at`, `shipments.formula_observed_at`,
+  `orders.items[].sale_fee_synced_at` or the newest competition observation,
+  one identity or indexed `find_one` per message. Plan with
+  `sheets_dlq_archive_runtime --dry-run`, which requeues everything LIFO and
+  prints counts only.
+- failed path: Mapping `items` to a read model that does not exist left the
+  window rule inert for publications, and the `orders` marker made it unsound:
+  its top-level window is only the latest acquisition (one hour for the fast
+  sweep), and a formula-triggered window ends at the next UTC midnight, so
+  `reconciled_until >= occurred_at` archived updates to orders that window
+  never read. The `item_formula_rows` and `catalog_buybox_snapshots` markers
+  are legacy claims nothing renews.
+- verification/source: `tests/operations/test_sheets_dlq_archive.py`,
+  `tests/operations/test_sheets_dlq_archive_runtime.py` (real-Mongo lookup and
+  index plan), `docs/ops/sheets-dlq-reconciliation.md`. Not yet run in
+  production.
 - status: active

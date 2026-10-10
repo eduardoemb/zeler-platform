@@ -199,38 +199,120 @@ OAuth data. Review it before requesting any approval.
 `infra/operations/sheets_dlq_archive_runtime.py` executes it. The decided path
 for the stuck queue is *archive with the reason recorded*, not replay.
 
-Two reasons authorise an archive, and nothing else does:
+Three reasons authorise an archive, checked in this order, and nothing else does:
 
 | Reason | Evidence | Why it is safe |
 |---|---|---|
-| `window_reconciled` | The message's seller and read model have a **reconciled** marker whose `reconciled_until` is at or after the message's `occurred_at` | A source reconciliation already proved that interval is in the read model, so the message could only append older data |
+| `resource_reread` | The platform read the message's Mercado Libre resource again at least 15 minutes after its `occurred_at`, and not in the future | The event envelope carries no data (`event_id`, `event_type`, `occurred_at`, `seller_id`, `resource`, `trace_id`, `schema_version`); the worker always re-reads the resource, so a later read already holds everything a replay could fetch |
+| `window_reconciled` | `questions.*` only: the seller has a **reconciled** `questions` marker whose `reconciled_until` is at or after the message's `occurred_at` | Each question acquisition re-scans the whole marked window, so the message could only append older data |
 | `age_exceeded` | The message is older than the retention bound (default 30 days) | The queue is not a data store; the read models do not depend on it, and the message is past any useful append window |
 
-Anything else is retained and requeued. Two evidence rules matter:
+Anything else is retained and requeued.
+
+### Read stamps behind `resource_reread`
+
+Each event type has one stamp the platform writes only from a fresh Mercado
+Libre read. Mercado Libre's own `last_updated` is never used. The run reads one
+document per message by identity (or through the existing index), projecting
+only the stamp.
+
+| Event type | Read stamp | Written by |
+|---|---|---|
+| `items.updated`, `items.price_updated` | `items.last_meli_sync_at` | The event path and every item detail acquisition. A price event re-reads the whole publication |
+| `shipments.updated` | `shipments.formula_observed_at` | Shipment recovery, right after the detail read. An event write keeps the previous value, which only understates |
+| `orders.updated` | Latest `orders.items[].sale_fee_synced_at` | Every order write from `/orders/{id}`, in the same replace as the order. The bootstrap stores the order's own last change, never later than its read |
+| `catalog_item_competition_status.updated` | Newest `sheets_catalog_competition_observations.observed_at` for the publication (index `seller_id, item_id, observed_at`) | The event path and buybox recovery, stamped before the `price_to_win` read |
+
+Other event types (for example `questions.*`) have no read stamp and never use
+this rule. The 15-minute margin covers Mercado Libre serving a change shortly
+after its webhook and the event path stamping the read when it persists.
+
+### Markers that do not authorise `window_reconciled`
+
+A marker only counts when it proves that the message's resource was read after
+the event. These do not, so they are not mapped:
+
+* `item_formula_rows`: no current writer publishes a reconciled marker. The
+  inventory sweep finishes without one; the marker some sellers still hold is a
+  legacy reconciliation claim the refresh loop never renews.
+* `shipments`: only an `observed_only` heartbeat exists.
+* `catalog_buybox_snapshots`: a legacy date-range claim over stored snapshots,
+  not a re-read of each publication.
+* `orders`: the marker covers orders *created* inside its latest window (one
+  hour for the fast sweep), and a formula-triggered window ends at the next UTC
+  midnight, after the read. It would archive an update to any older order.
+  Orders use `resource_reread` instead.
+
+`questions` keeps the rule because its acquisitions re-scan the whole marked
+window, but a formula-triggered window can also end after its read. No
+question events have reached this DLQ; revisit the mapping if they do.
+
+### Evidence rules
 
 * An `observed_only` heartbeat is **not** coverage. It says the loop audited
   what it observed, never that an event that produced no observation is
   already applied, so it can never authorise an archive.
-* A message for a seller without a reconciled marker is retained. Absence of
-  evidence is not evidence.
+* Only the sellers named with `--seller-id` can authorise a removal, through
+  either markers or read stamps. Absence of evidence is not evidence: a missing
+  document, a missing or unparseable stamp, or a stamp inside the margin
+  retains the message.
+* A failed evidence read stops the run with `evidence_read_failed`; that
+  message is requeued untouched.
+* A seller with an enabled `sheets_exports` event export also gets one row per
+  event in its events worksheet. No reason recovers that row (a replay would
+  append current data, not the historical row). The report counts these sellers
+  as `sellers_with_event_export`; review it before archiving.
 
 Ordering is the safety property: the sanitized record is written **before** the
 delivery is acked. If the write fails, the message is requeued and the run
 stops, so a partial write can never remove history silently. Records carry only
 `event_type`, hashed seller/resource/message references, `occurred_at`,
 `reason_code`, `archived_at` and `schema_version`; raw payloads, idempotency
-keys, seller ids and resource ids never leave the process.
+keys, seller ids and resource ids never leave the process. `sheets_dlq_archives`
+has no validator or index under `infra/mongo/`.
 
-Execute only with both confirmations, from the approved runtime:
+### Dry run (read-only)
+
+Run it first, as `root` on `platform-vm`, inside `sheets-worker`. It takes the
+same path as the archive: it gets each message without ack, holds all of them,
+decides each one and then requeues them in LIFO order, so the queue keeps its
+order. It writes nothing and needs no confirmation:
 
 ```bash
-/app/.venv/bin/python -m infra.operations.sheets_dlq_archive_runtime \
+cd /opt/zeler-platform && docker compose exec -T sheets-worker \
+  /app/.venv/bin/python -m infra.operations.sheets_dlq_archive_runtime \
+  --seller-id 82453304 --limit 500 --dry-run
+```
+
+It prints one sanitized JSON line with counts only: `scanned`, `would_archive`,
+`by_reason`, `by_event_type`, `by_month`, `by_event_type_reason`,
+`ready_before`, `ready_after`, `sellers_with_event_export` and
+`stopped_reason`. It never prints payloads, ids or URIs. `ready_after` is read
+on a fresh connection after the scan channel closes and should match
+`ready_before`, apart from messages that arrived meanwhile. `--dry-run` refuses
+the archive confirmations.
+
+The snapshot planner `infra/operations/sheets_dlq_archive.py --snapshot` only
+plans from a captured file and has no access to read stamps.
+
+### Archive
+
+After reviewing the dry run, execute with both confirmations from the same
+runtime:
+
+```bash
+cd /opt/zeler-platform && docker compose exec -T sheets-worker \
+  /app/.venv/bin/python -m infra.operations.sheets_dlq_archive_runtime \
   --seller-id 82453304 --limit 500 \
   --confirm-approved-runtime --confirm-archive
 ```
 
-The CLI is dry-run first: without both flags it prints the plan and writes
-nothing, and it never contacts the broker.
+Without `--dry-run` or both confirmations the runtime refuses to run. The
+report has the same counts, with `archived` instead of only `would_archive`.
+
+The worker's optional per-cycle archive (`ZELERDATA_DLQ_ARCHIVE_ENABLED`) uses
+the same decision without read stamps, so it archives only by
+`window_reconciled` and `age_exceeded`.
 
 ## Approval workflow
 

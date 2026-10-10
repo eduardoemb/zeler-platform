@@ -8,7 +8,12 @@ the message is requeued and the run stops, because an unexplained removal is
 exactly what this work is supposed to eliminate.
 
 The runtime holds one queue and one collection; it never publishes, never
-touches another queue, and never mutates read models.
+touches another queue, and never mutates read models. Its evidence reads are
+bounded: one identity (or indexed) ``find_one`` per message, with a minimal
+projection.
+
+``--dry-run`` walks the queue exactly like the real run, decides every message
+and then requeues all of them, writing nothing. Its output is counts only.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
@@ -29,6 +36,8 @@ from infra.operations.sheets_dlq_archive import (
     ArchiveDecision,
     build_archive_record,
     decide_archive,
+    reread_at_from_document,
+    reread_target,
 )
 
 DLQ_QUEUE_NAME = "zeler.sheets.events.dlq"
@@ -63,25 +72,56 @@ class ArchiveBroker(Protocol):
     async def close_channel(self) -> None: ...
 
 
+class ReadyInspectingBroker(ArchiveBroker, Protocol):
+    """Archive broker that can also read the queue's ready count passively."""
+
+    async def ready_count(self, queue_name: str) -> int: ...
+
+
 ArchiveStore = Callable[[Mapping[str, Any]], Awaitable[None]]
+# Resolve the platform's latest read of a message's resource, or ``None``.
+RereadLookup = Callable[[Mapping[str, Any]], Awaitable[datetime | None]]
+
+_COUNTABLE_EVENT_TYPE = re.compile(r"[a-z_]+(?:\.[a-z_]+)+")
 
 
 @dataclass(frozen=True)
 class ArchiveRunReport:
-    """Sanitized outcome of one bounded archive run."""
+    """Sanitized outcome of one bounded archive run: counts and codes only."""
 
     archived: int
     retained: int
     by_reason: Mapping[str, int]
     stopped_reason: str | None
+    dry_run: bool = False
+    scanned: int = 0
+    would_archive: int = 0
+    by_event_type: Mapping[str, int] = field(default_factory=dict)
+    by_month: Mapping[str, int] = field(default_factory=dict)
+    by_event_type_reason: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    ready_before: int | None = None
+    ready_after: int | None = None
+    sellers_with_event_export: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
             "queue": DLQ_QUEUE_NAME,
+            "dry_run": self.dry_run,
+            "scanned": self.scanned,
             "archived": self.archived,
+            "would_archive": self.would_archive,
             "retained": self.retained,
             "by_reason": dict(self.by_reason),
+            "by_event_type": dict(self.by_event_type),
+            "by_month": dict(self.by_month),
+            "by_event_type_reason": {
+                event_type: dict(reasons)
+                for event_type, reasons in self.by_event_type_reason.items()
+            },
+            "ready_before": self.ready_before,
+            "ready_after": self.ready_after,
+            "sellers_with_event_export": self.sellers_with_event_export,
             "stopped_reason": self.stopped_reason,
         }
 
@@ -95,8 +135,13 @@ async def run_archive(
     retention: Any = RETENTION,
     now: Callable[[], datetime] | None = None,
     queue_name: str = DLQ_QUEUE_NAME,
+    reread_lookup: RereadLookup | None = None,
+    dry_run: bool = False,
 ) -> ArchiveRunReport:
     """Archive provably-superseded messages and requeue everything else.
+
+    A dry run takes the same path but holds every message, archivable or not,
+    so nothing is stored or acked and the whole scan is released at the end.
 
     A retained message is held unacked while the scan continues and released
     once the scan ends. Requeueing on the spot would put it back at the head of
@@ -109,7 +154,12 @@ async def run_archive(
     current = (now or (lambda: datetime.now(UTC)))()
     archived = 0
     retained = 0
+    scanned = 0
+    would_archive = 0
     by_reason: dict[str, int] = {}
+    by_event_type: dict[str, int] = {}
+    by_month: dict[str, int] = {}
+    by_event_type_reason: dict[str, dict[str, int]] = {}
     stopped_reason: str | None = None
     held: list[ArchiveableDelivery] = []
     try:
@@ -117,15 +167,30 @@ async def run_archive(
             delivery = await broker.get_one(queue_name)
             if delivery is None:
                 break
+            scanned += 1
             message = _decode(delivery.body)
+            try:
+                reread_at = await reread_lookup(message) if reread_lookup else None
+            except Exception:  # noqa: BLE001 - never decide without the evidence read
+                held.append(delivery)
+                retained += 1
+                stopped_reason = "evidence_read_failed"
+                break
             decision = decide_archive(
                 message,
                 reconciled_models_until=reconciled_models_until,
                 now=current,
                 retention=retention,
+                reread_at=reread_at,
             )
-            by_reason[decision.reason_code] = by_reason.get(decision.reason_code, 0) + 1
-            if not decision.archive:
+            event_type = _countable_event_type(message)
+            _count(by_reason, decision.reason_code)
+            _count(by_event_type, event_type)
+            _count(by_month, _occurred_month(message))
+            _count(by_event_type_reason.setdefault(event_type, {}), decision.reason_code)
+            if decision.archive:
+                would_archive += 1
+            if dry_run or not decision.archive:
                 held.append(delivery)
                 retained += 1
                 continue
@@ -160,6 +225,15 @@ async def run_archive(
         retained=retained,
         by_reason=by_reason,
         stopped_reason=stopped_reason,
+        dry_run=dry_run,
+        scanned=scanned,
+        would_archive=would_archive,
+        by_event_type=dict(sorted(by_event_type.items())),
+        by_month=dict(sorted(by_month.items())),
+        by_event_type_reason={
+            event_type: dict(sorted(reasons.items()))
+            for event_type, reasons in sorted(by_event_type_reason.items())
+        },
     )
 
 
@@ -171,12 +245,31 @@ def _decode(body: bytes) -> Mapping[str, Any]:
     return decoded if isinstance(decoded, Mapping) else {}
 
 
+def _count(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _countable_event_type(message: Mapping[str, Any]) -> str:
+    # Event types are a closed routing-key set; anything else is bucketed so a
+    # malformed body can never put its own text into the report.
+    event_type = str(message.get("event_type") or message.get("event") or "").strip()
+    if len(event_type) <= 64 and _COUNTABLE_EVENT_TYPE.fullmatch(event_type):
+        return event_type
+    return "other"
+
+
+def _occurred_month(message: Mapping[str, Any]) -> str:
+    occurred_at = _utc_or_none(message.get("occurred_at"))
+    return occurred_at.strftime("%Y-%m") if occurred_at is not None else "unknown"
+
+
 def decide_only(
     message: Mapping[str, Any],
     *,
     reconciled_models_until: Mapping[str, Mapping[str, datetime]],
     now: datetime,
     retention: Any = RETENTION,
+    reread_at: datetime | None = None,
 ) -> ArchiveDecision:
     """Expose the shared decision for callers that plan without a broker."""
     return decide_archive(
@@ -184,6 +277,7 @@ def decide_only(
         reconciled_models_until=reconciled_models_until,
         now=now,
         retention=retention,
+        reread_at=reread_at,
     )
 
 
@@ -194,6 +288,27 @@ def mongo_archive_store(db: Any) -> ArchiveStore:
         await db[ARCHIVE_COLLECTION].insert_one(dict(record))
 
     return store
+
+
+def mongo_reread_lookup(db: Any, seller_ids: Sequence[str]) -> RereadLookup:
+    """Read the platform's last read of each message's resource, one document each.
+
+    Only the sellers named for this run can authorize a removal, as with the
+    reconciled markers; any other seller's message reads nothing.
+    """
+    allowed = frozenset(str(seller).strip() for seller in seller_ids)
+
+    async def lookup(message: Mapping[str, Any]) -> datetime | None:
+        target = reread_target(message)
+        if target is None or target.filter.get("seller_id") not in allowed:
+            return None
+        options: dict[str, Any] = {"sort": list(target.sort)} if target.sort else {}
+        document = await db[target.collection].find_one(
+            dict(target.filter), dict(target.projection), **options
+        )
+        return reread_at_from_document(target, document)
+
+    return lookup
 
 
 class AioPikaArchiveBroker:
@@ -214,6 +329,11 @@ class AioPikaArchiveBroker:
                 )
             self._channel = await self._connection.channel()
         return self._channel
+
+    async def ready_count(self, queue_name: str) -> int:
+        channel = await self._ensure_channel()
+        queue = await channel.declare_queue(queue_name, passive=True, timeout=_CONNECT_TIMEOUT)
+        return int(getattr(queue.declaration_result, "message_count", 0))
 
     async def get_one(self, queue_name: str) -> ArchiveableDelivery | None:
         channel = await self._ensure_channel()
@@ -304,13 +424,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Archive provably superseded Sheets DLQ messages with a recorded "
-            "reason. Requires explicit runtime and archive confirmations."
+            "reason. Requires explicit runtime and archive confirmations, or "
+            "--dry-run to decide and requeue everything without writing."
         )
     )
     parser.add_argument("--seller-id", action="append", required=True)
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--confirm-approved-runtime", action="store_true")
     parser.add_argument("--confirm-archive", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Scan and decide like the real run, then requeue every message; print counts only.",
+    )
     return parser
 
 
@@ -321,26 +447,62 @@ async def run_authorized_archive(
     seller_ids: Sequence[str],
     limit: int = DEFAULT_LIMIT,
     now: Callable[[], datetime] | None = None,
+    dry_run: bool = False,
+    broker_factory: Callable[[str], ReadyInspectingBroker] | None = None,
 ) -> ArchiveRunReport:
-    """Load marker coverage, then run one bounded archive pass over the DLQ."""
+    """Load the evidence sources, then run one bounded pass over the DLQ.
+
+    The ready count is read before the scan and again on a fresh connection
+    after it, once closing the scan channel has returned anything still held.
+    """
+    factory = broker_factory or AioPikaArchiveBroker
     coverage = await load_reconciled_coverages(db, seller_ids)
-    broker = AioPikaArchiveBroker(amqp_url)
-    return await run_archive(
+    sellers_with_export = await db["sheets_exports"].count_documents(
+        {"seller_id": {"$in": list(seller_ids)}, "enabled": True}
+    )
+    broker = factory(amqp_url)
+    try:
+        ready_before = await broker.ready_count(DLQ_QUEUE_NAME)
+    except BaseException:
+        await broker.close_channel()
+        raise
+    report = await run_archive(
         broker=broker,
         store=mongo_archive_store(db),
         reconciled_models_until=coverage,
         limit=limit,
         now=now,
+        reread_lookup=mongo_reread_lookup(db, seller_ids),
+        dry_run=dry_run,
+    )
+    # The pass has already happened (and may have written records): a failed
+    # final probe leaves the count unknown instead of losing the report.
+    ready_after: int | None = None
+    after = factory(amqp_url)
+    try:
+        ready_after = await after.ready_count(DLQ_QUEUE_NAME)
+    except Exception:  # noqa: BLE001 - report the completed pass regardless
+        ready_after = None
+    finally:
+        with suppress(Exception):
+            await after.close_channel()
+    return replace(
+        report,
+        ready_before=ready_before,
+        ready_after=ready_after,
+        sellers_with_event_export=int(sellers_with_export),
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Execute one approved archive run and print its sanitized report."""
+    """Execute one approved archive run (or a dry run) and print its sanitized report."""
     args = build_parser().parse_args(argv)
-    if not (args.confirm_approved_runtime and args.confirm_archive):
+    if args.dry_run and (args.confirm_approved_runtime or args.confirm_archive):
+        raise SystemExit("--dry-run cannot be combined with archive confirmations")
+    if not args.dry_run and not (args.confirm_approved_runtime and args.confirm_archive):
         raise SystemExit(
             "explicit --confirm-approved-runtime and --confirm-archive confirmations "
-            "are required for an archive write"
+            "are required for an archive write; use --dry-run to plan without writing"
         )
     amqp_url = os.environ.get("RABBITMQ_URL")
     mongo_uri = os.environ.get("MONGO_URI")
@@ -359,6 +521,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 amqp_url=amqp_url,
                 seller_ids=args.seller_id,
                 limit=args.limit,
+                dry_run=args.dry_run,
             )
         finally:
             client.close()
