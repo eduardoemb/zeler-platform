@@ -296,6 +296,18 @@ class FakeIdentitySource:
         self.calls.append("shipment_ids")
         return self._shipment_ids
 
+    async def buybox_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        self.calls.append("buybox_renewal_ids")
+        return ()
+
+    async def enrichment_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        self.calls.append("enrichment_renewal_ids")
+        return ()
+
 
 @pytest.mark.asyncio
 async def test_planner_emits_inventory_sweep_for_item_formula_rows() -> None:
@@ -495,15 +507,236 @@ async def test_unreadable_sweep_status_skips_the_sweep_but_not_the_cycle() -> No
     assert await planner.plan_inventory("82453304") is False
 
 
-def test_buybox_is_never_a_spaced_sweep() -> None:
-    """Buybox readers need 15-minute data; a scheduled pass cannot keep up."""
-    with pytest.raises(ValueError, match="spaced"):
+@pytest.mark.parametrize("sweep", ["catalog_buybox_snapshots", "item_enrichment"])
+@pytest.mark.parametrize("interval", [timedelta(hours=12, seconds=1), timedelta(days=1)])
+def test_a_renewal_interval_must_leave_margin_under_the_readers_day(
+    sweep: str, interval: timedelta
+) -> None:
+    """Readers serve buybox, quality and costs for 24 hours (L-044)."""
+    with pytest.raises(ValueError, match="12 hours"):
         ZelerDataRefreshPlanner(
             queue=FakeSweepQueue(),
             enabled_models=frozenset({"orders"}),
-            sweep_intervals={"catalog_buybox_snapshots": timedelta(hours=3)},
+            sweep_intervals={sweep: interval},
             identity_source=FakeIdentitySource(),
         )
+
+
+class FakeRenewalQueue(FakeQueue):
+    """Queue double for renewal passes: one in-flight flag and taken pass keys."""
+
+    def __init__(self, *, in_flight: set[str] | None = None, taken: set[str] | None = None) -> None:
+        super().__init__()
+        self.in_flight = in_flight or set()
+        self.taken = taken or set()
+        self.status_calls: list[str] = []
+        self.reopen: list[bool] = []
+
+    async def renewal_status(
+        self, *, seller_id: str, read_model: str, slot_key: str
+    ) -> tuple[bool, bool]:
+        self.status_calls.append(read_model)
+        return read_model in self.in_flight, slot_key in self.taken
+
+    async def enqueue(self, request: Any, *, reopen_terminal: bool = True) -> str:
+        self.reopen.append(reopen_terminal)
+        self.taken.add(request.key)
+        return await super().enqueue(request)
+
+
+class FakeRenewalIdentities(FakeIdentitySource):
+    def __init__(
+        self,
+        *,
+        buybox: tuple[str, ...] = (),
+        enrichment: tuple[str, ...] = (),
+        failing: bool = False,
+    ) -> None:
+        super().__init__()
+        self._buybox = buybox
+        self._enrichment = enrichment
+        self._failing = failing
+        self.renew_after: list[timedelta] = []
+
+    async def buybox_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        self.calls.append("buybox_renewal_ids")
+        self.renew_after.append(renew_after)
+        if self._failing:
+            raise RuntimeError("storage unavailable")
+        return self._buybox
+
+    async def enrichment_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        self.calls.append("enrichment_renewal_ids")
+        self.renew_after.append(renew_after)
+        return self._enrichment
+
+
+def _renewal_planner(
+    queue: Any,
+    identities: Any,
+    *,
+    clock: dict[str, datetime] | None = None,
+    **sweeps: timedelta,
+) -> ZelerDataRefreshPlanner:
+    current = clock if clock is not None else {"now": NOW}
+    return ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"orders"}),
+        sweep_intervals=sweeps
+        or {
+            "catalog_buybox_snapshots": timedelta(hours=12),
+            "item_enrichment": timedelta(hours=12),
+        },
+        identity_source=identities,
+        now=lambda: current["now"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("now", "interval", "slot"),
+    [
+        # 12-hour slots start at 01:00 and 13:00 UTC (19:00 and 07:00 in Mexico City).
+        (datetime(2026, 10, 11, 0, 59, tzinfo=UTC), 12, datetime(2026, 10, 10, 13, tzinfo=UTC)),
+        (datetime(2026, 10, 11, 1, tzinfo=UTC), 12, datetime(2026, 10, 11, 1, tzinfo=UTC)),
+        (datetime(2026, 10, 11, 12, 59, tzinfo=UTC), 12, datetime(2026, 10, 11, 1, tzinfo=UTC)),
+        (datetime(2026, 10, 11, 13, tzinfo=UTC), 12, datetime(2026, 10, 11, 13, tzinfo=UTC)),
+        (datetime(2026, 10, 11, 6, 59, tzinfo=UTC), 6, datetime(2026, 10, 11, 1, tzinfo=UTC)),
+        (datetime(2026, 10, 11, 7, tzinfo=UTC), 6, datetime(2026, 10, 11, 7, tzinfo=UTC)),
+    ],
+)
+def test_renewal_slots_are_fixed_in_utc(now: datetime, interval: int, slot: datetime) -> None:
+    from zeler_sheets.formulas.refresh import renewal_slot
+
+    assert renewal_slot(now, timedelta(hours=interval)) == slot
+
+
+@pytest.mark.asyncio
+async def test_renewal_plans_one_slot_pass_of_what_is_due() -> None:
+    from zeler_sheets.formulas.recovery import RenewalRecoveryRequest
+
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1", "MLM2"), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+
+    renewals = [r for r in queue.enqueued if isinstance(r, RenewalRecoveryRequest)]
+    assert [(r.read_model, r.ids) for r in renewals] == [
+        ("catalog_buybox_snapshots", ("MLM1", "MLM2")),
+        ("item_formula_rows", ("MLM3",)),
+    ]
+    assert {r.slot for r in renewals} == {datetime(2026, 9, 10, 13, tzinfo=UTC)}
+    # Terminal jobs are evidence of earlier passes; a pass never reopens one.
+    assert queue.reopen == [True, False, False]
+    # Renew what would expire before the next slot could reach it.
+    assert identities.renew_after == [timedelta(hours=6)] * 2
+
+    # The same slot, even in a later mode of the same cycle, admits nothing more.
+    assert await planner.plan(seller_id="82453304", mode="daily") is True
+    assert len([r for r in queue.enqueued if isinstance(r, RenewalRecoveryRequest)]) == 2
+    assert identities.calls == ["buybox_renewal_ids", "enrichment_renewal_ids"]
+
+
+@pytest.mark.asyncio
+async def test_renewal_waits_while_a_pass_of_the_same_model_is_in_flight() -> None:
+    queue = FakeRenewalQueue(in_flight={"catalog_buybox_snapshots"})
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    await planner.plan(seller_id="82453304", mode="fast")
+
+    assert identities.calls == ["enrichment_renewal_ids"]
+    assert sorted(r.read_model for r in queue.enqueued) == ["item_formula_rows", "orders"]
+
+    # Once that pass ends, the slot still gets its own pass.
+    queue.in_flight.clear()
+    await planner.plan(seller_id="82453304", mode="fast")
+    assert identities.calls == ["enrichment_renewal_ids", "buybox_renewal_ids"]
+
+
+@pytest.mark.asyncio
+async def test_a_slot_that_already_had_its_pass_is_not_recomputed() -> None:
+    from zeler_sheets.formulas.recovery import RenewalRecoveryRequest
+
+    slot = datetime(2026, 9, 10, 13, tzinfo=UTC)
+    queue = FakeRenewalQueue(
+        taken={RenewalRecoveryRequest("82453304", "catalog_buybox_snapshots", ("MLM1",), slot).key}
+    )
+    identities = FakeRenewalIdentities(buybox=("MLM1",))
+    planner = _renewal_planner(queue, identities, catalog_buybox_snapshots=timedelta(hours=12))
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert identities.calls == []
+    assert [r.read_model for r in queue.enqueued] == ["orders"]
+
+
+@pytest.mark.asyncio
+async def test_nothing_due_is_checked_once_per_slot() -> None:
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities()
+    clock = {"now": NOW}
+    planner = _renewal_planner(
+        queue, identities, clock=clock, catalog_buybox_snapshots=timedelta(hours=12)
+    )
+
+    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan(seller_id="82453304", mode="fast")
+    assert identities.calls == ["buybox_renewal_ids"]
+    assert [r.read_model for r in queue.enqueued] == ["orders", "orders"]
+
+    clock["now"] = datetime(2026, 9, 11, 1, tzinfo=UTC)
+    await planner.plan(seller_id="82453304", mode="fast")
+    assert identities.calls == ["buybox_renewal_ids", "buybox_renewal_ids"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_renewal_selection_skips_only_that_sweep() -> None:
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities(enrichment=("MLM3",), failing=True)
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert sorted(r.read_model for r in queue.enqueued) == ["item_formula_rows", "orders"]
+
+    # The failed selection is retried on the next cycle, not after the slot.
+    await planner.plan(seller_id="82453304", mode="fast")
+    assert identities.calls.count("buybox_renewal_ids") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_renewal_admission_is_retried_next_cycle() -> None:
+    class FullQueue(FakeRenewalQueue):
+        async def enqueue(self, request: Any, *, reopen_terminal: bool = True) -> str:
+            if not reopen_terminal:
+                raise ValueError("recovery seller capacity reached")
+            return await super().enqueue(request, reopen_terminal=reopen_terminal)
+
+    queue = FullQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",))
+    planner = _renewal_planner(queue, identities, catalog_buybox_snapshots=timedelta(hours=12))
+
+    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan(seller_id="82453304", mode="fast")
+    assert identities.calls == ["buybox_renewal_ids", "buybox_renewal_ids"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_renewal_status_skips_the_sweep_but_not_the_cycle() -> None:
+    class BrokenQueue(FakeRenewalQueue):
+        async def renewal_status(self, **kwargs: Any) -> tuple[bool, bool]:
+            raise RuntimeError("storage unavailable")
+
+    queue = BrokenQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert [r.read_model for r in queue.enqueued] == ["orders"]
+    assert identities.calls == []
 
 
 def test_a_model_is_either_planned_every_cycle_or_spaced() -> None:
@@ -1663,14 +1896,23 @@ def _enable_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
         "ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED",
         "ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED",
         "ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED",
+        "ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED",
         "ZELERDATA_INVENTORY_REFRESH_MINUTES",
         "ZELERDATA_CATALOG_REFRESH_HOURS",
+        "ZELERDATA_RENEWAL_REFRESH_HOURS",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
+# Buybox, quality and costs are renewed by default for named sellers.
+RENEWAL_SWEEPS = {
+    "catalog_buybox_snapshots": timedelta(hours=12),
+    "item_enrichment": timedelta(hours=12),
+}
+
+
 @pytest.mark.asyncio
-async def test_refresh_factory_keeps_spaced_sweeps_off_by_default(
+async def test_refresh_factory_renews_on_demand_data_by_default_for_named_sellers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
@@ -1678,8 +1920,81 @@ async def test_refresh_factory_keeps_spaced_sweeps_off_by_default(
     _enable_refresh(monkeypatch)
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
-    assert supervisor._planner._sweep_intervals == {}
+    # Whole-seller inventory and catalog sweeps stay opt-in.
+    assert supervisor._planner._sweep_intervals == RENEWAL_SWEEPS
     assert supervisor._inventory_refresher is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["false", "0", "off", "no"])
+async def test_refresh_factory_renewal_has_an_emergency_off_switch(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", value)
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._sweep_intervals == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_rejects_an_ambiguous_renewal_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", "maybe")
+    with pytest.raises(RuntimeError, match="ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED"):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_reads_the_renewal_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_RENEWAL_REFRESH_HOURS", "8")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._sweep_intervals == {
+        "catalog_buybox_snapshots": timedelta(hours=8),
+        "item_enrichment": timedelta(hours=8),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["abc", "0", "-5", "13"])
+async def test_refresh_factory_rejects_bad_renewal_intervals(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_RENEWAL_REFRESH_HOURS", value)
+    with pytest.raises(RuntimeError, match="ZELERDATA_RENEWAL_REFRESH_HOURS"):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+
+
+@pytest.mark.asyncio
+async def test_refresh_factory_bulk_mode_already_plans_buybox_and_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", "true")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert supervisor._planner._sweep_intervals == {}
+
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="BULK"):
+        await build_zelerdata_refresh_supervisor(db=_IndexedDb())
 
 
 @pytest.mark.asyncio
@@ -1694,11 +2009,12 @@ async def test_refresh_factory_spaces_inventory_and_catalog_sweeps_when_enabled(
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     planner = supervisor._planner
     assert isinstance(planner, ZelerDataRefreshPlanner)
-    # Only bounded ranges are planned every cycle; buybox stays on demand.
+    # Only bounded ranges are planned every cycle.
     assert planner._enabled_models == frozenset({"orders", "questions"})
     assert planner._sweep_intervals == {
         "item_formula_rows": timedelta(minutes=10),
         "catalog_product_snapshots": timedelta(hours=3),
+        **RENEWAL_SWEEPS,
     }
     assert supervisor._inventory_refresher == planner.plan_inventory
     assert supervisor._inventory_interval == 30
@@ -1717,7 +2033,10 @@ async def test_refresh_factory_reads_spaced_sweep_intervals(
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     planner = supervisor._planner
     assert isinstance(planner, ZelerDataRefreshPlanner)
-    assert planner._sweep_intervals == {"catalog_product_snapshots": timedelta(hours=24)}
+    assert planner._sweep_intervals == {
+        "catalog_product_snapshots": timedelta(hours=24),
+        **RENEWAL_SWEEPS,
+    }
     # The inventory tick only runs when its own sweep is enabled.
     assert supervisor._inventory_refresher is None
 
@@ -1727,7 +2046,10 @@ async def test_refresh_factory_reads_spaced_sweep_intervals(
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     planner = supervisor._planner
     assert isinstance(planner, ZelerDataRefreshPlanner)
-    assert planner._sweep_intervals == {"item_formula_rows": timedelta(minutes=20)}
+    assert planner._sweep_intervals == {
+        "item_formula_rows": timedelta(minutes=20),
+        **RENEWAL_SWEEPS,
+    }
 
 
 @pytest.mark.asyncio

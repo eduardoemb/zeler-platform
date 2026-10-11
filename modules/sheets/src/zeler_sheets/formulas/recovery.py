@@ -7,7 +7,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -368,6 +368,38 @@ class CatalogRecoveryRequest:
         ).hexdigest()
 
 
+RENEWAL_READ_MODELS = frozenset({"catalog_buybox_snapshots", "item_formula_rows"})
+
+
+@dataclass(frozen=True)
+class RenewalRecoveryRequest(CatalogRecoveryRequest):
+    """One scheduled renewal pass of on-demand acquisitions (buybox, quality, costs).
+
+    The pass is keyed by its schedule slot, not by its IDs: a slot admits at
+    most one pass, and a later slot never reopens an earlier terminal job. The
+    document is an ordinary catalog intent, so workers, coalescing and
+    reconciliation handle it unchanged.
+    """
+
+    slot: datetime
+
+    def __post_init__(self) -> None:
+        if self.read_model not in RENEWAL_READ_MODELS or self.slot.tzinfo is None:
+            raise ValueError("renewal requires buybox or item rows and an aware slot")
+        super().__post_init__()
+        object.__setattr__(self, "slot", self.slot.astimezone(UTC))
+
+    @staticmethod
+    def slot_key(seller_id: str, read_model: str, slot: datetime) -> str:
+        return hashlib.sha256(
+            "\0".join((seller_id, read_model, "renewal", slot.astimezone(UTC).isoformat())).encode()
+        ).hexdigest()
+
+    @property
+    def key(self) -> str:
+        return self.slot_key(self.seller_id, self.read_model, self.slot)
+
+
 @dataclass(frozen=True)
 class ItemInventoryRecoveryRequest:
     seller_id: str
@@ -586,7 +618,8 @@ class FormulaRecoveryQueue:
                     return
                 if remaining != requested:
                     narrowed = (
-                        CatalogRecoveryRequest(request.seller_id, request.read_model, remaining)
+                        # Keep the intent's own identity (a renewal keeps its slot).
+                        replace(request, ids=remaining)
                         if isinstance(request, CatalogRecoveryRequest)
                         else ItemIdsRecoveryRequest(
                             request.seller_id, remaining, read_model=request.read_model
@@ -825,6 +858,37 @@ class FormulaRecoveryQueue:
         if "inventory_offset" in job and isinstance(job.get("inventory_observed_at"), datetime):
             anchored = job["inventory_observed_at"]
         return False, anchored.replace(tzinfo=UTC) if anchored.tzinfo is None else anchored
+
+    async def renewal_status(
+        self, *, seller_id: str, read_model: str, slot_key: str
+    ) -> tuple[bool, bool]:
+        """Report whether a catalog-sized pass of this model is in flight, else
+        whether this slot's renewal pass already exists.
+
+        Any explicit-ID pass of the model holds the renewal, including one a
+        formula read admitted for a whole sheet, so two passes never overlap.
+        A formula-sized batch does not; admission coalesces its IDs instead.
+        """
+        if read_model not in RENEWAL_READ_MODELS:
+            raise ValueError("only buybox and item rows have renewal passes")
+        authority = (
+            self.policy_authority if self.policy_authority is not None else {"$exists": False}
+        )
+        in_flight = await self.collection.find_one(
+            {
+                "seller_id": seller_id,
+                "policy_authority": authority,
+                "read_model": read_model,
+                "state": {"$in": ["pending", "running"]},
+                "catalog_offset": {"$exists": True},
+                "inventory_scope": {"$ne": True},
+            },
+            {"_id": 1},
+        )
+        if in_flight is not None:
+            return True, False
+        taken = await self.collection.find_one({"_id": slot_key}, {"_id": 1})
+        return False, taken is not None
 
     async def checkpoint_inventory(
         self,

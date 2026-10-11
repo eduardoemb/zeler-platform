@@ -26,6 +26,7 @@ from zeler_sheets.formulas.recovery import (
     CatalogRecoveryRequest,
     ItemInventoryRecoveryRequest,
     RecoveryRequest,
+    RenewalRecoveryRequest,
     ShipmentIdsRecoveryRequest,
 )
 from zeler_sheets.formulas.seller_scope import eligible_sellers, parse_seller_scope
@@ -77,15 +78,36 @@ EXPLICIT_IDENTITY_MODELS: frozenset[str] = frozenset(
     }
 )
 
+# Renewal sweeps keep the acquisitions that only recovery makes (buybox,
+# quality and costs) inside the 24 hours their readers serve them (L-044), so a
+# sheet opened after a quiet day is already filled. Each maps to the read model
+# its recovery jobs use.
+ITEM_ENRICHMENT_SWEEP = "item_enrichment"
+RENEWAL_SWEEP_READ_MODELS: Mapping[str, str] = {
+    "catalog_buybox_snapshots": "catalog_buybox_snapshots",
+    ITEM_ENRICHMENT_SWEEP: "item_formula_rows",
+}
+DEFAULT_RENEWAL_INTERVAL = timedelta(hours=12)
+# A pass renews what is at least half an interval old, so an acquisition waits
+# at most 1.5 intervals plus two passes (about 75 minutes each) before it is
+# renewed: about 21 hours at 12, under the readers' 24. Longer intervals would
+# let a slow pass cross that limit.
+MAX_RENEWAL_INTERVAL = timedelta(hours=12)
+# Slots are fixed in UTC. At 12 hours they start at 01:00 and 13:00 UTC, which
+# is 19:00 and 07:00 in Mexico City: a buybox pass pauses the base inventory
+# sweep while it runs (L-037), so it starts outside most selling hours.
+RENEWAL_SLOT_ORIGIN = datetime(2026, 1, 1, 1, tzinfo=UTC)
+
 # Whole-seller sweeps that may be scheduled on their own spacing instead of
 # every cycle. Each is planned only while no sweep of the same model is in
-# flight and its interval has elapsed, so a pass never restarts faster than it
-# finishes (L-021). The base inventory is cheap (one discovery plus 20-ID
-# batches) and its readers need 15-minute data; catalog products are read from
-# a 4-hour cache. Buybox is excluded: its readers need 15-minute competition
-# data that a full pass cannot deliver within the reserved budget, so it stays
-# on demand.
-SPACED_SWEEP_MODELS: frozenset[str] = frozenset({"item_formula_rows", "catalog_product_snapshots"})
+# flight, so a pass never restarts faster than it finishes (L-021). The base
+# inventory is cheap (one discovery plus 20-ID batches) and its readers need
+# 15-minute data; catalog products are read from a 4-hour cache. Both wait for
+# their own interval after the previous pass. A renewal sweep runs at most one
+# pass per fixed slot instead, and never reopens an earlier pass's job.
+SPACED_SWEEP_MODELS: frozenset[str] = frozenset(
+    {"item_formula_rows", "catalog_product_snapshots", *RENEWAL_SWEEP_READ_MODELS}
+)
 
 FAST_MODE = "fast"
 DAILY_MODE = "daily"
@@ -105,6 +127,13 @@ DEFAULT_INVENTORY_INTERVAL_SECONDS = 30.0
 MARKER_VALIDITY = READ_MODEL_MARKER_VALIDITY
 DEFAULT_DAILY_HOUR_UTC = 3
 DEFAULT_FULL_WEEKDAY = 0  # Monday
+
+
+def renewal_slot(now: datetime, interval: timedelta) -> datetime:
+    """The start of the fixed renewal slot that contains ``now``."""
+    return RENEWAL_SLOT_ORIGIN + interval * (
+        (now.astimezone(UTC) - RENEWAL_SLOT_ORIGIN) // interval
+    )
 
 
 def refresh_sellers(value: str | None) -> frozenset[str] | None:
@@ -216,6 +245,14 @@ class RefreshIdentitySource(Protocol):
 
     async def shipment_ids(self, seller_id: str) -> tuple[str, ...]: ...
 
+    async def buybox_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]: ...
+
+    async def enrichment_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]: ...
+
 
 class RefreshExplorer(Protocol):
     async def discover_sellers(self) -> tuple[str, ...]: ...
@@ -251,12 +288,20 @@ class ZelerDataRefreshPlanner:
         sweeps = dict(sweep_intervals or {})
         if not set(sweeps) <= SPACED_SWEEP_MODELS or set(sweeps) & enabled:
             raise ValueError(
-                "spaced sweeps are limited to inventory and catalog products, "
+                "spaced sweeps are limited to inventory, catalog products and renewals, "
                 "and are never also planned every cycle"
             )
         if any(interval <= timedelta(0) for interval in sweeps.values()):
             raise ValueError("spaced sweep intervals must be positive")
-        needs_identities = (enabled | set(sweeps)) & EXPLICIT_IDENTITY_MODELS
+        if any(
+            sweeps[sweep] > MAX_RENEWAL_INTERVAL
+            for sweep in RENEWAL_SWEEP_READ_MODELS
+            if sweep in sweeps
+        ):
+            raise ValueError("renewal sweeps must run at least every 12 hours")
+        needs_identities = (enabled | set(sweeps)) & (
+            EXPLICIT_IDENTITY_MODELS | set(RENEWAL_SWEEP_READ_MODELS)
+        )
         if needs_identities and identity_source is None:
             raise ValueError(
                 "an identity source is required to refresh " + ", ".join(sorted(needs_identities))
@@ -270,6 +315,9 @@ class ZelerDataRefreshPlanner:
         self._fast_window = fast_window
         self._daily_window = daily_window
         self._full_window = full_window
+        # The renewal slot each seller and sweep already settled in this
+        # process, so a quiet slot is selected once instead of every cycle.
+        self._settled_renewals: dict[tuple[str, str], datetime] = {}
 
     async def plan_inventory(self, seller_id: str) -> bool:
         """Keep current inventory cycling without creating moving range intents."""
@@ -288,6 +336,8 @@ class ZelerDataRefreshPlanner:
 
     async def _plan_spaced_sweep(self, seller_id: str, read_model: str) -> bool:
         """Admit one whole-seller sweep only when its own spacing allows it."""
+        if read_model in RENEWAL_SWEEP_READ_MODELS:
+            return await self._plan_renewal_sweep(seller_id, read_model)
         try:
             async with asyncio.timeout(2):
                 in_flight, anchor = await self._queue.sweep_status(
@@ -306,10 +356,74 @@ class ZelerDataRefreshPlanner:
             admitted = await self._admit(request) or admitted
         return admitted
 
-    async def _admit(self, request: Any) -> bool:
+    async def _plan_renewal_sweep(self, seller_id: str, sweep: str) -> bool:
+        """Admit this slot's renewal of what readers would stop serving before the next.
+
+        Selection only reads local acquisitions. A slot admits one pass, and
+        never while another explicit-ID pass of the same model is in flight.
+        """
+        read_model = RENEWAL_SWEEP_READ_MODELS[sweep]
+        interval = self._sweep_intervals[sweep]
+        slot = renewal_slot(self._now(), interval)
+        if self._settled_renewals.get((seller_id, sweep)) == slot:
+            return False
         try:
             async with asyncio.timeout(2):
-                await self._queue.enqueue(request)
+                in_flight, taken = await self._queue.renewal_status(
+                    seller_id=seller_id,
+                    read_model=read_model,
+                    slot_key=RenewalRecoveryRequest.slot_key(seller_id, read_model, slot),
+                )
+        except Exception:  # noqa: BLE001 - an unreadable status skips only this sweep
+            logger.warning("zelerdata.refresh_sweep_status_failed", read_model=sweep)
+            return False
+        if in_flight:
+            return False
+        if taken:
+            self._settled_renewals[(seller_id, sweep)] = slot
+            return False
+        source = self._identity_source
+        if source is None:  # pragma: no cover - constructor guards this
+            return False
+        select = (
+            source.buybox_renewal_ids
+            if read_model == "catalog_buybox_snapshots"
+            else source.enrichment_renewal_ids
+        )
+        try:
+            identities = await select(seller_id, renew_after=interval / 2)
+        except Exception:  # noqa: BLE001 - a failed selection is retried next cycle
+            logger.warning("zelerdata.refresh_renewal_selection_failed", read_model=sweep)
+            return False
+        if not identities:
+            self._settled_renewals[(seller_id, sweep)] = slot
+            logger.info(
+                "zelerdata.refresh_renewal_nothing_due",
+                seller_id=seller_id,
+                read_model=sweep,
+                slot=slot.isoformat(),
+            )
+            return False
+        # Terminal jobs are evidence of earlier passes; never reopen them.
+        admitted = await self._admit(
+            RenewalRecoveryRequest(seller_id, read_model, identities, slot),
+            reopen_terminal=False,
+        )
+        if admitted:
+            self._settled_renewals[(seller_id, sweep)] = slot
+            logger.info(
+                "zelerdata.refresh_renewal_planned",
+                seller_id=seller_id,
+                read_model=sweep,
+                identities=len(identities),
+                slot=slot.isoformat(),
+            )
+        return admitted
+
+    async def _admit(self, request: Any, **enqueue_options: bool) -> bool:
+        try:
+            async with asyncio.timeout(2):
+                await self._queue.enqueue(request, **enqueue_options)
         except (ValueError, TimeoutError):
             # Capacity and dedup rejections are expected. One model must
             # not stop the rest of the cycle.
@@ -407,6 +521,36 @@ BUYBOX_FRESHNESS = timedelta(minutes=15)
 # Shipments are refreshed for the same horizon the shipping formulas read.
 SHIPMENT_LOOKBACK = timedelta(days=30)
 _IDENTITY_PATTERN = re.compile(r"ML[A-Z][0-9]+")
+# Renewal selection reads whole inventories in small identity chunks and keeps
+# only the selected IDs, so worker memory does not follow seller size (L-041).
+RENEWAL_READ_CHUNK = 200
+# What the buybox reader binds a snapshot to, and the acquired price it falls
+# back on; never the whole item document.
+_BUYBOX_SOURCE_PROJECTION = {
+    "_id": 1,
+    "seller_id": 1,
+    "catalog_listing": 1,
+    "catalog_product_id": 1,
+    "title": 1,
+    "available_quantity": 1,
+    "last_meli_sync_at": 1,
+    "currency_id": 1,
+    "price": 1,
+    "current_promotion": 1,
+    "enrichment_state.current_promotion": 1,
+}
+_ITEM_ROW_PROJECTION = {
+    "_id": 1,
+    "item_id": 1,
+    "sku": 1,
+    "normalized_sku": 1,
+    "current": 1,
+    "source_snapshot": 1,
+}
+
+
+def _chunks(values: tuple[str, ...], size: int) -> Iterable[tuple[str, ...]]:
+    return (values[offset : offset + size] for offset in range(0, len(values), size))
 
 
 class MongoRefreshIdentitySource:
@@ -473,6 +617,138 @@ class MongoRefreshIdentitySource:
             ):
                 identities.add(identity)
         return tuple(sorted(identities))
+
+    async def buybox_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        """Catalog publications whose buybox readers would not serve after ``renew_after``.
+
+        The reader's own rule is evaluated at the end of the renewal horizon:
+        absent, mismatched or incomplete snapshots, and those that expire by
+        then. A fresh ``not_listed`` answer is served as NA and stays (L-045).
+        A stale base row is no reason to skip: the worker re-reads the item.
+        """
+        # Imported here: the readers import this module's marker validity.
+        from zeler_sheets.formulas.handlers_item_shipping_catalog import (
+            buybox_snapshot_recoverable,
+        )
+        from zeler_sheets.formulas.read_models import (
+            CATALOG_BUYBOX_CACHE_MAX_AGE,
+            is_buybox_participant,
+            served_buybox_snapshot,
+        )
+
+        horizon = self._now().astimezone(UTC) + CATALOG_BUYBOX_CACHE_MAX_AGE - renew_after
+        due: set[str] = set()
+        for chunk in _chunks(await self._inventory_ids(seller_id), RENEWAL_READ_CHUNK):
+            items = (
+                await self._db["items"]
+                .find(
+                    {"seller_id": seller_id, "_id": {"$in": list(chunk)}, "catalog_listing": True},
+                    _BUYBOX_SOURCE_PROJECTION,
+                )
+                .to_list(length=len(chunk))
+            )
+            participating = {
+                str(item["_id"]): item for item in items if is_buybox_participant(item)
+            }
+            if not participating:
+                continue
+            served: set[str] = set()
+            async for snapshot in self._db["sheets_catalog_buybox_snapshots"].find(
+                {"seller_id": seller_id, "item_id": {"$in": sorted(participating)}}
+            ):
+                identity = str(snapshot.get("item_id"))
+                source = participating.get(identity)
+                row = (
+                    served_buybox_snapshot(snapshot, source, seller_id=seller_id, now=horizon)
+                    if source is not None
+                    else None
+                )
+                if row is not None and not buybox_snapshot_recoverable(row):
+                    served.add(identity)
+            due.update(set(participating) - served)
+        return tuple(sorted(due))
+
+    async def enrichment_renewal_ids(
+        self, seller_id: str, *, renew_after: timedelta
+    ) -> tuple[str, ...]:
+        """Publications whose quality or costs readers would not serve after ``renew_after``.
+
+        CALIDAD and CALCULADORA rules are evaluated at the end of the renewal
+        horizon, so a basis mismatch, a failed or aging acquisition, or a row
+        never projected is selected, and a fresh declared absence is not.
+        """
+        from zeler_sheets.formulas.handlers_quality_calculator import (
+            item_enrichment_unavailable,
+        )
+        from zeler_sheets.formulas.read_models import ITEM_ENRICHMENT_CACHE_MAX_AGE
+
+        horizon = self._now().astimezone(UTC) + ITEM_ENRICHMENT_CACHE_MAX_AGE - renew_after
+        due: set[str] = set()
+        for chunk in _chunks(await self._inventory_ids(seller_id), RENEWAL_READ_CHUNK):
+            projected: set[str] = set()
+            async for row in self._db["sheets_item_formula_rows"].find(
+                {"seller_id": seller_id, "item_id": {"$in": list(chunk)}},
+                _ITEM_ROW_PROJECTION,
+            ):
+                identity = str(row.get("item_id") or "")
+                projected.add(identity)
+                if identity not in due and item_enrichment_unavailable(row, now=horizon):
+                    due.add(identity)
+            due.update(set(chunk) - projected)
+        return tuple(sorted(due))
+
+    async def _inventory_ids(self, seller_id: str) -> tuple[str, ...]:
+        """The latest inventory enumeration, minus what its pass could not read.
+
+        Without an enumeration there is nothing provably current to renew. The
+        inventory pass re-reads every enumerated publication; one it already
+        reached but did not re-read (Mercado Libre answers 404 for its detail)
+        is a partial miss no reader serves, and renewing it would only fail
+        its 20-ID chunk three times.
+        """
+        job = await self._db["sheets_formula_recovery_jobs"].find_one(
+            {
+                "_id": ItemInventoryRecoveryRequest(seller_id).key,
+                "seller_id": seller_id,
+                "inventory_scope": True,
+            },
+            {"inventory_ids": 1, "inventory_offset": 1, "inventory_observed_at": 1},
+        )
+        enumerated = job.get("inventory_ids") if job else None
+        if not isinstance(enumerated, list):
+            return ()
+        identities = tuple(
+            sorted(
+                {
+                    identity
+                    for identity in enumerated
+                    if isinstance(identity, str) and _IDENTITY_PATTERN.fullmatch(identity)
+                }
+            )[: self._max_identities]
+        )
+        offset = job.get("inventory_offset")
+        discovered = job.get("inventory_observed_at")
+        if type(offset) is not int or not isinstance(discovered, datetime):
+            return identities
+        discovered = discovered.replace(tzinfo=UTC) if discovered.tzinfo is None else discovered
+        reached = tuple(sorted(set(identities) & set(enumerated[:offset])))
+        reread: set[str] = set()
+        for chunk in _chunks(reached, RENEWAL_READ_CHUNK):
+            async for item in self._db["items"].find(
+                {"seller_id": seller_id, "_id": {"$in": list(chunk)}},
+                {"_id": 1, "last_meli_sync_at": 1},
+            ):
+                synced = item.get("last_meli_sync_at")
+                if (
+                    isinstance(synced, datetime)
+                    and (synced if synced.tzinfo is not None else synced.replace(tzinfo=UTC))
+                    >= discovered
+                ):
+                    reread.add(str(item["_id"]))
+        unreadable = set(reached) - reread
+        return tuple(identity for identity in identities if identity not in unreadable)
 
     async def shipment_ids(self, seller_id: str) -> tuple[str, ...]:
         cutoff = self._now().astimezone(UTC) - SHIPMENT_LOOKBACK

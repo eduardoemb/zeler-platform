@@ -540,6 +540,10 @@ class TestEnvTemplateContract:
         assert values["ZELERDATA_INVENTORY_REFRESH_MINUTES"] == "10"
         assert values["ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED"] == "false"
         assert values["ZELERDATA_CATALOG_REFRESH_HOURS"] == "3"
+        # Buybox, quality and costs are renewed inside their readers' 24 hours;
+        # `false` is the emergency switch.
+        assert values["ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED"] == "true"
+        assert values["ZELERDATA_RENEWAL_REFRESH_HOURS"] == "12"
 
     def test_secrets_script_fetches_zeler_app_broker_secret_for_gateway_only(self) -> None:
         text = SECRETS_SCRIPT.read_text()

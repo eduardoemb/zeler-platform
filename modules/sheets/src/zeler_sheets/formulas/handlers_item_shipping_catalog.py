@@ -10,6 +10,7 @@ from bson.decimal128 import Decimal128
 from zeler_sheets.formulas.catalog_values import (
     catalog_only_competitor,
     catalog_shared_users,
+    catalog_winner_user,
 )
 from zeler_sheets.formulas.dispatcher import (
     FormulaDataUnavailableError,
@@ -706,6 +707,18 @@ def _catalogo_buybox_row(snapshot: Mapping[str, Any]) -> list[Any]:
         catalog_shared_users(snapshot),
         catalog_only_competitor(snapshot),
     ]
+
+
+def buybox_snapshot_recoverable(snapshot: Mapping[str, Any]) -> bool:
+    """Whether CATALOGOBUYBOX or CATALOGO would request recovery for a served snapshot.
+
+    CATALOGO reads the same competition fields plus the winner, so a renewal
+    selected with this predicate leaves neither formula with a gap.
+    """
+    return (
+        "DATA_UNAVAILABLE" in _catalogo_buybox_row(snapshot)
+        or catalog_winner_user(snapshot) == "DATA_UNAVAILABLE"
+    )
 
 
 def _lookup_pairs(*, skus: Any, item_ids: Any) -> list[_LookupPair]:

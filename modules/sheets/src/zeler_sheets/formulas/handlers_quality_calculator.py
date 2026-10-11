@@ -91,7 +91,7 @@ class QualityCalculatorFormulaHandlers:
         for row in rows:
             quality_row = _quality_row(row, now=now)
             values.append(quality_row)
-            if quality_row[7] == "DATA_UNAVAILABLE":
+            if _quality_cells_unavailable(quality_row):
                 quality_unavailable.add(str(row.get("item_id") or ""))
             elif _quality_source_absent(_current_mapping(row), now=now):
                 source_absent += 1
@@ -243,8 +243,7 @@ class QualityCalculatorFormulaHandlers:
         unavailable_field_items = {
             str(row[0])
             for row in values[header_rows:]
-            if row[0] in present_ids
-            and ("DATA_UNAVAILABLE" in row[4:9] or row[10] == "DATA_UNAVAILABLE")
+            if row[0] in present_ids and _calculator_cells_unavailable(row)
         }
         recovery_items = tuple(sorted(set(unavailable_items) | unavailable_field_items))
         return FormulaExecutionResult(
@@ -322,6 +321,28 @@ def _expired_inventory_warning(width: int) -> list[str]:
 QUALITY_SOURCE_ABSENT = frozenset(
     {("transient", "performance_not_generated"), ("malformed", "http_400")}
 )
+
+
+def item_enrichment_unavailable(row: Mapping[str, Any], *, now: datetime) -> bool:
+    """Whether CALIDAD or CALCULADORA would request recovery for this row at ``now``.
+
+    The scheduled renewal asks this at a later ``now`` to find the quality and
+    cost acquisitions that would expire before its next pass. A fresh
+    source-declared absence is served as NA and is not requested (L-045).
+    """
+    return _quality_cells_unavailable(_quality_row(row, now=now)) or any(
+        _calculator_cells_unavailable(_calculator_row(row, tipo_precio=kind, now=now))
+        for kind in ("actual", "promo")
+    )
+
+
+def _quality_cells_unavailable(values: Sequence[Any]) -> bool:
+    return bool(values[7] == "DATA_UNAVAILABLE")
+
+
+def _calculator_cells_unavailable(values: Sequence[Any]) -> bool:
+    # Selected price, costs, commission and the catalog participation flag.
+    return "DATA_UNAVAILABLE" in values[4:9] or values[10] == "DATA_UNAVAILABLE"
 
 
 def _quality_state(current: Mapping[str, Any]) -> Mapping[str, Any] | None:

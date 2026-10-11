@@ -63,6 +63,7 @@ it finishes:
 | --- | --- | --- | --- |
 | Base inventory (`item_formula_rows`) | `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` | `ZELERDATA_INVENTORY_REFRESH_MINUTES` (10) | the previous discovery, or the end of a pass that failed before discovering |
 | Catalog products (`catalog_product_snapshots`) | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `ZELERDATA_CATALOG_REFRESH_HOURS` (3) | the end of the previous pass |
+| Renewal of buybox, quality and costs | `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` (on by default for numeric sellers) | `ZELERDATA_RENEWAL_REFRESH_HOURS` (12, at most 12) | fixed UTC slots: 01:00 and 13:00 at 12 hours |
 
 - The inventory is checked every 30 seconds and the catalog every refresh cycle.
   The inventory sweep acquires base fields only (one discovery plus 20-ID
@@ -74,11 +75,94 @@ it finishes:
   a buybox job has made progress in the last two leases (20 minutes). This was
   the probable source of the September buybox `source_incomplete` failures,
   when every-cycle bulk sweeps ran alongside buybox jobs.
-- Buybox is never scheduled. Keeping roughly 900 publications within 15 minutes
-  would require about 150 sustained requests per minute, which L-021 rules out.
-  `CATALOGOBUYBOX` and `CATALOGO` remain on demand and serve a snapshot for up
-  to 24 hours, so one on-demand pass covers a day of reads.
+- Buybox is not kept within 15 minutes: that would take about 150 sustained
+  requests per minute for roughly 900 publications, which L-021 rules out.
+  Readers serve a buybox snapshot, quality and costs for up to 24 hours (L-044),
+  and the renewal sweep below keeps them inside that day.
 - Bulk and spaced sweeps are mutually exclusive; enabling both fails startup.
+
+### Renewal of on-demand acquisitions (11 October 2026)
+
+Buybox, quality and costs are acquired only by recovery. Until this change a
+formula read was the only trigger, so a sheet nobody opened for more than a day
+came back with almost every row `DATA_UNAVAILABLE` while a recovery pass ran
+(about one hour). On the pilot on 11 October, after two quiet days, `CATALOGO`
+had 921 of 922 rows without buybox, `CATALOGOBUYBOX` 8,109 of 8,109 cells
+without data, `CALIDAD` 1,874 publications without quality and `CALCULADORA`
+2,813 of 2,886 rows without costs.
+
+The renewal sweep plans that same recovery on a schedule, with two
+whole-inventory passes: one `catalog_buybox_snapshots` intent and one
+`item_formula_rows` intent by explicit IDs, which re-reads quality, costs,
+commission, fixed fee and promotion. The worker, the 20-ID chunks, the per-chunk
+retries, the coalescing with jobs already queued, and the buybox load control
+(L-020) are the ones formula reads use.
+
+**What a pass renews.** The readers' own rules, evaluated at the end of the
+renewal horizon: a pass selects what readers would no longer serve 6 hours
+from now (half the interval). That is anything absent, mismatched (product,
+title, quantity, quality basis), failed or incomplete, and every acquisition
+at least 6 hours old. A source-declared absence (`not_listed` buybox, quality
+not generated or HTTP 400, an `authoritative_absent` cost) is served as `NA`
+and is not selected while it is younger than 6 hours (L-045). It is renewed
+like any other acquisition before the readers' 24 hours expire. Only the
+publications of the latest inventory enumeration are considered, minus those
+its pass already reached but could not re-read (their base is older than the
+discovery, typically a detail 404). Readers count those as partial misses, and
+renewing them would only fail their 20-ID chunk three times. Without an
+enumeration nothing is renewed.
+
+**When.** Slots are fixed in UTC: with 12 hours, at 01:00 and 13:00 UTC (19:00
+and 07:00 in Mexico City). Each slot admits at most one pass per model, keyed
+by the slot (`RenewalRecoveryRequest`), so it never reopens a terminal job of
+an earlier pass or an on-demand job. A pass is not planned while any
+explicit-ID pass of the same model is pending or running, including one a
+formula read admitted. The first cycle after a deploy or restart plans the
+current slot at once. A slot where nothing is due is checked once per process.
+A selection or admission that fails is retried on the next cycle.
+
+**Why the margin holds.** An acquisition is renewed at most 1.5 intervals plus
+two passes after it was made: 6 + 12 + 2 × 1.25 hours, plus up to two
+15-minute cycles, is about 21 hours, under the readers' 24. Hence the 12-hour
+maximum. A pass that fails leaves its gaps to the next slot; formula reads
+still request them in between.
+
+**Selection cost.** Planning reads the enumeration, then items, buybox
+snapshots and formula rows in chunks of 200 IDs with projections, keeping only
+the selected IDs (L-041). It never calls Mercado Libre.
+
+**Source calls, from the code, per pilot pass (about 934 catalog publications
+and 1,895 inventory publications):**
+
+| Pass | Calls per publication | Calls per pass |
+| --- | --- | --- |
+| Buybox | `price_to_win` + offers listing = 2; plus the winner's detail when it is not in the listing (rare); plus a full item re-read (detail + sale price + listing price + quality, and shipping options for seller-paid free shipping: about 5) when the item's base row is older than 15 minutes | 1,900 if every item is fresh, about 6,500 if every item is stale; about 4,800 when the first 15 minutes are fresh |
+| Quality and costs | detail in batches of 5 (0.2) + sale price 1 + listing prices 1 (the fixed fee reuses that quote when the parameters match, otherwise +1) + quality 1 (a User Product retry adds 1; skipped during the not-generated retry window) + shipping options 1 for seller-paid free shipping | about 6,100 to 9,900; about 8,000 typical |
+
+That is about 8,000 to 16,400 calls per slot, about 12,800 typical, and about
+25,600 calls per day for the pilot, roughly 18 per minute averaged over the day.
+The 9 October on-demand recovery of the same two sets (934 and 1,895 IDs) took
+51 and 74 minutes under the 180-per-minute recovery pacer, at most about 13,300
+calls, which matches the typical figure. During a pass the pacer is the limit,
+so other recovery waits its turn as with any on-demand pass. For comparison, the spaced inventory
+sweep costs about 16,500 calls per day (about 115 every 10 minutes) and the
+catalog product sweep about 6,400 (one call per product, about 875 products,
+every 3 hours plus the pass).
+
+**Side effect during a buybox pass.** The base inventory sweep waits while a
+buybox job is making progress (L-037), so for the 50 or so minutes of the
+buybox pass the enumeration ages past 15 minutes and item formulas show the
+expired-enumeration row and rows whose base is older than 15 minutes as
+unavailable. On-demand buybox passes already do this; the slots place it at
+19:00 and 07:00 in Mexico City.
+
+**Worker memory.** A pass runs the same 20-ID chunks as an on-demand recovery
+of the same IDs, one job per lane, with no new resident state; the job
+document holds the ID list (about 30 KB). Selection holds one 200-ID chunk at a
+time and keeps only the selected IDs, under 2,000 short strings. Neither grows
+with the seller beyond that list. The worker used about 235 MiB of its 1 GiB
+limit on 11 October; this document has no production measurement during a
+pass, so watch `docker stats` for `sheets-worker` during the first slot.
 
 ## Freshness validity
 
@@ -297,6 +381,8 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_INVENTORY_REFRESH_MINUTES` | `10` | Minutes between inventory discoveries. |
 | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `false` | Spaced catalog-product sweep. |
 | `ZELERDATA_CATALOG_REFRESH_HOURS` | `3` | Hours from the end of one catalog pass to the next. |
+| `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` | on for numeric sellers, off for `all` | Renewal of buybox, quality and costs. `false` is the emergency switch; `true` also enables it in `all` mode. Mutually exclusive with BULK when set to `true`. |
+| `ZELERDATA_RENEWAL_REFRESH_HOURS` | `12` | Renewal slot length, at most 12. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop; with history on link off, also admit the ordinary daily tail. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
@@ -339,6 +425,7 @@ queries, which is the split agreed after a production write aborted with
 ```bash
 uv run pytest modules/sheets/tests/test_zelerdata_refresh.py \
   modules/sheets/tests/test_zelerdata_sweep_status.py \
+  modules/sheets/tests/test_zelerdata_renewal_sweep.py \
   modules/sheets/tests/test_zelerdata_recovery_pacing.py \
   tests/test_gce_compose_contract.py
 ```
@@ -440,8 +527,9 @@ By default, scheduled refresh plans only orders and questions: the last hour
 every 15 minutes, 7 days once a day, and 90 days once a week. That costs a few
 requests per seller and cycle. Whole-seller sweeps multiply by the number of
 sellers, so keep them off at first in `all` mode. This includes
-`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` and any spaced inventory or catalog
-sweep. As a reference, an inventory sweep for a seller with about 1,900
+`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` and any spaced inventory, catalog or
+renewal sweep. Renewal is off in `all` mode unless set to `true`, but the
+worker template sets it to `true` explicitly. As a reference, an inventory sweep for a seller with about 1,900
 listings costs about 12 requests per minute. Roughly 15 sellers of that size
 would fill the 180 reservation with inventory alone.
 
@@ -556,8 +644,10 @@ merged and with explicit authorization. An image without this change rejects
    `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED`,
    `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED`,
    `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED`,
-   `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` and
-   `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` must read `false`.
+   `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED`,
+   `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` and
+   `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` must read `false`. Set the
+   renewal flag to `false` (or remove it) before switching to `all`.
 4. **Worker first.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and
    `ZELERDATA_REFRESH_SELLERS=all` together (refresh requires recovery to be
    `all`, or startup fails). Leave every other variable as it is. Restart only

@@ -249,6 +249,27 @@ async def test_refresh_builder_all_mode_discovers_eligible_sellers_without_histo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("value", "renewed"), [(None, False), ("true", True)])
+async def test_refresh_all_mode_renews_on_demand_data_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, renewed: bool
+) -> None:
+    """Whole-seller passes multiply by seller count, so `all` keeps them opt-in."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch, "all")
+    if value is None:
+        monkeypatch.delenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", value)
+    supervisor = await build_zelerdata_refresh_supervisor(db=_eligibility_db())
+
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert set(supervisor._planner._sweep_intervals) == (
+        {"catalog_buybox_snapshots", "item_enrichment"} if renewed else set()
+    )
+
+
+@pytest.mark.asyncio
 async def test_refresh_all_mode_requires_recovery_all_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

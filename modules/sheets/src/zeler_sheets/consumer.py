@@ -90,7 +90,10 @@ from zeler_sheets.formulas.refresh import (
     DEFAULT_INTERVAL_SECONDS as REFRESH_DEFAULT_INTERVAL_SECONDS,
 )
 from zeler_sheets.formulas.refresh import (
+    DEFAULT_RENEWAL_INTERVAL,
     IMPLEMENTED_REFRESH_MODELS,
+    MAX_RENEWAL_INTERVAL,
+    RENEWAL_SWEEP_READ_MODELS,
     SCHEDULED_RANGE_REFRESH_MODELS,
     MongoRefreshIdentitySource,
     MongoSellerExplorer,
@@ -1860,8 +1863,29 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     scheduled_bulk = _env_flag_enabled("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED")
     # Spaced sweeps keep item rows and catalog products current without the
     # every-cycle bulk replanning that L-021 turned off: each sweep waits for
-    # its previous pass and its own interval. Buybox stays on demand.
+    # its previous pass and its own interval.
     sweep_intervals: dict[str, timedelta] = {}
+    # Buybox, quality and costs are acquired only by recovery and served for
+    # 24 hours (L-044). Renewing them in fixed slots keeps a sheet opened after
+    # a quiet day filled. On by default for named sellers; `false` is the
+    # emergency switch. In `all` mode passes multiply by seller, so opt in.
+    renewal_setting = _env_flag_setting("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED")
+    renewal_hours = _positive_env_number(
+        "ZELERDATA_RENEWAL_REFRESH_HOURS",
+        default=DEFAULT_RENEWAL_INTERVAL / timedelta(hours=1),
+    )
+    if timedelta(hours=renewal_hours) > MAX_RENEWAL_INTERVAL:
+        raise RuntimeError(
+            "ZELERDATA_RENEWAL_REFRESH_HOURS must be at most 12 so renewals stay "
+            "inside the readers' 24 hours"
+        )
+    if (
+        renewal_setting
+        if renewal_setting is not None
+        else allowed is not None and not scheduled_bulk
+    ):
+        for sweep in RENEWAL_SWEEP_READ_MODELS:
+            sweep_intervals[sweep] = timedelta(hours=renewal_hours)
     if _env_flag_enabled("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"):
         sweep_intervals["item_formula_rows"] = timedelta(
             minutes=_positive_env_number("ZELERDATA_INVENTORY_REFRESH_MINUTES", default=10)
@@ -1873,7 +1897,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     if scheduled_bulk and sweep_intervals:
         raise RuntimeError(
             "ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED already plans every model each "
-            "cycle; disable it to use spaced inventory or catalog sweeps"
+            "cycle; disable it to use spaced inventory, catalog or renewal sweeps"
         )
     planner = ZelerDataRefreshPlanner(
         queue=queue,
@@ -1953,6 +1977,18 @@ def _account_status_source_from_db(db: Any) -> AccountStatusSource:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag_setting(name: str) -> bool | None:
+    """An explicit on/off value, or None when unset so the caller's default applies."""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
 
 
 def _positive_env_number(name: str, *, default: float) -> float:

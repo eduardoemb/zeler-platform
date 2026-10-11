@@ -272,6 +272,17 @@ were switched off after the VM froze for about five hours.
   unavailable, so one such shipment kept it unavailable and re-requesting
   forever. It now serves every known cost, marks the missing ones, and recovers
   only costs never acquired.
+- **Buybox, quality and costs are renewed on a schedule (11 October 2026).**
+  With formula reads as the only trigger, a sheet unopened for more than a day
+  came back almost entirely `DATA_UNAVAILABLE` (on the pilot, 921 of 922
+  `CATALOGO` rows, 1,874 `CALIDAD` publications, 2,813 of 2,886 `CALCULADORA`
+  rows) for about an hour. The refresh loop now plans the same recovery twice a
+  day: whatever the readers would stop serving within the next 6 hours, judged
+  by `served_buybox_snapshot`, `buybox_snapshot_recoverable` and
+  `item_enrichment_unavailable`, the readers' own rules at a later clock. A
+  fresh source-declared absence stays `NA` and is not selected. The 24-hour
+  limits are unchanged. See "Renewal of on-demand acquisitions" in
+  `zelerdata-refresh.md` (`test_zelerdata_renewal_sweep.py`).
 - **Still open.** `resolve_item_history_sources` (stock-time and history
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,

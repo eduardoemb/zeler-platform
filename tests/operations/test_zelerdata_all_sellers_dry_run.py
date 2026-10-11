@@ -138,6 +138,8 @@ async def test_configuration_reports_scope_kind_and_flags_not_values() -> None:
         "ZELERDATA_FORMULA_RECOVERY_SELLERS": "ALL",
         "ZELERDATA_REFRESH_ENABLED": "true",
         "ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED": "false",
+        # Explicit in the worker template, so `all` would renew every seller.
+        "ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED": "true",
     }
 
     report = await dry_run.build_report(_db(), now=NOW, environ=environ)
@@ -147,6 +149,7 @@ async def test_configuration_reports_scope_kind_and_flags_not_values() -> None:
     assert configuration["recovery_sellers"] == "all"
     assert configuration["flags"]["ZELERDATA_REFRESH_ENABLED"] is True
     assert configuration["flags"]["ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"] is False
+    assert configuration["flags"]["ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED"] is True
     assert "82453304" not in json.dumps(report)
 
 

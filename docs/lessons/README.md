@@ -107,6 +107,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-048 | ZelerData | Gate a change-only history on its observation heartbeat | active |
 | L-049 | Sheets DLQ | Archive on a per-resource read stamp, not on a window marker | active |
 | L-050 | ZelerData | Exclude one listed claim Mercado Libre forbids, and log what the quota runner swallows | active |
+| L-051 | ZelerData | Renew on-demand acquisitions before their readers' limit, one pass per fixed slot | active |
 
 ## Cloud Build and VM deployment
 
@@ -851,4 +852,25 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `tests/integration/test_devoluciones_onboarding.py` (tail completes and
   certifies with the 403), `docs/sheets/zelerdata-refresh.md`. Not yet observed
   in production.
+- status: active
+
+### L-051 — Renew on-demand acquisitions before their readers' limit, one pass per fixed slot
+- area: ZelerData scheduled refresh (buybox, quality, costs)
+- proven path: Plan the existing recovery intents on fixed UTC slots (12 hours,
+  at most one pass per model and slot, keyed by the slot so no terminal job is
+  reopened). Never plan while any explicit-ID pass of the model runs. Select with
+  the readers' own predicates evaluated half an interval ahead, so absent,
+  mismatched or aging data is renewed and a fresh declared `NA` is not. On by
+  default for numeric sellers; `false` is the emergency switch.
+- failed path: Selecting only what the reader already rejects: with a 24-hour
+  limit and a 12-hour interval, data acquired by one pass expires before the
+  pass after next, so the gap returns. Anchoring the spacing on any catalog-sized
+  job would let an on-demand pass postpone renewal past 24 hours. Keying the
+  intent by its IDs repeats the same key every pass, so it either reopens the
+  previous terminal job or, without reopening, never runs again.
+- verification/source: `modules/sheets/tests/test_zelerdata_renewal_sweep.py`
+  (real Mongo selection, slot status, no reopen), `test_zelerdata_refresh.py`
+  (planner and factory), `docs/sheets/zelerdata-refresh.md` ("Renewal of
+  on-demand acquisitions", call and memory estimates from code). Not yet
+  observed in production.
 - status: active

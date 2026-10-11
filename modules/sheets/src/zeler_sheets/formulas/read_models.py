@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -43,15 +43,16 @@ SHIPMENTS_COLLECTION = "shipments"
 STOCK_TIME_METRICS_COLLECTION = "sheets_stock_time_metrics"
 STOCKOUT_SNAPSHOTS_COLLECTION = "sheets_stockout_snapshots"
 CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL = "catalog_buybox_snapshots"
-# Buybox is acquired only on demand, and one pass over ~940 publications takes
-# hours, so a 15-minute window could never cover a whole inventory. A snapshot
-# whose product, title and quantity still match is served for a day, flagged as
-# cached with its acquisition time; only absent, older or mismatched snapshots
-# request recovery, so each publication costs at most one acquisition per day.
+# Buybox is acquired only by recovery (formula reads and the scheduled renewal),
+# and one pass over ~940 publications takes about an hour, so a 15-minute
+# window could never cover a whole inventory. A snapshot whose product, title
+# and quantity still match is served for a day, flagged as cached with its
+# acquisition time; only absent, older or mismatched snapshots request
+# recovery. The renewal keeps each one inside this day (see refresh.py).
 CATALOG_BUYBOX_CURRENT_AGE = timedelta(minutes=15)
 CATALOG_BUYBOX_CACHE_MAX_AGE = timedelta(hours=24)
-# Publication enrichment (quality and costs) is also acquired only on demand,
-# and a pass over a whole inventory takes hours. Base re-syncs keep each state
+# Publication enrichment (quality and costs) is also acquired only by
+# recovery, in passes over a whole inventory. Base re-syncs keep each state
 # trusted only while its basis still matches the publication, so a trusted
 # acquisition is served for a day instead of the base row's 15 minutes.
 ITEM_ENRICHMENT_CACHE_MAX_AGE = timedelta(hours=24)
@@ -937,17 +938,7 @@ class FormulaReadModelRepository:
             identity = str(candidate["_id"])
             if candidate.get("catalog_listing") is False:
                 continue
-            product = candidate.get("catalog_product_id")
-            if (
-                candidate.get("catalog_listing") is not True
-                or not isinstance(product, str)
-                or re.fullmatch(r"ML[A-Z][0-9]+", product) is None
-                or not isinstance(candidate.get("title"), str)
-                or not candidate["title"].strip()
-                or not isinstance(candidate.get("available_quantity"), int)
-                or isinstance(candidate.get("available_quantity"), bool)
-                or candidate["available_quantity"] < 0
-            ):
+            if not is_buybox_participant(candidate):
                 invalid.add(identity)
                 continue
             participating[identity] = candidate
@@ -960,33 +951,14 @@ class FormulaReadModelRepository:
         )
         ready = []
         for snapshot in snapshots:
-            identity = snapshot.get("item_id")
-            source = participating.get(identity)
-            observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
-            synced = _safe_utc_datetime(source.get("last_meli_sync_at")) if source else None
-            if (
-                source
-                and observed is not None
-                and synced is not None
-                and now - CATALOG_BUYBOX_CACHE_MAX_AGE < observed <= now
-                # A periodic base re-sync only moves the item's observation cut, so
-                # the snapshot is judged by the fields it carries (product, title,
-                # quantity), not by whether the item was re-read after it.
-                and snapshot.get("_id") == f"{seller_id}:{identity}"
-                and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
-                and snapshot.get("catalog_product_id") == source["catalog_product_id"]
-                and snapshot.get("title") == source["title"].strip()
-                and snapshot.get("available_quantity") == source.get("available_quantity")
-            ):
-                if snapshot.get("price") is None:
-                    snapshot = {**snapshot, "price": acquired_current_price(source)}
-                offers_at = _safe_utc_datetime(snapshot.get("offers_snapshot_at", observed))
-                ready.append(
-                    snapshot
-                    if offers_at is not None
-                    and now - CATALOG_BUYBOX_CACHE_MAX_AGE < offers_at <= now
-                    else {**snapshot, "competitor_count": None, "only_competitor": None}
-                )
+            source = participating.get(snapshot.get("item_id"))
+            served = (
+                served_buybox_snapshot(snapshot, source, seller_id=seller_id, now=now)
+                if source
+                else None
+            )
+            if served is not None:
+                ready.append(served)
         missing = set(participating) - {row["item_id"] for row in ready}
         return ready, tuple(sorted(missing)), tuple(sorted(invalid)), current
 
@@ -1987,6 +1959,60 @@ def _first_utc_datetime(*values: Any) -> datetime | None:
         if (date_value := _safe_utc_datetime(value)) is not None:
             return date_value
     return None
+
+
+def is_buybox_participant(candidate: Mapping[str, Any]) -> bool:
+    """A catalog publication with the fields a buybox acquisition is bound to."""
+    product = candidate.get("catalog_product_id")
+    quantity = candidate.get("available_quantity")
+    return (
+        candidate.get("catalog_listing") is True
+        and isinstance(product, str)
+        and re.fullmatch(r"ML[A-Z][0-9]+", product) is not None
+        and isinstance(candidate.get("title"), str)
+        and bool(candidate["title"].strip())
+        and isinstance(quantity, int)
+        and not isinstance(quantity, bool)
+        and quantity >= 0
+    )
+
+
+def served_buybox_snapshot(
+    snapshot: Mapping[str, Any],
+    source: Mapping[str, Any],
+    *,
+    seller_id: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """The buybox snapshot readers serve at ``now`` for a participating item, if any.
+
+    The scheduled renewal asks the same question at a later ``now`` to find the
+    snapshots that would expire before its next pass.
+    """
+    identity = snapshot.get("item_id")
+    observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
+    synced = _safe_utc_datetime(source.get("last_meli_sync_at"))
+    if not (
+        observed is not None
+        and synced is not None
+        and now - CATALOG_BUYBOX_CACHE_MAX_AGE < observed <= now
+        # A periodic base re-sync only moves the item's observation cut, so the
+        # snapshot is judged by the fields it carries (product, title,
+        # quantity), not by whether the item was re-read after it.
+        and snapshot.get("_id") == f"{seller_id}:{identity}"
+        and snapshot.get("source") in {"sheets_backfill", "historical_meli_backfill"}
+        and snapshot.get("catalog_product_id") == source["catalog_product_id"]
+        and snapshot.get("title") == source["title"].strip()
+        and snapshot.get("available_quantity") == source.get("available_quantity")
+    ):
+        return None
+    served = dict(snapshot)
+    if served.get("price") is None:
+        served["price"] = acquired_current_price(source)
+    offers_at = _safe_utc_datetime(served.get("offers_snapshot_at", observed))
+    if offers_at is None or not now - CATALOG_BUYBOX_CACHE_MAX_AGE < offers_at <= now:
+        served.update(competitor_count=None, only_competitor=None)
+    return served
 
 
 def cached_buybox_observed_at(
