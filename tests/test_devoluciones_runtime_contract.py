@@ -796,6 +796,12 @@ def test_refresh_loop_absorbing_devoluciones_is_documented_and_gated() -> None:
     assert "activated only from a completed window's proof" in refresh_doc
     assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in refresh_doc
     assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in consumer
+    # The day in progress is acquired up to an hourly cut, only with windows
+    # the tail and initial coverage leave; on by default with its own switch.
+    assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED" in refresh_doc
+    assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED" in consumer
+    assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED=true" in template
+    assert "only with windows the tail and initial coverage leave" in refresh_doc
 
 
 def test_deploy_runbook_states_devoluciones_trigger_moved_to_refresh_loop() -> None:

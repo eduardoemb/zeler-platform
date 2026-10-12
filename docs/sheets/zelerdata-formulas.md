@@ -161,12 +161,19 @@ MercadoLibre, widen coverage, or synthesize returned quantities.
 A seller in certificate mode (the pilot since 2026-10-02, and every eligible
 seller after its initial window since 2026-10-12) is read through
 `sheets_devoluciones_certificates` instead of the marker, and the certificates
-must cover `[fecha_inicio 00:00Z, fecha_final + 1 day 00:00Z)` without a gap. A
-range that includes today is therefore unavailable by design. While history on
-link is off, the refresh loop extends coverage once per day up to the last UTC
-midnight; see [ZelerData refresh](zelerdata-refresh.md#ordinary-tail-while-history-on-link-is-off-2026-10-07).
+must cover `[fecha_inicio 00:00Z, fecha_final + 1 day 00:00Z)` without a gap.
+While history on link is off, the refresh loop extends coverage once per day up
+to the last UTC midnight; see [ZelerData refresh](zelerdata-refresh.md#ordinary-tail-while-history-on-link-is-off-2026-10-07).
 A new seller is covered from 90 days before its first turn, one 10-day window
 per turn; see [Initial coverage for a new seller](zelerdata-refresh.md#initial-coverage-for-a-new-seller-2026-10-12).
+
+Since 2026-10-12 the day in progress is certified up to an hourly cut (the last
+whole hour at least 30 minutes old). A range that ends at most at tomorrow
+00:00Z (`fecha_final` = today) is served up to that cut when its coverage from
+`fecha_inicio` is contiguous and the cut is at most three hours old; the API
+`meta.coverage` then carries `scope: certified_until_cut` and `covered_until`,
+and the sheet layout is unchanged. A range ending later, or a staler cut,
+stays `DATA_UNAVAILABLE`. See [Intraday coverage of the day in progress](zelerdata-refresh.md#intraday-coverage-of-the-day-in-progress-2026-10-12).
 
 ### Range decisions (2026-10-07)
 

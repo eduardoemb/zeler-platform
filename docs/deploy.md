@@ -1285,6 +1285,10 @@ of a seller in certificate mode and, since 2026-10-12, the initial window of an
 eligible seller without coverage, whose proof then activates certificate
 coverage. A new seller needs no operator step; see
 [ZelerData refresh](sheets/zelerdata-refresh.md#initial-coverage-for-a-new-seller-2026-10-12).
+Windows nobody needs for that go, since 2026-10-12, to the hourly cut of the
+day in progress of each certificate seller
+(`ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED`, on by default); see
+[Intraday coverage](sheets/zelerdata-refresh.md#intraday-coverage-of-the-day-in-progress-2026-10-12).
 `infra.operations.devoluciones_quota_authorize` remains the pilot's operator
 path for an explicitly authorized range, and never widens on its own.
 

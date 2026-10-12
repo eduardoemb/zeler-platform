@@ -851,8 +851,13 @@ async def collect_devoluciones_snapshot(
     returns_pacer: ReturnsAttemptPacer | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
     exclude_forbidden_claim_details: bool = False,
+    clock: Callable[[], datetime] | None = None,
 ) -> CollectedDevolucionesSnapshot:
-    """Collect one window; only the ordinary tail excludes forbidden claim details."""
+    """Collect one window; only the ordinary tail excludes forbidden claim details.
+
+    ``clock`` stamps ``captured_at`` when the collection ends; the executor
+    passes the same clock it later checks the publication age against.
+    """
     from zeler_sheets.claim_projection import (
         ReturnEvidenceDisposition,
         build_claim_projection,
@@ -1083,7 +1088,9 @@ async def collect_devoluciones_snapshot(
         orders=tuple(orders_by_id.values()),
     )
     exclusion_fingerprint = _exclusion_fingerprint(exclusions)
-    captured = _utc_datetime(captured_at or datetime.now(UTC), field="snapshot captured_at")
+    captured = _utc_datetime(
+        captured_at or (clock or (lambda: datetime.now(UTC)))(), field="snapshot captured_at"
+    )
     frozen_projections = tuple(cast("Mapping[str, Any]", _deep_freeze(row)) for row in projections)
     frozen_orders = tuple(
         cast("Mapping[str, Any]", _deep_freeze(row)) for row in orders_by_id.values()
@@ -2127,6 +2134,43 @@ async def publish_quota_certificate(
         **evidence,
     )
     await publish_certificate(db, operation, document, session=session)
+    await retire_superseded_intraday_certificates(db, document, session=session)
+
+
+async def retire_superseded_intraday_certificates(
+    db: Any, certificate: Mapping[str, Any], *, session: Any
+) -> int:
+    """Remove the intraday cuts a new proof covers entirely, in its own transaction.
+
+    An intraday certificate proves only part of a day. The next cut, and then
+    the daily tail, cover its whole interval, so removing it together with that
+    publication never opens a gap, and at most one cut per open day is kept
+    and renewed. Run and window evidence stays.
+    """
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+    from zeler_sheets.devoluciones_runner import is_intraday_certificate
+
+    seller_id = str(certificate["seller_id"])
+    candidates = [
+        row
+        async for row in db[CERTIFICATES].find(
+            {
+                "seller_id": seller_id,
+                "kind": "quota_run",
+                "coverage_epoch": certificate["coverage_epoch"],
+                "_id": {"$ne": certificate["_id"]},
+                "date_from": {"$gte": certificate["date_from"]},
+                "date_to": {"$lte": certificate["date_to"]},
+            },
+            session=session,
+        )
+    ]
+    retired = 0
+    for candidate in candidates:
+        if await is_intraday_certificate(db, seller_id, candidate, session=session):
+            await db[CERTIFICATES].delete_one({"_id": candidate["_id"]}, session=session)
+            retired += 1
+    return retired
 
 
 async def publish_joint_certificate(

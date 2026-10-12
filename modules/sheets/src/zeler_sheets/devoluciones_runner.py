@@ -53,16 +53,21 @@ __all__ = [
     "ADVANCEABLE_RUN_STATES",
     "INITIAL_COVERAGE_AUTHORIZATION",
     "INITIAL_COVERAGE_DAYS",
+    "INTRADAY_AUTHORIZATION",
     "ORDINARY_TAIL_AUTHORIZATION",
     "activate_initial_devoluciones_coverage",
     "admit_initial_devoluciones_coverage",
     "advance_due_devoluciones_run",
     "admit_onboarding_devoluciones",
     "admit_ordinary_devoluciones_tail",
+    "advance_intraday_devoluciones",
     "advance_onboarding_devoluciones",
     "advance_ordinary_devoluciones_tail",
     "initial_coverage_binding",
     "initial_coverage_bounds",
+    "intraday_binding",
+    "intraday_bounds",
+    "is_intraday_certificate",
     "ordinary_tail_binding",
     "ordinary_tail_bounds",
     "renew_devoluciones_marker_if_proven",
@@ -125,8 +130,11 @@ async def advance_due_devoluciones_run(
         "expires_at": {"$gt": current},
         "$or": [{"not_before": {"$exists": False}}, {"not_before": {"$lte": current}}],
     }
+    # An intraday run belongs to its own pass, which never takes a window from
+    # the tail, an initial window or an operator run.
+    query["authorization_id"] = {"$ne": INTRADAY_AUTHORIZATION}
     if not history_work_enabled:
-        query["authorization_id"] = {"$not": {"$regex": "^onboarding:"}}
+        query["authorization_id"]["$not"] = {"$regex": "^onboarding:"}
     run = await db[RUNS_COLLECTION].find_one(query, sort=[("created_at", -1)])
     if not isinstance(run, dict) or not str(run.get("_id") or "").strip():
         # No window is due. The settled run's marker still has to outlive the
@@ -1159,8 +1167,21 @@ INITIAL_COVERAGE_AUTHORIZATION = "refresh-initial:v1"
 INITIAL_COVERAGE_COHORT = "zelerdata-refresh-initial-v1"
 # What the bootstrap acquires at link time: 90 days of orders and claims.
 INITIAL_COVERAGE_DAYS = 90
+
+# Intraday coverage of the current UTC day (2026-10-12). The tail certifies
+# only closed days, so a range ending today was unavailable all day. Once per
+# hourly cut the loop acquires [today 00:00, cut) with the tail's executor and
+# publishes it as an ordinary quota certificate; a later cut, and finally the
+# daily tail, replace it in the publishing transaction.
+INTRADAY_AUTHORIZATION = "refresh-intraday:v1"
+INTRADAY_COHORT = "zelerdata-refresh-intraday-v1"
+# A claim created just before the cut needs a moment to appear in the search.
+# The daily tail re-reads the whole day after its own hour of margin.
+INTRADAY_SETTLE = timedelta(minutes=30)
+# The cut is the run identity, so each cut is acquired at most once.
+INTRADAY_STEP = timedelta(hours=1)
 AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
-    {ORDINARY_TAIL_AUTHORIZATION, INITIAL_COVERAGE_AUTHORIZATION}
+    {ORDINARY_TAIL_AUTHORIZATION, INITIAL_COVERAGE_AUTHORIZATION, INTRADAY_AUTHORIZATION}
 )
 
 
@@ -1357,37 +1378,46 @@ async def admit_ordinary_devoluciones_tail(
     db: Any, seller_id: str, *, now: Callable[[], datetime] | None = None
 ) -> str | None:
     """Admit the ordinary tail run, or return ``None`` when none is due."""
-    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
-    from zeler_platform_core.devoluciones_readiness import (
-        new_devoluciones_attempt_token,
-        stable_devoluciones_operation_id,
-    )
+    from zeler_platform_core.devoluciones_certificates import coverage_control
 
     current = _onboarding_utc((now or (lambda: datetime.now(UTC)))())
     control = await coverage_control(db, seller_id)
-    if (
-        control.get("coverage_mode") != "active"
-        or control.get("coverage_ack_fence") != control.get("fence")
-        or type(control.get("coverage_epoch")) is not int
-    ):
+    if not _certificate_mode(control):
         return None
-    latest = await db[CERTIFICATES].find_one(
-        {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
-        sort=[("date_to", -1)],
-    )
     bounds = ordinary_tail_bounds(
-        latest.get("date_to") if isinstance(latest, Mapping) else None, now=current
+        await _full_day_coverage_end(db, seller_id, control["coverage_epoch"]), now=current
     )
     if bounds is None:
         return None
     binding = ordinary_tail_binding(seller_id, *bounds, admitted_on=current.date())
     if await db[RUNS_COLLECTION].find_one({"_id": binding.run_id}) is not None:
         return None
+    await _admit_automatic_run(db, binding, kind="tail", current=current)
+    return str(binding.run_id)
+
+
+def _certificate_mode(control: Mapping[str, Any]) -> bool:
+    return (
+        control.get("coverage_mode") == "active"
+        and control.get("coverage_ack_fence") == control.get("fence")
+        and type(control.get("coverage_epoch")) is int
+    )
+
+
+async def _admit_automatic_run(
+    db: Any, binding: RunBinding, *, kind: str, current: datetime
+) -> None:
+    """Create a tail or intraday run under the seller's fenced lease, and log it."""
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+
     operation = await _acquire_onboarding_operation(
         db=db,
-        seller_id=seller_id,
+        seller_id=binding.seller_id,
         scope="devoluciones",
-        operation_id=stable_devoluciones_operation_id("refresh_tail_admit", binding.run_id),
+        operation_id=stable_devoluciones_operation_id(f"refresh_{kind}_admit", binding.run_id),
         attempt_token=new_devoluciones_attempt_token(),
         source_fingerprint=binding.run_id,
         invalidate_readiness=False,
@@ -1397,29 +1427,133 @@ async def admit_ordinary_devoluciones_tail(
         if not await _OnboardingRepository(db).create(
             binding, operation=operation, created_at=current
         ):
-            raise RuntimeError("ordinary tail admission failed")
+            raise RuntimeError(f"ordinary {kind} admission failed")
     except Exception:
         await _finish_onboarding_operation(
-            db=db, operation=operation, succeeded=False, error_code="refresh_tail_admission_failed"
+            db=db,
+            operation=operation,
+            succeeded=False,
+            error_code=f"refresh_{kind}_admission_failed",
         )
         raise
     await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
     logger.info(
-        "zelerdata.devoluciones_tail_admitted",
-        seller_id=seller_id,
+        f"zelerdata.devoluciones_{kind}_admitted",
+        seller_id=binding.seller_id,
         run_id=binding.run_id,
         start=binding.start.isoformat(),
         end=binding.end.isoformat(),
     )
-    return str(binding.run_id)
+
+
+async def is_intraday_certificate(
+    db: Any, seller_id: str, certificate: Mapping[str, Any], *, session: Any = None
+) -> bool:
+    if certificate.get("kind") != "quota_run":
+        return False
+    run = await db[RUNS_COLLECTION].find_one(
+        {"_id": certificate.get("source_identity"), "seller_id": seller_id},
+        **({"session": session} if session is not None else {}),
+    )
+    return isinstance(run, Mapping) and run.get("authorization_id") == INTRADAY_AUTHORIZATION
+
+
+async def _full_day_coverage_end(db: Any, seller_id: str, epoch: int) -> datetime | None:
+    """Where the daily tail continues: the newest certificate that is not an intraday cut.
+
+    An intraday certificate ends inside today; the tail must still close the
+    whole day, so it starts from the last certificate of closed days.
+    """
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+
+    query: dict[str, Any] = {"seller_id": seller_id, "coverage_epoch": epoch}
+    skipped: list[Any] = []
+    while True:
+        latest = await db[CERTIFICATES].find_one(
+            query | ({"_id": {"$nin": skipped}} if skipped else {}), sort=[("date_to", -1)]
+        )
+        if not isinstance(latest, Mapping):
+            return None
+        if not await is_intraday_certificate(db, seller_id, latest):
+            return cast("datetime | None", latest.get("date_to"))
+        skipped.append(latest["_id"])
+
+
+def intraday_bounds(*, now: datetime) -> tuple[datetime, datetime] | None:
+    """Today's interval up to the latest settled hourly cut, or ``None`` before the first.
+
+    The day is the one the settled instant belongs to: shortly after midnight
+    the previous day's last cut still applies, and the daily tail closes it.
+    """
+    settled = _onboarding_utc(now) - INTRADAY_SETTLE
+    start = datetime.combine(settled.date(), time.min, tzinfo=UTC)
+    cut = start + (settled - start) // INTRADAY_STEP * INTRADAY_STEP
+    return (start, cut) if start < cut else None
+
+
+def intraday_binding(seller_id: str, start: datetime, end: datetime) -> RunBinding:
+    # The cut is in the identity: one run per seller and cut, after restarts
+    # and across workers. A failed cut waits for the next one.
+    return RunBinding(
+        authorization_id=INTRADAY_AUTHORIZATION,
+        cohort_id=INTRADAY_COHORT,
+        seller_id=seller_id,
+        scope="devoluciones",
+        start=start,
+        end=end,
+        partition_version="v1",
+        release_fingerprints={"cut": end.isoformat()},
+    )
+
+
+async def advance_intraday_devoluciones(
+    db: Any,
+    seller_id: str,
+    *,
+    now: Callable[[], datetime] | None = None,
+    advance: Callable[..., Awaitable[dict[str, int]]] | None = None,
+) -> bool:
+    """Acquire today's coverage up to the latest hourly cut, once per cut.
+
+    Returns ``True`` only when the run was handed to the executor, which is the
+    cycle's one window. Only a certificate seller whose closed days reach at
+    least yesterday is served: the intraday proof must connect to the daily
+    tail, which keeps priority for any seller still catching up.
+    """
+    from zeler_platform_core.devoluciones_certificates import coverage_control
+
+    clock = now or (lambda: datetime.now(UTC))
+    current = _onboarding_utc(clock())
+    control = await coverage_control(db, seller_id)
+    if not _certificate_mode(control):
+        return False
+    bounds = intraday_bounds(now=current)
+    if bounds is None:
+        return False
+    coverage_end = await _full_day_coverage_end(db, seller_id, control["coverage_epoch"])
+    if coverage_end is None or _onboarding_utc(coverage_end) < bounds[0] - timedelta(days=1):
+        return False
+    binding = intraday_binding(seller_id, *bounds)
+    run = await db[RUNS_COLLECTION].find_one({"_id": binding.run_id})
+    if run is None:
+        await _admit_automatic_run(db, binding, kind="intraday", current=current)
+    elif not (
+        run.get("state") in ADVANCEABLE_RUN_STATES
+        and _onboarding_utc(run["expires_at"]) > current
+        and (run.get("not_before") is None or _onboarding_utc(run["not_before"]) <= current)
+    ):
+        # Completed, failed or expired: this cut is done; the next one is an hour away.
+        return False
+    await (advance or advance_ordinary_devoluciones_tail)(db, binding.run_id, now=clock)
+    return True
 
 
 async def advance_ordinary_devoluciones_tail(
     db: Any, run_id: str, *, now: Callable[[], datetime] | None = None
 ) -> dict[str, int]:
-    """Advance one tail or initial coverage window through the ordinary runtime gateway.
+    """Advance one tail, initial or intraday window through the ordinary runtime gateway.
 
-    Both are single-window automatic runs with the same tolerances (L-040,
+    All are single-window automatic runs with the same tolerances (L-040,
     L-050). A finalized initial window of a legacy seller then activates
     certificate coverage, after this run's lease is released.
     """
@@ -1444,6 +1578,9 @@ async def advance_ordinary_devoluciones_tail(
         raise ValueError("run is not an ordinary tail or initial coverage run")
     seller_id = str(run["seller_id"])
     initial = run["authorization_id"] == INITIAL_COVERAGE_AUTHORIZATION
+    kind = {INITIAL_COVERAGE_AUTHORIZATION: "initial", INTRADAY_AUTHORIZATION: "intraday"}.get(
+        run["authorization_id"], "tail"
+    )
 
     async def readback(**kwargs: Any) -> Mapping[str, Any]:
         try:
@@ -1463,9 +1600,7 @@ async def advance_ordinary_devoluciones_tail(
         db=db,
         seller_id=seller_id,
         scope="devoluciones",
-        operation_id=stable_devoluciones_operation_id(
-            "refresh_initial_advance" if initial else "refresh_tail_advance", run_id
-        ),
+        operation_id=stable_devoluciones_operation_id(f"refresh_{kind}_advance", run_id),
         attempt_token=new_devoluciones_attempt_token(),
         source_fingerprint=run_id,
         invalidate_readiness=False,

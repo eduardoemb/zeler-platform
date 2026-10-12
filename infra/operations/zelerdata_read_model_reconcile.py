@@ -1252,6 +1252,7 @@ async def execute_devoluciones_quota_window(
         monotonic=monotonic,
         returns_pacer=returns_pacer,
         exclude_forbidden_claim_details=exclude_forbidden_claim_details,
+        clock=now,
     )
     window_operation = replace(operation, source_fingerprint=snapshot.source_fingerprint)
     request = ReconciliationRequest(

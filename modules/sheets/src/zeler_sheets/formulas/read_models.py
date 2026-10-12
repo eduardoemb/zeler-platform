@@ -5,7 +5,7 @@ import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal, DecimalException
 from typing import Any, cast
 
@@ -68,6 +68,12 @@ CATALOG_PRODUCT_NOT_FOUND_MAX_AGE = timedelta(hours=24)
 CATALOG_TIME_METRICS_READ_MODEL = "catalog_time_metrics"
 CLAIMS_READ_MODEL = "claims"
 DEVOLUCIONES_READ_MODEL = "devoluciones"
+# A certificate range that reaches into the current UTC day (it ends at most
+# at tomorrow 00:00) is served up to its latest certified cut, while that cut
+# is this recent. The intraday pass publishes a cut every hour, 30 minutes
+# after it, so a cut normally ages 30 to 90 minutes; this allows one missed
+# pass and the cycle's delays (2026-10-12).
+DEVOLUCIONES_INTRADAY_MAX_CUT_AGE = timedelta(hours=3)
 # Both writers are canonical: the joint reconcile publishes historical windows
 # and the quota run publishes the settled windows of the refresh loop.
 _DEVOLUCIONES_RECONCILED_SOURCES = frozenset(
@@ -122,6 +128,9 @@ class DevolucionesReadSnapshot:
     vector: Any = None
     claims: list[dict[str, Any]] | None = None
     orders: list[dict[str, Any]] | None = None
+    # Set when only [date_from, covered_until) is certified: the current day
+    # up to its latest intraday cut.
+    covered_until: datetime | None = None
 
 
 ItemInventory = tuple[list[dict[str, Any]], list[str], tuple[str, ...], bool]
@@ -1465,7 +1474,7 @@ class FormulaReadModelRepository:
 
         from zeler_platform_core.devoluciones_certificates import (
             CoverageUnavailableError,
-            select_covering_proofs,
+            select_covering_prefix,
             utc,
         )
         from zeler_sheets.devoluciones_reconciliation import current_certificate_facts
@@ -1473,9 +1482,16 @@ class FormulaReadModelRepository:
         try:
             async with asyncio.timeout(5), await self._db.client.start_session() as session:  # noqa: SIM117
                 async with session.start_transaction(read_concern=ReadConcern("snapshot")):
-                    vector = await select_covering_proofs(
+                    vector = await select_covering_prefix(
                         self._db, seller_id, date_from, date_to, now, session=session
                     )
+                    covered_until = None
+                    if vector.end < date_to:
+                        if not devoluciones_intraday_prefix_readable(
+                            covered_until=vector.end, date_to=date_to, now=now
+                        ):
+                            raise CoverageUnavailableError("requested interval is not certified")
+                        covered_until = vector.end
                     for certificate in vector.proofs:
                         facts = await current_certificate_facts(
                             self._db,
@@ -1490,7 +1506,7 @@ class FormulaReadModelRepository:
                         db=self._db,
                         seller_id=seller_id,
                         date_from=date_from,
-                        date_to=date_to,
+                        date_to=vector.end,
                         session=session,
                     )
                     orders = await read_devoluciones_orders_by_id_keyset(
@@ -1499,7 +1515,7 @@ class FormulaReadModelRepository:
                         order_ids=frozenset(str(claim["order_id"]) for claim in claims),
                         session=session,
                     )
-            return DevolucionesReadSnapshot("", "", vector, claims, orders)
+            return DevolucionesReadSnapshot("", "", vector, claims, orders, covered_until)
         except Exception:  # noqa: BLE001 - safe public unavailable boundary
             _raise_devoluciones_snapshot_unavailable(formula)
         raise AssertionError("unreachable")
@@ -1543,6 +1559,20 @@ def require_formula_read_model_available(contract: FormulaContract) -> None:
     batches = set(contract.batch.split("/"))
     if batches & UNBUILT_BATCH_MARKERS:
         raise FormulaDataUnavailableError(contract.name)
+
+
+def devoluciones_intraday_prefix_readable(
+    *, covered_until: datetime, date_to: datetime, now: datetime
+) -> bool:
+    """Whether a range certified only up to ``covered_until`` may be served.
+
+    Only a range that ends by tomorrow 00:00 UTC, the end of the day in
+    progress, and only while the cut is recent. A later end, or a stale cut,
+    stays unavailable.
+    """
+    current = now.astimezone(UTC)
+    horizon = datetime.combine(current.date(), time.min, tzinfo=UTC) + timedelta(days=1)
+    return date_to <= horizon and current - covered_until <= DEVOLUCIONES_INTRADAY_MAX_CUT_AGE
 
 
 def _raise_devoluciones_snapshot_unavailable(formula: str) -> None:

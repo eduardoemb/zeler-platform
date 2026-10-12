@@ -169,9 +169,24 @@ class ReturnsHistoriesWithdrawalsFormulaHandlers:
                     aggregate.title,
                 ]
             )
+        coverage: dict[str, Any] = {}
+        if read_snapshot.covered_until is not None:
+            # The day in progress is certified up to its latest intraday cut;
+            # the sheet layout stays as is and the API says where it stops.
+            coverage = {
+                "coverage": {
+                    "exact": True,
+                    "scope": "certified_until_cut",
+                    "date_from": date_from.isoformat(),
+                    "date_to": date_to.isoformat(),
+                    "covered_until": read_snapshot.covered_until.astimezone(UTC).isoformat(),
+                    "reason": "current_day_in_progress",
+                }
+            }
         return FormulaExecutionResult(
             values=normalize_response_rows(values, header_rows=header_rows),
             meta={
+                **coverage,
                 "claims_count": len(productive_claims),
                 "order_count": len(orders),
                 "rows_count": len(aggregates),

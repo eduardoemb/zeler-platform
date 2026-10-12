@@ -110,6 +110,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-051 | ZelerData | Renew on-demand acquisitions before their readers' limit, one pass per fixed slot | active |
 | L-052 | ZelerData | Give whole-fleet renewal passes one seller at a time, missed sellers first | active |
 | L-053 | ZelerData | Activate a new seller's DEVOLUCIONES from its own first window, one window per cycle for the fleet | active |
+| L-054 | ZelerData | Cover the day in progress with replaceable hourly cuts, never ahead of the tail | active |
 
 ## Cloud Build and VM deployment
 
@@ -926,4 +927,25 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_devoluciones_initial_coverage.py`,
   `docs/sheets/zelerdata-refresh.md` ("Initial coverage for a new seller").
   Not yet observed in production.
+- status: active
+
+### L-054 — Cover the day in progress with replaceable hourly cuts, never ahead of the tail
+- area: ZelerData DEVOLUCIONES coverage (intraday)
+- proven path: Acquire `[today 00:00, cut)` once per settled hourly cut
+  (`refresh-intraday:v1`, the cut in the run identity) with the tail's
+  executor, only with cycle windows no tail or initial window wants, and
+  publish an ordinary `quota_run` certificate. Every quota publication removes,
+  in its own transaction, the intraday certificates it covers entirely; the
+  tail continues from the newest closed-day certificate. The reader serves the
+  contiguous certified prefix of a range ending by tomorrow 00:00 while its cut
+  is at most 3 hours old, and says so in `meta.coverage.covered_until`.
+- failed path: Letting the tail start from the newest certificate would close
+  only `[cut, midnight)`, and keeping every cut would leave 23 certificates a
+  day for renewal's 20-per-cycle batch. Testing at a simulated time failed
+  until the executor stamped `captured_at` with its own clock.
+- verification/source: `tests/integration/test_devoluciones_intraday.py`
+  (served to the cut, daily close without a gap, order mutation recovered,
+  two workers), `modules/sheets/tests/test_devoluciones_intraday.py`,
+  `docs/sheets/zelerdata-refresh.md` ("Intraday coverage of the day in
+  progress"). Not yet observed in production.
 - status: active

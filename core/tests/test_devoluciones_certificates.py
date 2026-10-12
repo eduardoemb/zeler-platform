@@ -8,6 +8,7 @@ import pytest
 from zeler_platform_core.devoluciones_certificates import (
     CoverageUnavailableError,
     certificate_identity,
+    coverage_prefix,
     make_certificate,
     select_coverage,
 )
@@ -46,6 +47,23 @@ def test_disjoint_periods_remain_independent_and_gap_is_not_coverage() -> None:
     assert select_coverage([june, august], "seller", day(8, 8), day(9, 7), NOW) == (august,)
     with pytest.raises(CoverageUnavailableError):
         select_coverage([june, august], "seller", day(6), day(9, 7), NOW)
+
+
+def test_prefix_reaches_the_first_gap_without_inventing_coverage() -> None:
+    # A closed day, then the day in progress up to an intraday cut.
+    closed = certificate(day(6), day(6, 11))
+    cut = certificate(day(6, 11), day(6, 11) + timedelta(hours=14))
+    later = certificate(day(6, 12), day(6, 13))
+    assert coverage_prefix([later, cut, closed], "seller", day(6), day(6, 12), NOW) == (
+        (closed, cut),
+        day(6, 11) + timedelta(hours=14),
+    )
+    # A fully certified interval reaches its end, never beyond it.
+    assert coverage_prefix([closed], "seller", day(6, 2), day(6, 5), NOW) == ((closed,), day(6, 5))
+    # Nothing certified at the start reaches nowhere.
+    assert coverage_prefix([later], "seller", day(6), day(6, 13), NOW) == ((), day(6))
+    with pytest.raises(CoverageUnavailableError):
+        select_coverage([closed, cut], "seller", day(6), day(6, 12), NOW)
 
 
 def test_adjacent_and_overlapping_proofs_are_selected_deterministically() -> None:

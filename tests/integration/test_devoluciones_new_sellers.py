@@ -38,9 +38,11 @@ from zeler_platform_core.devoluciones_readiness import (
 )
 from zeler_sheets.devoluciones_runner import (
     INITIAL_COVERAGE_AUTHORIZATION,
+    INTRADAY_AUTHORIZATION,
     ONBOARDING_PLANS_COLLECTION,
     ORDINARY_TAIL_AUTHORIZATION,
     advance_onboarding_devoluciones,
+    intraday_bounds,
 )
 
 PILOT = "82453304"
@@ -364,8 +366,14 @@ async def test_a_new_eligible_seller_gets_devoluciones_without_an_operator(
     assert served[0] == (f"{PILOT}:{ORDINARY_TAIL_AUTHORIZATION}",)
     assert served[1] == (f"{NEW_SELLER}:{INITIAL_COVERAGE_AUTHORIZATION}",)
     assert all(run == (f"{NEW_SELLER}:{ORDINARY_TAIL_AUTHORIZATION}",) for run in served[2:10])
-    # Once covered up to the settled midnight, nothing else is due.
-    assert served[10:] == [(), ()]
+    # Once covered up to the settled midnight, only the day in progress is
+    # left: one intraday cut per seller, in turns (none before the first cut).
+    expected = (
+        [(f"{PILOT}:{INTRADAY_AUTHORIZATION}",), (f"{NEW_SELLER}:{INTRADAY_AUTHORIZATION}",)]
+        if intraday_bounds(now=datetime.now(UTC)) is not None
+        else [(), ()]
+    )
+    assert served[10:] == expected
 
     # The new seller: certificate coverage from 90 days back to the settled midnight.
     control = await db.sheets_devoluciones_operations.find_one({"seller_id": NEW_SELLER})

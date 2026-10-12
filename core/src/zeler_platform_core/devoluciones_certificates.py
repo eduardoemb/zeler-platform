@@ -96,6 +96,24 @@ def select_coverage(
     end: datetime,
     now: datetime,
 ) -> tuple[Mapping[str, Any], ...]:
+    selected, reach = coverage_prefix(certificates, seller_id, start, end, now)
+    if reach < end:
+        raise CoverageUnavailableError("requested interval is not certified")
+    return selected
+
+
+def coverage_prefix(
+    certificates: Iterable[Mapping[str, Any]],
+    seller_id: str,
+    start: datetime,
+    end: datetime,
+    now: datetime,
+) -> tuple[tuple[Mapping[str, Any], ...], datetime]:
+    """The proofs that cover ``[start, reach)`` without a gap, and ``reach``.
+
+    ``reach`` is ``end`` when the whole interval is certified, and ``start``
+    when nothing at ``start`` is.
+    """
     if (
         not isinstance(start, datetime)
         or not isinstance(end, datetime)
@@ -132,11 +150,11 @@ def select_coverage(
     while cursor < end:
         covering = [c for c in candidates if utc(c["date_from"]) <= cursor < utc(c["date_to"])]
         if not covering:
-            raise CoverageUnavailableError("requested interval is not certified")
+            break
         choice = min(covering, key=lambda c: (-utc(c["date_to"]).timestamp(), str(c["_id"])))
         selected.append(choice)
         cursor = utc(choice["date_to"])
-    return tuple(selected)
+    return tuple(selected), min(cursor, end)
 
 
 def digest(value: Any) -> str:
@@ -354,6 +372,20 @@ class ProofVector:
 async def select_covering_proofs(
     db: Any, seller_id: str, start: datetime, end: datetime, now: datetime, *, session: Any = None
 ) -> ProofVector:
+    vector = await select_covering_prefix(db, seller_id, start, end, now, session=session)
+    if vector.end < end:
+        raise CoverageUnavailableError("requested interval is not certified")
+    return vector
+
+
+async def select_covering_prefix(
+    db: Any, seller_id: str, start: datetime, end: datetime, now: datetime, *, session: Any = None
+) -> ProofVector:
+    """Proofs for the longest certified ``[start, reach)``; ``vector.end`` is ``reach``.
+
+    The reader decides whether a prefix may be served. Nothing certified at
+    ``start`` is unavailable.
+    """
     control = await coverage_control(db, seller_id, session=session)
     require_compatible(control)
     documents = [
@@ -372,10 +404,14 @@ async def select_covering_proofs(
         )
         .max_time_ms(5000)
     ]
-    selected = select_coverage(documents, seller_id, start, end, now)
+    selected, reach = coverage_prefix(documents, seller_id, start, end, now)
+    if not selected:
+        raise CoverageUnavailableError("requested interval is not certified")
     for document in selected:
         await validate_provenance(db, document, session=session)
-    return ProofVector(seller_id, start, end, control["coverage_epoch"], control["fence"], selected)
+    return ProofVector(
+        seller_id, start, reach, control["coverage_epoch"], control["fence"], selected
+    )
 
 
 async def validate_proof_vector(db: Any, vector: ProofVector, now: datetime) -> None:

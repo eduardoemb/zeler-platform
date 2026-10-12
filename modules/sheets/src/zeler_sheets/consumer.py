@@ -68,6 +68,7 @@ from zeler_sheets.devoluciones_reconciliation import (
 from zeler_sheets.devoluciones_runner import (
     admit_initial_devoluciones_coverage,
     advance_due_devoluciones_run,
+    advance_intraday_devoluciones,
 )
 from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
@@ -1860,6 +1861,21 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             )
 
         admit_initial = admit_initial_window
+    # The day in progress is acquired up to an hourly cut for every certificate
+    # seller, with windows the tail and initial coverage leave. Like them it
+    # runs only with history on link off. On by default; `false` is the
+    # emergency switch, which leaves ranges ending today unavailable again.
+    intraday_advancer: Callable[[str], Awaitable[bool]] | None = None
+    if (
+        devoluciones_advance
+        and not history_work_enabled
+        and _env_flag_setting("ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED") is not False
+    ):
+
+        async def advance_intraday(seller_id: str) -> bool:
+            return await advance_intraday_devoluciones(db, seller_id)
+
+        intraday_advancer = advance_intraday
     alert_reporter = FreshnessAlarmReporter()
     expected_models = refresh_owned_read_models(
         observed_models=OBSERVED_READ_MODEL_SOURCES,
@@ -1985,6 +2001,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             if devoluciones_advance
             else None
         ),
+        devoluciones_intraday_advancer=intraday_advancer,
         precalculated_warmer=precalculated_warmer,
         dlq_archiver=dlq_archiver,
         freshness_alarm_reporter=(

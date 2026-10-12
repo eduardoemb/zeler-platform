@@ -255,8 +255,11 @@ For the seller that gets the turn, the runner advances one due window:
 It never re-authorizes or widens an operator run. The real advancement keeps the
 existing lease, 10-day window bound, and readback guarantees.
 
+When no seller took the window that way, the cycle offers it to the intraday
+passes, in their own turns (see "Intraday coverage of the day in progress").
+
 The source pass is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
-The ordinary tail and initial coverage both need it on.
+The ordinary tail, initial coverage and intraday coverage all need it on.
 
 #### Ordinary tail while history on link is off (2026-10-07)
 
@@ -291,9 +294,10 @@ retried at most once per UTC day. A longer gap catches up one 10-day window per
 turn. The tail never starts without certified coverage (a new seller first gets
 its initial window; see "Initial coverage for a new seller") and never
 re-acquires a stale interval; that remains an operator run. With history on
-link on, nothing changes: the pilot owns the incremental run. DEVOLUCIONES
-therefore answers ranges that end on the previous UTC day or earlier. A range that includes today
-needs coverage up to tomorrow 00:00 UTC and stays unavailable by design.
+link on, nothing changes: the pilot owns the incremental run. The tail
+certifies closed days only; since 2026-10-12 the day in progress is covered up
+to an hourly cut (see "Intraday coverage of the day in progress"). The tail
+continues from the newest certificate of a closed day, never from a cut.
 
 ##### Pre-v2 rows in the tail window (2026-10-08)
 
@@ -425,6 +429,118 @@ per turn until they reach the settled midnight. In the worker log, expect one
 `zelerdata.devoluciones_coverage_activated` for the seller, then
 `zelerdata.devoluciones_tail_admitted` for each later window.
 
+#### Intraday coverage of the day in progress (2026-10-12)
+
+The tail certifies closed UTC days only. A range that ends today
+(`fecha_final` = today, read up to tomorrow 00:00) was therefore
+`DATA_UNAVAILABLE` all day: on 12 October at 14:29 UTC the pilot served seven
+days ending today 00:00, but not seven days ending now or tomorrow 00:00.
+
+With history on link off, every certificate seller now also gets an intraday
+pass, only with windows the tail and initial coverage leave:
+
+- **Interval.** `[today 00:00, cut)` UTC. The cut is the last whole hour at
+  least 30 minutes old (`INTRADAY_SETTLE`), so a claim created just before it
+  has time to appear in the search. The first cut of a day (01:00) is
+  acquired from 01:30; until then the previous day's 23:00 cut applies.
+- **Identity and cadence.** One run per seller and cut
+  (`authorization_id=refresh-intraday:v1`, the cut in its identity): at most
+  one pass per hour, after restarts and across workers. A completed, failed or
+  expired cut is not retried; the next cut, an hour later, re-acquires the
+  whole day so far. Hourly matches what the loop can give: a cycle lasts the
+  15-minute interval plus 2 to 5 minutes, about three cycles an hour.
+- **Priority.** Intraday passes take turns in their own rotation and get the
+  cycle's window only when no seller had a run, a tail or an initial window
+  due. The cap stays one window per cycle for all sellers. A seller whose
+  closed days stop before yesterday (still catching up) gets no pass: its cut
+  would not connect to its certified days.
+- **Same executor and proofs as the tail.** Two inventory passes per
+  snapshot, full revalidation, exact readback, the pre-v2 quarantine (L-040)
+  and the exclusion of one forbidden claim detail (L-050). The run is
+  finalized in the same invocation and publishes an ordinary `quota_run`
+  certificate for `[today 00:00, cut)`. No validator, index or schema
+  changes.
+- **Replacement without gaps.** Publishing any quota certificate removes, in
+  the same transaction, every intraday certificate whose interval it covers
+  entirely: the next cut removes the previous one, and the tail for a day
+  removes that day's last cut. The replacement covers what it removes, so
+  `select_covering_proofs` never meets a gap or an orphaned cut. Each open day
+  keeps at most one cut, so a seller has one (two between midnight and the
+  tail), renewed like any certificate. Runs and windows stay.
+- **Invalidation.** A cut is an ordinary certificate: a claim or order
+  mutation inside it carries it over or invalidates it (`claim_mutation`,
+  `order_mutation`) exactly like any other certificate. A stale cut stays
+  unreadable until the next cut replaces it, so after an unprovable change a
+  range ending today is unavailable for up to about an hour.
+
+**Reader.** A fully certified range is served as before. Otherwise a
+certificate seller's range is served up to the end of its certified coverage
+when both hold:
+
+- it ends at most at tomorrow 00:00 UTC, the end of the day in progress, and
+- that coverage, contiguous from `fecha_inicio`, reaches a cut at most three
+  hours old (`DEVOLUCIONES_INTRADAY_MAX_CUT_AGE`). A cut normally ages 30 to
+  90 minutes; three hours allows one missed pass and the cycle's delays.
+
+The sheet's headers and rows do not change. The API response says where the
+data stops:
+
+```json
+"coverage": {"exact": true, "scope": "certified_until_cut",
+  "date_from": "2026-10-06T00:00:00+00:00", "date_to": "2026-10-13T00:00:00+00:00",
+  "covered_until": "2026-10-12T14:00:00+00:00", "reason": "current_day_in_progress"}
+```
+
+A range ending after tomorrow 00:00, a cut older than three hours, or nothing
+certified at `fecha_inicio` stays `DATA_UNAVAILABLE`. Shortly after midnight,
+before the tail closes the previous day, a range ending that day is served up
+to its 23:00 cut.
+
+**Cost, from the code.** A pass lists the day's claims twice for the snapshot
+and twice for the revalidation, and fetches the claim detail and v2 returns of
+every listed claim that is not a closed cancellation, plus the order of each
+return: `2 × (2 × ⌈I/100⌉ + 2 × H + U)` calls, with at least one search page,
+`I` claims listed today, `H` of them hydrated and `U` distinct orders with a
+return. A pass with no claims costs 4 calls; with one return, 10 (asserted in
+`tests/integration/test_devoluciones_intraday.py`). A day has 23 cuts, so a
+seller without claims costs 92 calls a day, and each return adds 6 calls to
+every later cut: about 160 to 180 a day for the pilot's roughly one listed
+claim a day.
+The tail's per-window limits (104 per pass, 208 per window) still bound any
+pass, and return reads keep their 1.75 s spacing.
+
+**Capacity.** About three windows an hour serve about three sellers' hourly
+cuts. With N certificate sellers each gets a cut about every N/3 hours; past
+about six sellers a cut can pass three hours and ranges ending today are
+unavailable for part of the day. A seller catching up, or the nightly tails,
+pause intraday passes for those cycles. Revisit `devoluciones_windows_per_cycle`
+only if `elapsed_seconds` stays well under the interval.
+
+**Known limit.** The executor fails a window with a listed claim it cannot
+classify, such as a cancellation that is still open (`cancel_purchase`, not
+`closed`): `ClaimInventoryError`. The tail meets such a claim once a day; an
+intraday pass sees claims within hours of their creation, so every cut can
+fail while one is open, and a range ending today becomes unavailable three
+hours after the last good cut.
+
+`ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED=false` is the emergency switch: no new
+cut is acquired, the last one is served while it is under three hours old,
+and the tail replaces it at night. Intraday passes also need
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true` and history on link off.
+
+Logs: `zelerdata.devoluciones_intraday_admitted` (seller, run, start and
+cut) once per cut; a window failure as the tail's
+`zelerdata.devoluciones_tail_failed` with that run's id; an admission or lease
+failure as `zelerdata.devoluciones_intraday_failed` with `error_type`.
+`zelerdata.refresh_cycle_completed` counts the window in
+`devoluciones_windows`.
+
+How to verify (read-only, inside `sheets-worker`): the coverage status of
+"Initial coverage for a new seller" lists, besides closed days, one interval
+ending at the latest cut (`date_to` on a whole hour of today, `readable`).
+Between midnight and the tail, `unacquired_gaps` shows the previous day's last
+hour; the tail's certificate removes it.
+
 #### Renewing a settled marker
 
 The quota finalize publishes the `devoluciones` marker once, when the last window
@@ -506,6 +622,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_RENEWAL_REFRESH_HOURS` | `12` | Renewal slot length, at most 12. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | DEVOLUCIONES source work from this loop, one window per cycle for all sellers: advance an already-authorized run; with history on link off, also admit the ordinary daily tail and the initial window of a new seller. |
 | `ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED` | on | Initial window and certificate activation for an eligible seller without coverage. `false` is the emergency switch. |
+| `ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED` | on | Hourly cut of the day in progress for every certificate seller, only with windows the tail and initial coverage leave. `false` is the emergency switch. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
 | `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
@@ -531,9 +648,10 @@ queries, which is the split agreed after a production write aborted with
   the worker and can be disabled without a deploy by setting the flag.
 - DEVOLUCIONES stays inside an explicit authorization boundary: the loop only
   advances operator or pilot runs, plus, with history on link off, one bounded
-  forward tail per day from existing certified coverage and one initial window
-  for an eligible seller without coverage, at most one window per cycle in
-  total. Certificate mode is activated only from a completed window's proof.
+  forward tail per day from existing certified coverage, one initial window
+  for an eligible seller without coverage, and one cut per hour of the day in
+  progress, at most one window per cycle in total. Certificate mode is
+  activated only from a completed window's proof.
   The legacy systemd timer is superseded.
 - The DLQ archive stays evidence-based: a message is only removed when a
   reconciled marker already covers its window (questions only) or it is past
@@ -776,7 +894,8 @@ needed a limit:
   near 800 s at most, under the 900 s interval. Sellers take turns, so N
   sellers in steady state need N windows a day out of about 80 cycles, and K
   sellers catching up at once (9 windows each) share the slot, about K times
-  slower each. Revisit the cap (`devoluciones_windows_per_cycle` on the
+  slower each. Intraday cuts use the cycles left over: 23 a day per seller,
+  so about three sellers get every hourly cut. Revisit the cap (`devoluciones_windows_per_cycle` on the
   supervisor) only if `D` stays far under the interval and many sellers wait.
 
 Revisit capacity when:

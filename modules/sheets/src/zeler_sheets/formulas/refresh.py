@@ -852,6 +852,7 @@ class ZelerDataRefreshSupervisor:
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
         devoluciones_advancer: Callable[[str], Awaitable[bool]] | None = None,
+        devoluciones_intraday_advancer: Callable[[str], Awaitable[bool]] | None = None,
         devoluciones_windows_per_cycle: int = 1,
         precalculated_warmer: Callable[[str], Awaitable[int]] | None = None,
         dlq_archiver: Callable[[], Awaitable[Any]] | None = None,
@@ -889,6 +890,10 @@ class ZelerDataRefreshSupervisor:
         self._devoluciones_advancer = devoluciones_advancer
         self._devoluciones_windows = devoluciones_windows_per_cycle
         self._devoluciones_last_served: str | None = None
+        # The day in progress is acquired up to an hourly cut, but only with a
+        # window no tail, initial window or operator run wanted this cycle.
+        self._devoluciones_intraday_advancer = devoluciones_intraday_advancer
+        self._devoluciones_intraday_last_served: str | None = None
         self._precalculated_warmer = precalculated_warmer
         self._dlq_archiver = dlq_archiver
         self._freshness_alarm_reporter = freshness_alarm_reporter
@@ -1126,29 +1131,62 @@ class ZelerDataRefreshSupervisor:
         catching up) cannot hold the pilot's daily tail or another seller's
         initial window for more than one round. A failed attempt counts as a
         window: it may already have spent its source calls.
+
+        Intraday passes take turns separately and only for windows the regular
+        pass left, so they never delay a tail or an initial window.
         """
-        if self._devoluciones_advancer is None or not sellers:
+        if not sellers:
             return 0
+        windows = 0
+        if self._devoluciones_advancer is not None:
+            windows, self._devoluciones_last_served = await self._devoluciones_turns(
+                sellers,
+                self._devoluciones_advancer,
+                last_served=self._devoluciones_last_served,
+                limit=self._devoluciones_windows,
+                failure_event="zelerdata.devoluciones_run_failed",
+            )
+        if (
+            self._devoluciones_intraday_advancer is not None
+            and windows < self._devoluciones_windows
+        ):
+            # Only the windows the regular pass left: the tail and new sellers'
+            # initial windows keep priority (one intraday cut per seller and hour).
+            intraday, self._devoluciones_intraday_last_served = await self._devoluciones_turns(
+                sellers,
+                self._devoluciones_intraday_advancer,
+                last_served=self._devoluciones_intraday_last_served,
+                limit=self._devoluciones_windows - windows,
+                failure_event="zelerdata.devoluciones_intraday_failed",
+            )
+            windows += intraday
+        return windows
+
+    async def _devoluciones_turns(
+        self,
+        sellers: Sequence[str],
+        advancer: Callable[[str], Awaitable[bool]],
+        *,
+        last_served: str | None,
+        limit: int,
+        failure_event: str,
+    ) -> tuple[int, str | None]:
         order = list(sellers)
-        if self._devoluciones_last_served in order:
-            start = order.index(self._devoluciones_last_served) + 1
+        if last_served in order:
+            start = order.index(last_served) + 1
             order = order[start:] + order[:start]
         windows = 0
         for seller_id in order:
-            if windows >= self._devoluciones_windows or self._stop_event.is_set():
+            if windows >= limit or self._stop_event.is_set():
                 break
             try:
-                advanced = await self._devoluciones_advancer(seller_id)
+                advanced = await advancer(seller_id)
             except Exception as exc:  # noqa: BLE001 - one seller must not stop the others
                 # The window's own phase and source diagnostic are logged by
                 # the tail executor; this names admission and lease failures.
-                logger.warning(
-                    "zelerdata.devoluciones_run_failed",
-                    seller_id=seller_id,
-                    error_type=type(exc).__name__,
-                )
+                logger.warning(failure_event, seller_id=seller_id, error_type=type(exc).__name__)
                 advanced = True
             if advanced:
                 windows += 1
-                self._devoluciones_last_served = seller_id
-        return windows
+                last_served = seller_id
+        return windows, last_served
