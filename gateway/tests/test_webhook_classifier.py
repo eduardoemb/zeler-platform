@@ -103,6 +103,53 @@ def test_price_suggestion_classifies_to_price_suggestion_updated() -> None:
     assert classified.event_type == "price_suggestion.updated"
 
 
+def test_fbm_stock_operations_classifies_to_a_new_full_operation_event() -> None:
+    received_at = datetime(2026, 8, 29, 14, 5, tzinfo=UTC)
+    event = {
+        "_id": "notif-fbm",
+        "topic": "fbm_stock_operations",
+        "resource": "/stock/fulfillment/operations/123456789",
+        "user_id": 82453304,
+        "received_at": received_at,
+    }
+
+    classified = classify_webhook_event(event)
+    envelope = build_event_envelope(event, trace_id="trace-fbm")
+
+    assert classified.routing_key == "fbm_stock_operations.new"
+    assert classified.event_type == "fbm_stock_operations.new"
+    assert classified.idempotency_key == (
+        "fbm_stock_operations:/stock/fulfillment/operations/123456789:notif-fbm"
+    )
+    assert envelope == {
+        "event_id": "notif-fbm",
+        "event_type": "fbm_stock_operations.new",
+        "occurred_at": "2026-08-29T14:05:00Z",
+        "seller_id": 82453304,
+        "resource": "/stock/fulfillment/operations/123456789",
+        "trace_id": "trace-fbm",
+        "schema_version": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_fbm_stock_operations_publishes_to_its_routing_key_not_the_unknown_dlq() -> None:
+    publisher = RecordingPublisher()
+    event = {
+        "_id": "notif-fbm-publish",
+        "topic": "fbm_stock_operations",
+        "resource": "/stock/fulfillment/operations/987",
+        "user_id": 82453304,
+    }
+
+    await publish_webhook_event(event, publisher=publisher)
+
+    assert [call[0] for call in publisher.calls] == ["fbm_stock_operations.new"]
+    assert publisher.calls[0][2]["idempotency_key"] == (
+        "fbm_stock_operations:/stock/fulfillment/operations/987:notif-fbm-publish"
+    )
+
+
 def test_unknown_topic_routes_to_dlq_classification() -> None:
     event = {"_id": "notif-3", "topic": "unknown", "resource": "/unknown/1", "user_id": 123456789}
 

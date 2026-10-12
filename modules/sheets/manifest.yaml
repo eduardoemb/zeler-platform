@@ -6,6 +6,7 @@ subscribed_events:
   - shipments.*
   - questions.*
   - catalog_item_competition_status.*
+  - fbm_stock_operations.*
 passive_consumers:
   - queue_name: zeler.sheets.claims
     routing_keys:
@@ -32,4 +33,5 @@ allowed_meli_scopes:
   - GET /shipments/*
   - GET /questions/*
   - GET /messages/packs/*
+  - GET /stock/fulfillment/operations/[0-9]*
 health_endpoint: /health

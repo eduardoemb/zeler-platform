@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
@@ -35,6 +36,7 @@ from zeler_sheets.formulas.dispatcher import (
     FormulaExecutionResult,
     FormulaHandler,
 )
+from zeler_sheets.formulas.full_withdrawals import FullWithdrawal, pair_full_withdrawals
 from zeler_sheets.formulas.output_normalization import NA_VALUE, normalize_response_rows
 from zeler_sheets.formulas.read_models import (
     CATALOG_BUYBOX_SNAPSHOTS_READ_MODEL,
@@ -123,9 +125,11 @@ CATALOGOTIEMPO_HEADERS = [
     "TOTAL DE HORAS DISPONIBLE EN CATALOGO",
     "% DE TIEMPO GANANDO CATALOGO",
 ]
+# The legacy order, with the operation state and ID in place of the withdrawal
+# IDs Mercado Libre no longer exposes, and the delivered units appended.
 RETIROS_HEADERS = [
-    "ID PRINCIPAL RETIRO",
-    "ID SECUNDARIO RETIRO",
+    "ESTADO RETIRO",
+    "ID OPERACION",
     "CODIGO ML",
     "ID PUBLICACION",
     "SKU",
@@ -133,6 +137,7 @@ RETIROS_HEADERS = [
     "UNIDADES SOLICITADAS",
     "FECHA DE CREACION",
     "FECHA DE ENTREGA",
+    "UNIDADES ENTREGADAS",
 ]
 SEMANAS_CON_STOCK_BASE_HEADERS = ["ID PUBLICACION", "SKU", "TITULO"]
 NON_PRODUCTIVE_ORDER_STATUSES = frozenset({"cancelled", "canceled"})
@@ -140,9 +145,9 @@ CATALOGO_SALES_WINDOWS = (7, 15, 30, 60, 90, 365)
 # The legacy CATALOGO percentage covered the last 30 days. A rolling window keeps
 # the precalculated and the on-demand result independent of the seller's zone.
 CATALOGO_WINNING_TIME_WINDOW = timedelta(days=30)
-RETIROS_UNAVAILABLE_REASON = (
-    "Mercado Libre no expone el identificador del retiro de Full, "
-    "por lo que ZELERDATA_RETIROS no está disponible."
+RETIROS_NOT_OBSERVED_REASON = (
+    "Zeler aún no ha recibido ninguna notificación de operaciones Full de esta cuenta; "
+    "los retiros se registran desde la primera que llegue."
 )
 
 
@@ -599,12 +604,62 @@ class RemainingPhase4FormulaHandlers:
         )
 
     async def sheetseller_retiros(self, context: FormulaExecutionContext) -> FormulaExecutionResult:
-        # Full operations do not carry a confirmed withdrawal identifier, bundle
-        # or requested quantity, so no source can produce these rows.
-        raise FormulaDataUnavailableError(
-            context.contract.name,
-            RETIROS_UNAVAILABLE_REASON,
-            read_model=FULL_WITHDRAWALS_READ_MODEL,
+        timezone = _seller_timezone(context)
+        date_from = _local_day_start(context.args.get("fecha_inicial"), timezone)
+        date_to = _local_day_start(context.args.get("fecha_final"), timezone, days_after=1)
+        coverage_from = await self._repository.find_full_withdrawals_coverage(
+            seller_id=context.seller_id
+        )
+        if coverage_from is None:
+            # Nothing to recover: rows exist only from observed notifications.
+            raise FormulaDataUnavailableError(
+                context.contract.name,
+                RETIROS_NOT_OBSERVED_REASON,
+                read_model=FULL_WITHDRAWALS_READ_MODEL,
+            )
+        withdrawals, unmatched = pair_full_withdrawals(
+            await self._repository.find_full_withdrawal_operations(seller_id=context.seller_id)
+        )
+        selected = [row for row in withdrawals if date_from <= row.created_at < date_to]
+        inventory_ids = sorted({row.inventory_id for row in selected})
+        publications = _publications_by_inventory(
+            await self._repository.find_item_formula_rows(
+                seller_id=context.seller_id, inventory_ids=inventory_ids, sort_by="publication"
+            )
+            if inventory_ids
+            else []
+        )
+        values: list[list[Any]] = _header_row(context.args.get("encabezados"), RETIROS_HEADERS)
+        header_rows = len(values)
+        range_covered = date_from >= coverage_from
+        if not range_covered:
+            # Withdrawals before the first notification are unknown, never zero.
+            values.append(
+                [
+                    f"Sin histórico antes de {coverage_from.astimezone(timezone):%Y-%m-%d %H:%M}",
+                    *([NA_VALUE] * (len(RETIROS_HEADERS) - 1)),
+                ]
+            )
+        values.extend(
+            _withdrawal_row(row, publications.get(row.inventory_id, ()), timezone=timezone)
+            for row in selected
+        )
+        unmatched_in_range = Counter(
+            row.kind for row in unmatched if date_from <= row.created_at < date_to
+        )
+        return FormulaExecutionResult(
+            values=normalize_response_rows(values, header_rows=header_rows),
+            meta={
+                "rows_count": len(selected),
+                "columns": "full_withdrawals",
+                "coverage_basis": "observed_only",
+                "coverage_from": coverage_from.isoformat(),
+                "range_covered": range_covered,
+                "date_from": date_from.isoformat(),
+                "date_to": date_to.isoformat(),
+                "approximate_rows": sum(row.approximate for row in selected),
+                "unmatched_operations": dict(sorted(unmatched_in_range.items())),
+            },
         )
 
 
@@ -661,6 +716,48 @@ def _catalogo_row(
         catalog_shared_users(buybox),
         _sheet_optional_number(_first_value(buybox, "price_to_win", "price_to_win_amount")),
         catalog_only_competitor(buybox),
+    ]
+
+
+def _publications_by_inventory(
+    rows: Iterable[Mapping[str, Any]],
+) -> dict[str, list[Mapping[str, Any]]]:
+    publications: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        inventory_id = str(row.get("inventory_id") or "").strip()
+        if inventory_id:
+            publications.setdefault(inventory_id, []).append(row)
+    return publications
+
+
+def _withdrawal_row(
+    withdrawal: FullWithdrawal,
+    publications: Sequence[Mapping[str, Any]],
+    *,
+    timezone: tzinfo,
+) -> list[Any]:
+    # A catalog listing and its original listing can share one inventory.
+    item_ids = list(dict.fromkeys(_document_item_id(row) for row in publications))
+    skus = list(
+        dict.fromkeys(str(row["sku"]) for row in publications if _non_blank(row.get("sku")))
+    )
+    title = next(
+        (title for row in publications if _non_blank(title := _current_mapping(row).get("title"))),
+        None,
+    )
+    return [
+        withdrawal.status,
+        withdrawal.operation_id,
+        withdrawal.inventory_id,
+        ", ".join(item_id for item_id in item_ids if item_id) or NA_VALUE,
+        ", ".join(skus) or NA_VALUE,
+        title or NA_VALUE,
+        NA_VALUE if withdrawal.requested is None else withdrawal.requested,
+        withdrawal.created_at.astimezone(timezone).isoformat(),
+        withdrawal.delivered_at.astimezone(timezone).isoformat()
+        if withdrawal.delivered_at is not None
+        else NA_VALUE,
+        withdrawal.delivered,
     ]
 
 

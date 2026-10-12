@@ -27,6 +27,7 @@ CANONICAL_SHEETS_SCOPES = (
     "GET /shipments/*",
     "GET /questions/*",
     "GET /messages/packs/*",
+    "GET /stock/fulfillment/operations/[0-9]*",
 )
 CANONICAL_SHEETS_ROUTING_KEYS = (
     "items.*",
@@ -34,6 +35,7 @@ CANONICAL_SHEETS_ROUTING_KEYS = (
     "shipments.*",
     "questions.*",
     "catalog_item_competition_status.*",
+    "fbm_stock_operations.*",
     "claims.updated",
 )
 ROLLBACK_COMPATIBLE_ALLOWED_TREE = (
@@ -60,7 +62,7 @@ _IMAGE_REF_PATTERN = re.compile(
     r"(?P<repository>[a-z0-9.-]+/[a-z0-9._/-]+)@sha256:(?P<digest>[0-9a-f]{64})"
 )
 _CANONICAL_FULL_REGISTRATION_FINGERPRINT = (
-    "453bf9eb6014d8055fe6cd372e98b1e2d0190a0241b519417fe5f5397e2c1525"
+    "2dbf850bff63af7daf22e0fa0698e39e246fbb968c218c292a080dce61b89b5a"
 )
 
 

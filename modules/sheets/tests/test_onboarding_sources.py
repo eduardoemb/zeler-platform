@@ -440,7 +440,7 @@ async def test_growing_pack_inventory_cannot_shift_frozen_page_cursor() -> None:
 
 @pytest.mark.asyncio
 async def test_full_search_is_bounded_to_documented_withdrawal_types() -> None:
-    from zeler_sheets.onboarding_sources import WITHDRAWAL_TYPES
+    from zeler_sheets.full_operations import WITHDRAWAL_TYPES
 
     gateway = Gateway([{"paging": {"scroll": None}, "results": []}] * len(WITHDRAWAL_TYPES))
     result = await collect_full_operations(

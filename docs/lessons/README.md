@@ -111,6 +111,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-052 | ZelerData | Give whole-fleet renewal passes one seller at a time, missed sellers first | active |
 | L-053 | ZelerData | Activate a new seller's DEVOLUCIONES from its own first window, one window per cycle for the fleet | active |
 | L-054 | ZelerData | Cover the day in progress with replaceable hourly cuts, never ahead of the tail | active |
+| L-055 | ZelerData | Backfill an unclassified notification topic from `webhook_events` before its 45-day TTL | active |
 
 ## Cloud Build and VM deployment
 
@@ -948,4 +949,27 @@ repeat failures, and promote stable knowledge to its proper operational form.
   two workers), `modules/sheets/tests/test_devoluciones_intraday.py`,
   `docs/sheets/zelerdata-refresh.md` ("Intraday coverage of the day in
   progress"). Not yet observed in production.
+- status: active
+
+### L-055 — Backfill an unclassified notification topic from `webhook_events` before its 45-day TTL
+- area: ZelerData RETIROS / gateway webhooks
+- proven path: A topic the gateway does not classify is still stored in
+  `webhook_events` (with `webhook.publish_failed`), so once it is routed,
+  re-read its resources one by one from there (`GET` by id through the gateway,
+  idempotent writes, dry run first). Gate coverage on the earliest notification
+  actually observed, never on a guessed subscription date. Pair event-only data
+  such as Full withdrawals at read time (L-047), from all of the seller's
+  operations, and report closings with no observed reservation instead of
+  forcing them onto a later one.
+- failed path: Treating the oldest stored notification as the subscription
+  start: `webhook_events` expires after 45 days (`ttl_received_at_45d`), so on
+  2026-10-12 the "first" Full notification (2026-08-29) sat at the TTL horizon
+  and may not be the first one sent; each day without the backfill loses the
+  oldest operations. Using the
+  operations search instead answers 429 after about 60 calls.
+- verification/source: `tests/operations/test_zelerdata_full_withdrawals_backfill.py`,
+  `modules/sheets/tests/test_full_operations.py`,
+  `modules/sheets/tests/test_formula_retiros.py`,
+  `docs/sheets/zelerdata-formulas.md` ("Full withdrawals"). Not yet run in
+  production.
 - status: active

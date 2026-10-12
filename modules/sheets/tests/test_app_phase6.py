@@ -63,6 +63,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "shipments.*",
         "questions.*",
         "catalog_item_competition_status.*",
+        "fbm_stock_operations.*",
         "claims.updated",
     ]
     assert manifest.owned_collections == [
@@ -87,6 +88,7 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
         "GET /shipments/*",
         "GET /questions/*",
         "GET /messages/packs/*",
+        "GET /stock/fulfillment/operations/[0-9]*",
     ]
     assert _scope_matches(
         method="GET", path="/products/CAT-PII-1", allowed_scopes=manifest.allowed_meli_scopes
@@ -98,6 +100,17 @@ def test_sheets_manifest_validates_owned_collections_and_readonly_scopes() -> No
     )
     assert _scope_matches(
         method="GET", path="/shipments/3001/costs", allowed_scopes=manifest.allowed_meli_scopes
+    )
+    # One Full operation by id is readable; the low-quota search stays closed.
+    assert _scope_matches(
+        method="GET",
+        path="/stock/fulfillment/operations/123456789",
+        allowed_scopes=manifest.allowed_meli_scopes,
+    )
+    assert not _scope_matches(
+        method="GET",
+        path="/stock/fulfillment/operations/search?seller_id=1&inventory_id=ABC",
+        allowed_scopes=manifest.allowed_meli_scopes,
     )
     assert manifest.display_identity.display_name == "ZelerData"
 
@@ -146,6 +159,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "GET /shipments/*",
             "GET /questions/*",
             "GET /messages/packs/*",
+            "GET /stock/fulfillment/operations/[0-9]*",
         ],
         "routing_keys": [
             "items.*",
@@ -153,6 +167,7 @@ async def test_sheets_startup_registers_manifest_and_health_ready() -> None:
             "shipments.*",
             "questions.*",
             "catalog_item_competition_status.*",
+            "fbm_stock_operations.*",
             "claims.updated",
         ],
         "owned_collections": [

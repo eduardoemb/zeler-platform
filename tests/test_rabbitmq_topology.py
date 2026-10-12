@@ -87,6 +87,9 @@ def test_sheets_worker_queue_contract_matches_topology_and_preflight() -> None:
 
     for routing_key in SHEETS_DEFAULT_ROUTING_KEYS:
         assert ("meli.events", SHEETS_EVENTS_QUEUE, routing_key) in bindings
+    # Full stock operations feed ZELERDATA_RETIROS through the sheets queue.
+    assert "fbm_stock_operations.*" in SHEETS_DEFAULT_ROUTING_KEYS
+    assert ("zeler.sheets.replay", SHEETS_EVENTS_QUEUE, "fbm_stock_operations.*") in bindings
 
 
 def test_topology_includes_new_queues() -> None:

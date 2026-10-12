@@ -49,7 +49,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_PRODUCTOSINVENTA` | `=ZELERDATA_PRODUCTOSINVENTA("cuenta", 30, "si")` | Products without sales for the selected day range. |
 | `ZELERDATA_PUBLICACIONES` | `=ZELERDATA_PUBLICACIONES("cuenta", "todos", "todos", "base", "", "si")` | Current publication table. Pause-duration columns use the same Zeler-observed current pause basis as `ZELERDATA_PAUSADAS`. |
 | `ZELERDATA_PUBLICACIONESDESCUIDADAS` | `=ZELERDATA_PUBLICACIONESDESCUIDADAS("cuenta", "base", "si")` | Full paused out-of-stock publications older than 10 days, using the shared Zeler-observed current pause basis from current item rows and unavailable-detail fields. |
-| `ZELERDATA_RETIROS` | `=ZELERDATA_RETIROS("cuenta", "2026-01-01", "2026-01-31", "si")` | Declared unavailable: Mercado Libre does not expose the Full withdrawal identifier, so every call answers `DATA_UNAVAILABLE` with that reason and requests no recovery. |
+| `ZELERDATA_RETIROS` | `=ZELERDATA_RETIROS("cuenta", "2026-01-01", "2026-01-31", "si")` | One row per Full withdrawal reservation created in the range (seller-zone days): `ESTADO RETIRO`, `ID OPERACION`, `CODIGO ML`, `ID PUBLICACION`, `SKU`, `TITULO`, `UNIDADES SOLICITADAS`, `FECHA DE CREACION`, `FECHA DE ENTREGA`, `UNIDADES ENTREGADAS`. Built at read time from the `fbm_stock_operations` notifications Zeler observed; a range that starts before the first observed notification begins with a `Sin histórico antes de <fecha hora>` row. See "Full withdrawals". |
 | `ZELERDATA_SEMANASCONSTOCK` | `=ZELERDATA_SEMANASCONSTOCK("cuenta", "todos", "todos", "2026-01-01", "2026-01-31", "si")` | One column per ISO week of the range (`<año> - <semana>`), per publication or variation, from the Zeler availability log: `Con stock` or `Sin stock` at the week's end, `Sin histórico antes de <fecha hora>` before the first observation, `NA` for weeks not started. See [Availability history](#availability-history-9-october-2026). |
 | `ZELERDATA_SKU` | `=ZELERDATA_SKU("cuenta")` | Unique SKU list. |
 | `ZELERDATA_STATUS` | `=ZELERDATA_STATUS("cuenta", "MLA1")` | Current publication status. |
@@ -137,6 +137,7 @@ Pause-duration outputs are not historical Mercado Libre truth unless Mercado Lib
 | `ZELERDATA_CATALOGO_COMPLETO` | `catalog_product_snapshots` from scoped item rows with `catalog_product_id`, fetched from `/products/{catalog_product_id}`. |
 | `ZELERDATA_CATALOGOBUYBOX` | `catalog_buybox_snapshots` from scoped item rows, fetched from `/items/{item_id}/price_to_win?version=v2`. |
 | `ZELERDATA_TIEMPOSTOCKACTIVO` / `ZELERDATA_SEMANASCONSTOCK` | The observed-only `item_status_states` heartbeat certifying a read at now; values come from `sheets_item_availability_transitions` and are never recovered. |
+| `ZELERDATA_RETIROS` | The observed-only `full_withdrawals` marker written by the Full notification path (source `zelerdata_fbm_stock_operations`). Without it the formula answers `DATA_UNAVAILABLE` and requests no recovery. Its `date_from` is where coverage starts; it is not a heartbeat. |
 
 ### DEVOLUCIONES joint readiness
 
@@ -360,6 +361,76 @@ Rollout: apply the `sheets_item_availability_transitions` validator and index
 `sheets-worker` images. Coverage starts when the new worker first observes each
 publication; `infra/operations/zelerdata_time_metrics_probe.py` reports the
 log's rows, publications and date range.
+
+## Full withdrawals (12 October 2026)
+
+`ZELERDATA_RETIROS` reads Full stock operations that Mercado Libre notifies
+with the `fbm_stock_operations` topic. Mercado Libre exposes no withdrawal
+identifier: `external_references` comes empty for withdrawal operations and the
+official documentation only defines `shipment_id`. So the legacy
+`ID PRINCIPAL RETIRO` / `ID SECUNDARIO RETIRO` cannot be rebuilt; the user chose
+the operation state and the reservation's operation ID instead, and added
+`UNIDADES ENTREGADAS` at the end.
+
+- **Path.** The gateway classifies the topic as `fbm_stock_operations.new`; the
+  `zeler.sheets.events` queue binds `fbm_stock_operations.*`. The worker reads
+  `GET /stock/fulfillment/operations/<id>` through the gateway (scope
+  `GET /stock/fulfillment/operations/[0-9]*`, which keeps the low-quota
+  `/search` closed) and stores the withdrawal operations in
+  `sheets_full_operations`. Other types (sales, adjustments, quarantine) are not
+  stored. An operation whose `seller_id` is not the notified seller is ignored
+  and logged (`sheets.full_operation.seller_mismatch`).
+- **One row per reservation.** `WITHDRAWAL_RESERVATION` opens a row with the
+  units in `detail.not_available_detail` of status `withdrawal`
+  (`UNIDADES SOLICITADAS`) and its `date_created` (`FECHA DE CREACION`).
+- **Pairing.** Deliveries, cancelations (total or partial), removals (abandoned
+  withdrawal) and discards of the same inventory are matched to a reservation
+  created before them that still has open units: first the oldest one whose open
+  units equal the closing quantity, otherwise in creation order (FIFO),
+  splitting units. `FECHA DE ENTREGA` is the last matched delivery.
+- **State.** `Reservado` while units stay open (including after a partial
+  cancelation); `Entregado` when no units are open and some were delivered;
+  otherwise the last closing: `Cancelado`, `Descartado` or `Abandonado`.
+- **Limitations.** With two or more open reservations of one inventory the match
+  is approximate (`approximate_rows` in the metadata). A closing that needs more
+  units than the observed open reservations hold belongs to a reservation Zeler
+  never saw, typically one created before the first notification; it does not
+  create a row or consume a later reservation. It is counted in
+  `unmatched_operations` by type (operations created inside the range). A row
+  per closing would invent a reservation the platform never observed. Near the
+  coverage start, a closing of such an unseen reservation that fits the open
+  units of a later observed one is still taken for it; nothing can tell them
+  apart.
+- **Publication columns.** `CODIGO ML` is the operation's `inventory_id`;
+  `ID PUBLICACION`, `SKU` and `TITULO` come from the seller's own
+  `sheets_item_formula_rows` with that inventory. A catalog listing and its
+  original listing can share one inventory, so IDs and SKUs are joined with
+  `, `. An inventory with no row of the seller shows `NA`.
+- **Coverage.** Every notification of the seller, of any type, extends the
+  observed-only `full_withdrawals` marker; its `date_from` is the earliest
+  operation observed. A range that starts before it gets a first row
+  `Sin histórico antes de <fecha hora>` (seller zone) and `range_covered=false`;
+  withdrawals from before that instant are unknown, not zero. The stream
+  changes only when an operation happens, so silence cannot be told apart from
+  a stopped pipeline; `webhook_events` keeps every notification (even those the
+  gateway could not publish) for 45 days and is the recovery log.
+- **Backfill.** `infra/operations/zelerdata_full_withdrawals_backfill.py` re-reads
+  the operations of the notifications stored in `webhook_events`, one GET per
+  operation, never the search (it answers 429 after about 60 calls). Dry run is
+  the default and makes no gateway call; `--execute --confirm-production-write`
+  writes; reruns are idempotent; a 429 stops the run. Its `summary` (rows by
+  state, unmatched closings by type, coverage start) is also the read-only check
+  of what RETIROS serves.
+
+Rollout, in this order (L-015): `sheets-api` (registers the new scope and
+routing key in `module_registry`), `sheets-worker` (binds
+`fbm_stock_operations.*` on start and handles the event), then the gateway
+(starts publishing). The publish is mandatory, so before the worker binding it
+fails as before and the notification stays in `webhook_events`. Then run the
+backfill dry run and, with authorization, the execution. `webhook_events`
+expires after 45 days: notifications of 2026-08-29 disappear on 2026-10-13, so
+every day before the backfill moves the coverage start later. Rolling back:
+gateway first, then worker and API.
 
 ## Deferred formulas
 

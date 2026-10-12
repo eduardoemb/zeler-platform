@@ -33,6 +33,13 @@ desde 2026-09-09 y ninguna fuente de retiros. Con eso:
 - `RETIROS` queda declarada no disponible con el motivo "Mercado Libre no expone
   el identificador del retiro de Full".
 
+## Avance 2026-10-12
+
+`RETIROS` deja de estar declarada no disponible: se construye desde las
+notificaciones `fbm_stock_operations`, una fila por reserva emparejada al leer con
+sus entregas, cancelaciones, remociones y descartes. Detalle, limitaciones y
+orden de despliegue en `zelerdata-formulas.md` ("Full withdrawals").
+
 ## Resumen y recomendación
 
 | Fórmula | Ruta mínima | Tamaño | ¿SDD? |

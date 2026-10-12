@@ -19,6 +19,7 @@ QUEUE_BINDINGS = {
         "shipments.*",
         "questions.*",
         "catalog_item_competition_status.*",
+        "fbm_stock_operations.*",
     ],
     "zeler.sheets.user_products": ["user_products.*"],
     "zeler.autoreply.events": ["questions.new", "messages.new"],
@@ -33,6 +34,7 @@ SHEETS_REPLAY_QUEUE_BINDINGS = {
         "shipments.*",
         "questions.*",
         "catalog_item_competition_status.*",
+        "fbm_stock_operations.*",
     ],
 }
 

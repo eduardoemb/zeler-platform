@@ -28,17 +28,8 @@ from pymongo.errors import DuplicateKeyError
 
 from zeler_platform_core.models import Message
 from zeler_sheets.formulas.pacing import HistoryPolicyWaitError, recovery_fetch_resource
+from zeler_sheets.full_operations import FULL_OPERATIONS_COLLECTION, WITHDRAWAL_TYPES
 
-FULL_OPERATIONS_COLLECTION = "sheets_full_operations"
-WITHDRAWAL_TYPES = frozenset(
-    {
-        "WITHDRAWAL_RESERVATION",
-        "WITHDRAWAL_CANCELATION",
-        "WITHDRAWAL_DELIVERY",
-        "WITHDRAWAL_REMOVAL",
-        "WITHDRAWAL_DISCARDED",
-    }
-)
 _MAX_PENDING = 128
 _FULL_SEARCH_TYPES = (
     "WITHDRAWAL_RESERVATION",

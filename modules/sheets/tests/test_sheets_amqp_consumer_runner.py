@@ -137,6 +137,8 @@ async def test_sheets_runner_declares_queue_with_dlx_and_binds_manifest_routing_
         (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "questions.*"),
         (channel.exchanges["meli.events"], "catalog_item_competition_status.*"),
         (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "catalog_item_competition_status.*"),
+        (channel.exchanges["meli.events"], "fbm_stock_operations.*"),
+        (channel.exchanges[SHEETS_REPLAY_EXCHANGE], "fbm_stock_operations.*"),
     ]
     assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__self__ is runner
     assert channel.queues[SHEETS_EVENTS_QUEUE].consumer.__func__ is runner.handle_message.__func__
@@ -192,6 +194,7 @@ def test_sheets_manifest_registers_claims_as_externally_bound_passive_consumer()
         "shipments.*",
         "questions.*",
         "catalog_item_competition_status.*",
+        "fbm_stock_operations.*",
         "claims.updated",
     ]
     assert [consumer.model_dump() for consumer in manifest.passive_consumers] == [

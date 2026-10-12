@@ -18,6 +18,8 @@ TOPIC_ROUTING_KEYS = {
     "user-products-families": "user_products.families_updated",
     "stock-locations": "stock_locations.updated",
     "price_suggestion": "price_suggestion.updated",
+    # Full stock operations are created, never updated: one notification each.
+    "fbm_stock_operations": "fbm_stock_operations.new",
 }
 
 

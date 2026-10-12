@@ -26,6 +26,7 @@ from infra.deploy.sheets_rollback import (
     verify_runtime_binding,
 )
 
+from zeler_gateway.proxy.router import _scope_matches
 from zeler_platform_core.runtime.manifest import validate_manifest
 from zeler_platform_core.runtime.registration import (
     module_registration_document,
@@ -932,8 +933,13 @@ def test_provenance_full_registration_fingerprint_tracks_canonical_manifest() ->
     manifest = validate_manifest(ROOT / "modules" / "sheets" / "manifest.yaml")
     assert tuple(manifest.allowed_meli_scopes) == CANONICAL_SHEETS_SCOPES
     assert tuple(manifest.routing_keys) == CANONICAL_SHEETS_ROUTING_KEYS
-    assert len(CANONICAL_SHEETS_SCOPES) == 14
+    assert len(CANONICAL_SHEETS_SCOPES) == 15
     assert "GET /stock/fulfillment/operations/search" not in CANONICAL_SHEETS_SCOPES
+    assert not _scope_matches(
+        method="GET",
+        path="/stock/fulfillment/operations/search?seller_id=1",
+        allowed_scopes=list(CANONICAL_SHEETS_SCOPES),
+    )
     assert canonical_sheets_registration_fingerprint() == module_registration_fingerprint(
         module_registration_document(manifest)
     )
@@ -1030,8 +1036,8 @@ def _runtime_probe() -> dict[str, Any]:
         "entrypoint_import": True,
         "module_id": "sheets",
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 14,
-        "routing_key_count": 6,
+        "scope_count": 15,
+        "routing_key_count": 7,
     }
 
 
@@ -1241,8 +1247,8 @@ fi
         "image_id": image_id,
         "source_commit": source_commit,
         "registry_fingerprint": canonical_sheets_registration_fingerprint(),
-        "scope_count": 14,
-        "routing_key_count": 6,
+        "scope_count": 15,
+        "routing_key_count": 7,
     }
     env = {
         **os.environ,
@@ -1472,8 +1478,8 @@ def test_deploy_wrapper_validates_sanitized_immutable_rollback_evidence(
         "Sheets rollback attestation passed: exact registration contract verified."
         in completed.stdout
     )
-    assert proof["scope_count"] == 14
-    assert proof["routing_key_count"] == 6
+    assert proof["scope_count"] == 15
+    assert proof["routing_key_count"] == 7
     assert "12 scopes" not in completed.stdout
     assert "Artifact Registry and Cloud Build provenance: verified" in completed.stdout
     assert "MONGO_URI" not in completed.stdout

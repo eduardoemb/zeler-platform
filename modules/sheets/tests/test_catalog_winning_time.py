@@ -22,7 +22,6 @@ from zeler_sheets.formulas.catalog_winning_time import (
     catalog_winning_time_cells,
 )
 from zeler_sheets.formulas.dispatcher import (
-    FormulaDataUnavailableError,
     FormulaDispatcher,
     FormulaExecutionContext,
 )
@@ -30,7 +29,6 @@ from zeler_sheets.formulas.handlers_remaining_phase4 import (
     build_remaining_phase4_formula_handlers,
 )
 from zeler_sheets.formulas.read_models import (
-    FULL_WITHDRAWALS_READ_MODEL,
     FormulaReadModelRepository,
 )
 from zeler_sheets.formulas.registry import FormulaRegistry
@@ -283,34 +281,6 @@ async def test_catalogotiempo_selected_publications_keep_order_and_report_missin
         ["MLM8", "NA", "NA", *(["Sin histórico de catálogo"] * 3)],
         ["MLM1", "NA", "NA", 0, 48, 0],
     ]
-
-
-@pytest.mark.asyncio
-async def test_retiros_is_declared_unavailable_without_reading_withdrawals() -> None:
-    class UnreadDb:
-        def __getitem__(self, name: str) -> Any:
-            return _ExplodingCollection(name)
-
-    with pytest.raises(FormulaDataUnavailableError) as error:
-        await _dispatcher(UnreadDb(), START).execute(
-            _context(
-                "ZELERDATA_RETIROS",
-                {"fecha_inicial": "2026-09-01", "fecha_final": "2026-09-30"},
-            )
-        )
-
-    assert error.value.read_model == FULL_WITHDRAWALS_READ_MODEL
-    assert "Mercado Libre no expone el identificador del retiro" in error.value.message
-    assert "no está disponible" in error.value.message
-    assert "freshness" not in error.value.message
-
-
-class _ExplodingCollection:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __getattr__(self, attribute: str) -> Any:
-        raise AssertionError(f"{self.name}.{attribute} must not be read")
 
 
 @pytest.mark.asyncio

@@ -185,17 +185,18 @@
     },
     "ZELERDATA_RETIROS": {
       "legacy_source": "sheetsellerappindividual/addon/Publications.gs:SHEETSELLER_RETIROS",
-      "compatibility_note": "Full withdrawal operation rows from local fulfillment withdrawal read model.",
+      "compatibility_note": "One row per Full withdrawal reservation, paired at read time with its closing operations from notified sheets_full_operations; Mercado Libre exposes no withdrawal identifier, so the operation state and ID replace the legacy withdrawal IDs.",
       "columns": [
-        {"name": "ID PRINCIPAL RETIRO", "source": "sheets_full_withdrawals.withdrawal_id", "status": "mvp"},
-        {"name": "ID SECUNDARIO RETIRO", "source": "sheets_full_withdrawals.withdrawal_detail_id", "status": "mvp"},
-        {"name": "CODIGO ML", "source": "sheets_full_withdrawals.inventory_id", "status": "mvp"},
-        {"name": "ID PUBLICACION", "source": "sheets_full_withdrawals.item_id", "status": "mvp"},
-        {"name": "SKU", "source": "sheets_full_withdrawals.sku", "status": "mvp"},
-        {"name": "TITULO", "source": "sheets_full_withdrawals.title", "status": "mvp"},
-        {"name": "UNIDADES SOLICITADAS", "source": "sheets_full_withdrawals.requested_quantity", "status": "mvp"},
-        {"name": "FECHA DE CREACION", "source": "sheets_full_withdrawals.created_at", "status": "mvp"},
-        {"name": "FECHA DE ENTREGA", "source": "sheets_full_withdrawals.delivered_at", "status": "mvp"}
+        {"name": "ESTADO RETIRO", "source": "sheets_full_operations.type (paired reservation and closings)", "status": "mvp"},
+        {"name": "ID OPERACION", "source": "sheets_full_operations.operation_id (reservation)", "status": "mvp"},
+        {"name": "CODIGO ML", "source": "sheets_full_operations.inventory_id", "status": "mvp"},
+        {"name": "ID PUBLICACION", "source": "sheets_item_formula_rows.item_id (by inventory_id)", "status": "mvp"},
+        {"name": "SKU", "source": "sheets_item_formula_rows.sku (by inventory_id)", "status": "mvp"},
+        {"name": "TITULO", "source": "sheets_item_formula_rows.current.title (by inventory_id)", "status": "mvp"},
+        {"name": "UNIDADES SOLICITADAS", "source": "sheets_full_operations.detail.not_available_detail[status=withdrawal].quantity (reservation)", "status": "mvp"},
+        {"name": "FECHA DE CREACION", "source": "sheets_full_operations.date_created (reservation)", "status": "mvp"},
+        {"name": "FECHA DE ENTREGA", "source": "sheets_full_operations.date_created (last paired delivery)", "status": "mvp"},
+        {"name": "UNIDADES ENTREGADAS", "source": "sheets_full_operations.detail.not_available_detail[status=withdrawal].quantity (paired deliveries)", "status": "mvp"}
       ]
     },
     "ZELERDATA_CALIDAD": {

@@ -22,6 +22,11 @@ from zeler_sheets.formulas.pricing import acquired_current_price
 from zeler_sheets.formulas.recovery import ItemInventoryRecoveryRequest
 from zeler_sheets.formulas.refresh import MARKER_VALIDITY
 from zeler_sheets.formulas.schemas import FormulaContract
+from zeler_sheets.full_operations import (
+    FULL_OPERATIONS_COLLECTION,
+    FULL_WITHDRAWALS_MARKER_SOURCE,
+    WITHDRAWAL_TYPES,
+)
 from zeler_sheets.item_projection import item_source_fingerprint
 from zeler_sheets.unit_costs import UnitCostLookup, resolve_unit_cost
 
@@ -1146,6 +1151,42 @@ class FormulaReadModelRepository:
             [("created_at", 1), ("withdrawal_id", 1), ("withdrawal_detail_id", 1), ("_id", 1)]
         )
         return cast("list[dict[str, Any]]", await cursor.to_list(length=limit))
+
+    async def find_full_withdrawal_operations(self, *, seller_id: str) -> list[dict[str, Any]]:
+        """Every stored withdrawal operation of the seller, oldest first.
+
+        Pairing needs earlier reservations and later closings of each
+        inventory, so the read is not limited to the requested range.
+        """
+        cursor = (
+            self._db[FULL_OPERATIONS_COLLECTION]
+            .find(
+                {"seller_id": seller_id, "type": {"$in": sorted(WITHDRAWAL_TYPES)}},
+                {
+                    "_id": 0,
+                    "operation_id": 1,
+                    "inventory_id": 1,
+                    "type": 1,
+                    "date_created": 1,
+                    "detail": 1,
+                },
+            )
+            .sort([("date_created", 1), ("operation_id", 1)])
+        )
+        return cast("list[dict[str, Any]]", await cursor.to_list(length=None))
+
+    async def find_full_withdrawals_coverage(self, *, seller_id: str) -> datetime | None:
+        """When the seller's Full notifications started being observed, if ever."""
+        marker = await self._read_model_freshness.find_one(
+            {
+                "_id": read_model_freshness_id(seller_id, FULL_WITHDRAWALS_READ_MODEL),
+                "seller_id": seller_id,
+                "read_model": FULL_WITHDRAWALS_READ_MODEL,
+                "source": FULL_WITHDRAWALS_MARKER_SOURCE,
+                "coverage_basis": "observed_only",
+            }
+        )
+        return _safe_utc_datetime(marker.get("date_from")) if marker else None
 
     async def find_shipment_receiver_addresses(
         self,

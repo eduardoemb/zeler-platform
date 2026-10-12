@@ -106,6 +106,7 @@ from zeler_sheets.formulas.refresh import (
     refresh_sellers,
 )
 from zeler_sheets.formulas.seller_scope import EligibleSellerGate, seller_gate_for
+from zeler_sheets.full_operations import FBM_STOCK_OPERATIONS_EVENT_TYPE, acquire_full_operation
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
@@ -151,6 +152,7 @@ SHEETS_DEFAULT_ROUTING_KEYS = (
     "shipments.*",
     "questions.*",
     "catalog_item_competition_status.*",
+    "fbm_stock_operations.*",
 )
 MISSING_RABBITMQ_URL_MESSAGE = "error: RABBITMQ_URL is required"
 MISSING_MONGO_URI_MESSAGE = "error: MONGO_URI is required"
@@ -1221,6 +1223,26 @@ class SheetsEventHandler:
         if handle is None:
             return "duplicate"
         try:
+            if event.event_type == FBM_STOCK_OPERATIONS_EVENT_TYPE:
+                # A Full operation read is ordinary work, never history budget.
+                outcome = await acquire_full_operation(
+                    db=self._db,
+                    gateway=self._gateway_client,
+                    seller_id=str(event.seller_id),
+                    resource=event.resource,
+                    now=datetime.now(UTC),
+                )
+                await self._complete_claim(handle, processing_key)
+                if outcome == "seller_mismatch":
+                    # Permanent: retrying cannot make another seller's operation ours.
+                    logger.warning(
+                        "sheets.full_operation.seller_mismatch",
+                        event_id=event.event_id,
+                        seller_id=event.seller_id,
+                    )
+                    return "ignored"
+                return "observed"
+
             gateway = await self._gateway_for_event(event, handle, job_identity=job_identity)
             if event.event_type == "catalog_item_competition_status.updated":
                 await acquire_catalog_event(

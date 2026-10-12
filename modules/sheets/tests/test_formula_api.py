@@ -1375,7 +1375,9 @@ async def test_execute_questions_returns_data_unavailable_without_freshness_mark
 
 
 @pytest.mark.asyncio
-async def test_execute_retiros_is_declared_unavailable_with_a_clear_reason() -> None:
+async def test_execute_retiros_without_full_notifications_is_unavailable_with_a_clear_reason() -> (
+    None
+):
     now = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
     app, _db, token = await _app_with_token(now=now)
 
@@ -1401,8 +1403,9 @@ async def test_execute_retiros_is_declared_unavailable_with_a_clear_reason() -> 
     assert body["ok"] is False
     assert body["error"]["code"] == "DATA_UNAVAILABLE"
     assert body["error"]["message"] == (
-        "ZELERDATA_RETIROS data is not available yet: Mercado Libre no expone el "
-        "identificador del retiro de Full, por lo que ZELERDATA_RETIROS no está disponible."
+        "ZELERDATA_RETIROS data is not available yet: Zeler aún no ha recibido ninguna "
+        "notificación de operaciones Full de esta cuenta; los retiros se registran desde "
+        "la primera que llegue."
     )
     assert body["values"] == [[f"DATA_UNAVAILABLE: {body['error']['message']}"]]
 

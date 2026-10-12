@@ -153,5 +153,6 @@ async def test_collected_stock_operations_cannot_unlock_normal_retiros_handler(
     with pytest.raises(FormulaDataUnavailableError, match="ZELERDATA_RETIROS") as error:
         await dispatcher.execute(context)
     assert error.value.read_model == FULL_WITHDRAWALS_READ_MODEL
-    assert "no expone el identificador del retiro" in error.value.message
+    # Search-collected operations carry no observed notification coverage.
+    assert "notificación" in error.value.message
     assert await full_db.sheets_full_withdrawals.count_documents({}) == 0

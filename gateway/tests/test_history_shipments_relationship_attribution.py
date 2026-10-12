@@ -117,7 +117,7 @@ def setup(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["initial", "maintenance"])
 async def test_h1_relationship_reserves_only_one_existing_shipment_credit(phase: str) -> None:
-    # Verify the existing public contract rather than inventing a fifteenth scope.
+    # Verify the existing public contract rather than inventing another scope.
     seed = json.loads(
         (
             Path(__file__).parents[2] / "infra/mongo/seeds/module_registry.admin_clients.json"
@@ -125,9 +125,12 @@ async def test_h1_relationship_reserves_only_one_existing_shipment_credit(phase:
     )
     sheets = next(row for row in seed["documents"] if row["_id"] == "sheets")
     scopes = sheets["allowed_meli_scopes"]
-    assert len(scopes) == 14 and "GET /shipments/*" in scopes
-    assert not any("fulfillment/operations" in scope for scope in scopes)
-    assert len(sheets["routing_keys"]) == 6
+    assert len(scopes) == 15 and "GET /shipments/*" in scopes
+    # Single Full operations are readable for RETIROS; the search never is.
+    assert not proxy._scope_matches(
+        method="GET", path="/stock/fulfillment/operations/search", allowed_scopes=scopes
+    )
+    assert len(sheets["routing_keys"]) == 7
     assert proxy._scope_matches(method="GET", path="/shipments/1/orders", allowed_scopes=scopes)
     plans, sends, forward = setup(phase=phase)
     before = copy.deepcopy(plans.row)

@@ -178,7 +178,7 @@ async def test_registration_upserts_module_registry_doc() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_14_6() -> None:
+async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_15_7() -> None:
     root = Path(__file__).resolve().parents[2]
     manifest = validate_manifest(root / "modules" / "sheets" / "manifest.yaml")
     seed = json.loads(
@@ -205,18 +205,20 @@ async def test_sheets_registration_converges_seed_startup_and_restart_to_exact_1
         "shipments.*",
         "questions.*",
         "catalog_item_competition_status.*",
+        "fbm_stock_operations.*",
         "claims.updated",
     ]
-    assert len(manifest.allowed_meli_scopes) == 14
+    assert len(manifest.allowed_meli_scopes) == 15
     assert "GET /messages/packs/*" in manifest.allowed_meli_scopes
+    assert "GET /stock/fulfillment/operations/[0-9]*" in manifest.allowed_meli_scopes
     assert "GET /stock/fulfillment/operations/search" not in manifest.allowed_meli_scopes
     assert "GET /item/*/performance" in manifest.allowed_meli_scopes
     assert "GET /user-product/*/performance" in manifest.allowed_meli_scopes
     assert first_start == crash_restart
     assert first_start["allowed_meli_scopes"] == seeded_sheets["allowed_meli_scopes"]
     assert first_start["routing_keys"] == seeded_sheets["routing_keys"]
-    assert len(first_start["allowed_meli_scopes"]) == 14
-    assert len(first_start["routing_keys"]) == 6
+    assert len(first_start["allowed_meli_scopes"]) == 15
+    assert len(first_start["routing_keys"]) == 7
 
 
 def test_manifest_routing_union_is_stable_and_deduplicated() -> None:

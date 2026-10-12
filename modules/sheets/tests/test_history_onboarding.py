@@ -334,7 +334,9 @@ def test_onboarding_sources_have_explicit_scopes_in_real_client_seed() -> None:
     )
     sheet = next(doc for doc in seed["documents"] if doc["_id"] == "sheets")
     assert "GET /messages/packs/*" in sheet["allowed_meli_scopes"]
+    assert "GET /stock/fulfillment/operations/[0-9]*" in sheet["allowed_meli_scopes"]
     assert "GET /stock/fulfillment/operations/search" not in sheet["allowed_meli_scopes"]
+    assert "fbm_stock_operations.*" in sheet["routing_keys"]
 
 
 @pytest.mark.asyncio
