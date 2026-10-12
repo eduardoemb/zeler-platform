@@ -427,6 +427,33 @@ async def test_renewal_status_holds_while_any_catalog_pass_of_the_model_runs(
 
 
 @pytest.mark.asyncio
+async def test_renewal_passes_reports_the_state_of_each_existing_pass(renewal_db: Any) -> None:
+    """The cross-seller renewal turn reads pass states by their slot keys only."""
+    other = "90000001"
+    pilot = RenewalRecoveryRequest(SELLER, "catalog_buybox_snapshots", ("MLM1",), slot=SLOT).key
+    foreign = RenewalRecoveryRequest(other, "item_formula_rows", ("MLM1",), slot=SLOT).key
+    missing = RenewalRecoveryRequest(SELLER, "item_formula_rows", ("MLM1",), slot=SLOT).key
+    await renewal_db.sheets_formula_recovery_jobs.insert_many(
+        [
+            _job(pilot, "catalog_buybox_snapshots", "running", item_ids=["MLM1"], catalog_offset=0),
+            {
+                **_job(foreign, "item_formula_rows", "completed", item_ids=["MLM1"]),
+                "seller_id": other,
+            },
+            # Not a renewal pass: never part of the answer.
+            _job("on_demand", "catalog_buybox_snapshots", "pending", item_ids=["MLM2"]),
+        ]
+    )
+    queue = _queue(renewal_db)
+
+    assert await queue.renewal_passes((pilot, foreign, missing)) == {
+        pilot: "running",
+        foreign: "completed",
+    }
+    assert await queue.renewal_passes(()) == {}
+
+
+@pytest.mark.asyncio
 async def test_renewal_status_rejects_models_without_renewal(renewal_db: Any) -> None:
     with pytest.raises(ValueError, match="renewal"):
         await _queue(renewal_db).renewal_status(seller_id=SELLER, read_model="orders", slot_key="x")

@@ -119,6 +119,44 @@ async def test_report_counts_eligible_sellers_and_reasons_without_identities() -
 
 
 @pytest.mark.asyncio
+async def test_report_sizes_the_eligible_inventory_for_the_capacity_table() -> None:
+    """Capacity is sized in pilot-sized sellers, so the size of each one matters."""
+    db = _db()
+    db["sheets_formula_recovery_jobs"]._docs.extend(
+        [
+            {
+                "seller_id": "1",
+                "state": "completed",
+                "inventory_scope": True,
+                "inventory_ids": ["MLM1", "MLM2", "MLM3"],
+            },
+            {
+                "seller_id": "2",
+                "state": "completed",
+                "inventory_scope": True,
+                "inventory_ids": ["MLM4"],
+            },
+            # An ineligible seller's inventory is not part of the load.
+            {
+                "seller_id": "3",
+                "state": "completed",
+                "inventory_scope": True,
+                "inventory_ids": ["MLM5", "MLM6"],
+            },
+        ]
+    )
+
+    report = await dry_run.build_report(db, now=NOW, environ={})
+
+    assert report["eligible_inventory"] == {
+        "sellers_enumerated": 2,
+        "publications": 4,
+        "largest_seller_publications": 3,
+    }
+    assert "MLM" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
 async def test_requested_seller_reports_only_a_verdict_and_a_reason() -> None:
     db = _db()
 

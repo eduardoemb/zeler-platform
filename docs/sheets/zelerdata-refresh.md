@@ -63,7 +63,7 @@ it finishes:
 | --- | --- | --- | --- |
 | Base inventory (`item_formula_rows`) | `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED` | `ZELERDATA_INVENTORY_REFRESH_MINUTES` (10) | the previous discovery, or the end of a pass that failed before discovering |
 | Catalog products (`catalog_product_snapshots`) | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `ZELERDATA_CATALOG_REFRESH_HOURS` (3) | the end of the previous pass |
-| Renewal of buybox, quality and costs | `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` (on by default for numeric sellers) | `ZELERDATA_RENEWAL_REFRESH_HOURS` (12, at most 12) | fixed UTC slots: 01:00 and 13:00 at 12 hours |
+| Renewal of buybox, quality and costs | `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` (on by default) | `ZELERDATA_RENEWAL_REFRESH_HOURS` (12, at most 12) | fixed UTC slots: 01:00 and 13:00 at 12 hours; one seller at a time |
 
 - The inventory is checked every 30 seconds and the catalog every refresh cycle.
   The inventory sweep acquires base fields only (one discovery plus 20-ID
@@ -126,6 +126,24 @@ two passes after it was made: 6 + 12 + 2 × 1.25 hours, plus up to two
 15-minute cycles, is about 21 hours, under the readers' 24. Hence the 12-hour
 maximum. A pass that fails leaves its gaps to the next slot; formula reads
 still request them in between.
+
+**Several sellers take turns (12 October 2026).** Renewal is planned once per
+refresh cycle for the whole fleet (`ZelerDataRefreshPlanner.plan_renewals`),
+not per seller. While a seller's renewal pass of this or the previous slot is
+pending or running, only that seller may plan its other model; everyone else
+waits. When no pass is in flight, the turn goes to the first seller with
+something due: sellers whose previous slot has no pass first, then the rest in
+seller order. A seller with nothing due, or whose own on-demand pass holds the
+model, does not take the turn. Why one at a time: every pass uses the same
+`ids` lane and pacer, so N passes together would each take about N times
+longer, and so would the inventory pause of each buybox pass (L-037) and the
+age of what they renew. One at a time, each seller keeps the pilot's pass
+length and pause, and its turn lands at about the same time each slot.
+If a slot ends before every seller had its turn, the sellers it missed go
+first in the next slot, so an overloaded fleet rotates instead of starving
+the last sellers. The turn is read by slot key (`renewal_passes`), so it
+survives restarts and adds no field to the job document. With one seller,
+as with the numeric allowlist today, nothing changes.
 
 **Selection cost.** Planning reads the enumeration, then items, buybox
 snapshots and formula rows in chunks of 200 IDs with projections, keeping only
@@ -381,7 +399,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_INVENTORY_REFRESH_MINUTES` | `10` | Minutes between inventory discoveries. |
 | `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` | `false` | Spaced catalog-product sweep. |
 | `ZELERDATA_CATALOG_REFRESH_HOURS` | `3` | Hours from the end of one catalog pass to the next. |
-| `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` | on for numeric sellers, off for `all` | Renewal of buybox, quality and costs. `false` is the emergency switch; `true` also enables it in `all` mode. Mutually exclusive with BULK when set to `true`. |
+| `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` | on (off with BULK) | Renewal of buybox, quality and costs, for named sellers and in `all` mode. `false` is the emergency switch. Mutually exclusive with BULK when set to `true`. |
 | `ZELERDATA_RENEWAL_REFRESH_HOURS` | `12` | Renewal slot length, at most 12. |
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop; with history on link off, also admit the ordinary daily tail. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
@@ -426,6 +444,7 @@ queries, which is the split agreed after a production write aborted with
 uv run pytest modules/sheets/tests/test_zelerdata_refresh.py \
   modules/sheets/tests/test_zelerdata_sweep_status.py \
   modules/sheets/tests/test_zelerdata_renewal_sweep.py \
+  modules/sheets/tests/test_zelerdata_all_sellers_sweeps.py \
   modules/sheets/tests/test_zelerdata_recovery_pacing.py \
   tests/test_gce_compose_contract.py
 ```
@@ -489,10 +508,18 @@ as before.
   `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED` require an explicit numeric
   `ZELERDATA_FORMULA_RECOVERY_SELLERS`. With `all`, the worker fails at startup
   and names the flag. History on link (`ZELERDATA_HISTORY_ON_LINK_*`) keeps its
-  own allowlist and is not affected.
+  own allowlist and is not affected. A new seller therefore has the history its
+  bootstrap job acquired at link time (orders and claims for 90 days) plus what
+  refresh adds from then on (the weekly 90-day order and question window);
+  ranges older than that stay unavailable.
 - **DEVOLUCIONES.** The daily tail runs only for sellers in certificate mode,
   which is only the pilot today. A new seller without certificates gets no
-  returns acquisition.
+  returns acquisition. Its bootstrap claims stage already creates the
+  seller's coverage control in legacy mode, so neither the onboarding
+  initializer (which needs no control at all) nor the tail (which needs a
+  certificate to extend) can start it. Today the only way in is an operator
+  quota run followed by `devoluciones_certificate_migrate`; making it automatic
+  changes who may activate certificate coverage and needs its own change.
 - **Refresh without recovery.** `ZELERDATA_REFRESH_SELLERS=all` requires
   `ZELERDATA_FORMULA_RECOVERY_SELLERS=all`, otherwise startup fails. Refresh
   would otherwise queue jobs that the recovery worker never claims.
@@ -523,15 +550,55 @@ as before.
 | Refresh cycle | Sellers run one after another; the next cycle starts one interval after the previous one ends | Cycle duration grows linearly. Markers last two intervals (30 min). |
 | Mercado Libre application limits | Every seller shares the Zeler application | Not measured here. The pacer limits background traffic. |
 
-By default, scheduled refresh plans only orders and questions: the last hour
-every 15 minutes, 7 days once a day, and 90 days once a week. That costs a few
-requests per seller and cycle. Whole-seller sweeps multiply by the number of
-sellers, so keep them off at first in `all` mode. This includes
-`ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` and any spaced inventory, catalog or
-renewal sweep. Renewal is off in `all` mode unless set to `true`, but the
-worker template sets it to `true` explicitly. As a reference, an inventory sweep for a seller with about 1,900
-listings costs about 12 requests per minute. Roughly 15 sellers of that size
-would fill the 180 reservation with inventory alone.
+Scheduled refresh plans orders and questions for every seller: the last hour
+every 15 minutes, 7 days once a day, and 90 days once a week, a few requests
+per seller and cycle. The spaced inventory and catalog sweeps and the renewal
+work in `all` mode exactly as for the pilot, for every eligible seller:
+
+- **Inventory and catalog products.** Each seller has its own pass and its own
+  spacing (`sweep_status`). The lanes claim one 20-ID chunk (or one discovery)
+  per job and send the job to the back of the queue, so passes of several
+  sellers interleave chunk by chunk: a large seller's pass never holds a small
+  seller's until it ends. Inventory waits only for the seller's own buybox pass.
+- **Renewal.** One seller at a time, sellers that missed the previous slot
+  first (see "Several sellers take turns").
+- `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` stays off: it re-plans every
+  model every cycle (L-021).
+
+#### Capacity for N sellers of the pilot's size
+
+From the code, not from production. A pilot-sized seller has about 1,900
+publications, 934 catalog listings and 875 catalog products. Per seller, the
+inventory pass costs 114 calls every 10 minutes (19 discovery pages of 100,
+95 batches of 20), about 11.4 per minute; the catalog product pass 875 calls
+every 3 hours plus the pass, about 3.6 per minute; renewal 8,000 to 16,400
+calls per 12-hour slot (12,800 typical), about 17.8 per minute averaged over
+the day. That is about 33 calls per minute per seller. The pacer gives 180
+per minute to the whole worker. While a renewal pass fills the `ids` lane, the
+inventory lane gets one grant in three (60 per minute) or one in four (45)
+when `ranges` is busy too. Reader limits: inventory enumeration and base rows
+15 minutes, catalog products 4 hours, buybox, quality and costs 24 hours.
+
+| N | Average load (typical) | Inventory age | Renewal pass, all sellers per slot | Buybox/quality/costs age at renewal | Catalog product age |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 33/min (18 %) | about 10.5 min | 1.2 h (0.8 to 1.6), 1.3 h | about 13 h | up to about 3.8 h during a renewal pass, about 3.1 h otherwise |
+| 5 | 166/min (92 %; 106 % with the heaviest renewals) | about 10.5 min: the four sellers not renewing need 46/min of the lane's 60 | 1.9 h (1.2 to 2.4), 10 h (12.6 h with the heaviest renewals, which then rotate into the next slot) | about 14 to 15 h | about 4.2 h when the catalog pass overlaps a renewal: brief expiries |
+| 15 | 500/min (276 %) | about 27 min per round: expired | 3.5 h, 55 h | far over 24 h: expired most of the day | about 4.8 h: expired |
+
+Where 180 per minute stops being enough: the average load passes 100 % at
+N = 6 (110 %). At N = 5 the sweeps fit with almost nothing left for
+formula-triggered recovery, so on-demand fills slow down, and catalog product
+passes that overlap a renewal pass can let products expire for a few minutes
+(`ZELERDATA_CATALOG_REFRESH_HOURS=2` avoids that for about 50 % more catalog
+calls). Up to N = 4 (74 %) every datum stays inside its limit with room for
+on-demand work. Beyond that, renewal rotates past 24 hours from N = 7 to 9 and
+inventory passes 15 minutes from N = 9. A seller of a different size counts in
+proportion to its publications (the dry run reports `eligible_inventory`).
+The next options are to raise `ZELERDATA_RECOVERY_REQUESTS_PER_MINUTE` (at
+most 600; the gateway limit of 600 is per seller, so a global 360 leaves each
+seller far below it; check the Mercado Libre application limits first) or to
+add lanes. Each lane runs one job at a time, so a lane is also bounded by
+request latency, which this document has not measured.
 
 ### Scale analysis (N eligible sellers)
 
@@ -592,8 +659,9 @@ needed a limit:
   lanes are busy, up to 180 when idle), the passes stretch beyond 10 minutes
   and item freshness degrades. Nothing queues up behind it. At about 12 requests
   per minute for a 1,900-listing seller, 15 such sellers saturate the whole
-  reservation. Keep the sweeps off in `all` mode until the first cycles are
-  measured.
+  reservation. See "Capacity for N sellers of the pilot's size".
+- Renewal passes run one seller at a time, so a renewal never stretches over
+  the fleet; the planner reads the turn by slot key once per cycle.
 - Memory does not grow with N: the warmer and each lane handle one seller at a
   time, so the peak follows the largest seller's catalog. The worker also hosts
   consumers and three lanes in one process on a 3.9 GB VM that Mongo shares.
@@ -607,47 +675,61 @@ Revisit capacity when:
 
 - `elapsed_seconds` exceeds about 300 s, or `warm_deferred` is above 0 for
   several cycles in a row,
-- pending `ranges` jobs wait longer than one interval, or
+- pending `ranges` jobs wait longer than one interval,
+- a seller's renewal starts more than about 10 hours after its slot, or its
+  inventory pass ends more than 15 minutes after its discovery, or
 - freshness alarms fire for sellers whose refresh is healthy.
 
-The first options are to raise the reservation or to add claims that are fair
-across sellers. The reservation is global, so even 300 stays under each
-seller's 600 gateway quota. Check the Mercado Libre application limits before
-raising it.
+Claims are already fair across sellers (one chunk per claim, oldest first),
+so the first option is to raise the reservation. The reservation is global,
+so even 300 stays under each seller's 600 gateway quota. Check the Mercado
+Libre application limits before raising it.
 
 ### Production activation
 
 Production changes run only from the main session, after this change is
-merged and with explicit authorization. An image without this change rejects
-`all` at startup, so the images go first and the variables change after them.
+merged and with explicit authorization. Switch to `all` only when a second
+seller exists: today the dry run finds one eligible seller, the pilot.
 
-1. **Images.** Build and deploy `sheets-worker` and `sheets-api` from `main`
-   without changing any variable. Behavior stays identical. Verify health and
-   that the pilot is still served.
+1. **Image.** Build and deploy `sheets-worker` from `main` without changing
+   any variable. With the numeric allowlist the pilot is served as before
+   (renewal is now planned once per cycle, with the same slots and passes).
+   Verify health and the pilot's next renewal slot. This change does not touch
+   the `sheets-api` path; any `sheets-api` image from `ef0308b` on accepts
+   `all`.
 2. **Read-only dry run** inside `sheets-worker` (sanitized: counts only, no
-   seller IDs, nicknames or tokens):
+   seller IDs, nicknames or tokens), once for the pilot and once for the new
+   seller:
 
    ```bash
    .venv/bin/python -m infra.operations.zelerdata_all_sellers_dry_run \
      --seller-id 82453304
+   .venv/bin/python -m infra.operations.zelerdata_all_sellers_dry_run \
+     --seller-id <new seller>
    ```
 
    It prints how many sellers would be eligible, how many are excluded for
    each reason (`account_paused`, `no_extension_token`,
    `extension_token_expired`, ...), the active recovery jobs that belong to
-   ineligible sellers, the current scope and flag values (kind and on/off, not
-   IDs), and whether the requested seller is eligible. Continue only if:
-   - the pilot is eligible (otherwise `all` would stop refreshing it),
+   ineligible sellers, the size of the eligible inventory
+   (`eligible_inventory`: sellers enumerated, publications, largest seller),
+   the current scope and flag values (kind and on/off, not IDs), and whether
+   the requested seller is eligible. Continue only if:
+   - both sellers are eligible (otherwise `all` would not serve them),
    - `matches_runtime_rule` is `true`,
-   - `eligible_sellers` is a number the capacity figures above can carry.
-3. **Preflight of flags** in the same output: `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
-   `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED`,
-   `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED`,
-   `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED`,
-   `ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED`,
-   `ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED` and
-   `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` must read `false`. Set the
-   renewal flag to `false` (or remove it) before switching to `all`.
+   - `eligible_inventory.publications` fits the capacity table: about 1,900
+     publications per pilot-sized seller; up to about 4 of them leave room for
+     on-demand recovery, 5 fill the pacer to about 92 %. A seller whose
+     inventory was never enumerated is not counted yet: add its publications
+     from Mercado Libre.
+3. **Preflight of flags** in the same output:
+   `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
+   `ZELERDATA_QUESTION_HISTORY_PROTOCOL_ENABLED` and
+   `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED` must read `false` (they need
+   named sellers and fail startup in `all`), and
+   `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` must read `false`. Leave the
+   inventory, catalog and renewal sweeps as the pilot has them: in `all` they
+   serve every eligible seller.
 4. **Worker first.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and
    `ZELERDATA_REFRESH_SELLERS=all` together (refresh requires recovery to be
    `all`, or startup fails). Leave every other variable as it is. Restart only
@@ -657,14 +739,24 @@ merged and with explicit authorization. An image without this change rejects
    - `zelerdata.refresh_cycle_completed` with `sellers` equal to the dry-run
      count, `warm_deferred` and `elapsed_seconds` (target: under 300 s; the
      cycle that follows the restart is the first full measurement),
-   - jobs for every eligible seller reaching `completed`, and `docker stats`
-     for `sheets-worker` memory over the first warm cycles.
+   - for the new seller: an inventory pass about every 10 minutes, a catalog
+     product pass, and `orders`/`questions` jobs reaching `completed`,
+   - `docker stats` for `sheets-worker` memory over the first warm cycles.
 5. **API second.** Set `ZELERDATA_FORMULA_RECOVERY_SELLERS=all` and restart
    only `sheets-api`. Verify `/health` and a `formula_recovery_admission` with
    outcome `admitted` for a seller other than the pilot.
-6. **Sweeps stay off** until at least a day of cycles shows `warm_deferred` at
-   0 and a short `elapsed_seconds`. Turn on one sweep at a time afterwards and
-   compare the figures in the scale analysis.
+6. **First renewal slot with two sellers** (01:00 or 13:00 UTC, or at once
+   after the restart). `zelerdata.refresh_renewal_planned` appears for one
+   seller; the other seller's appears only after the first seller's renewal
+   jobs complete, with the same `slot`. Each seller's inventory pauses only
+   during its own buybox pass. Afterwards `CATALOGO`, `CALIDAD` and
+   `CALCULADORA` of the new seller fill without opening the sheet. Watch
+   `docker stats` during the passes. `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED=false`,
+   and the inventory and catalog flags, stay the emergency switches; each
+   applies to every seller, the pilot included.
+
+The new seller still gets no DEVOLUCIONES and only the history its bootstrap
+acquired; see "What `all` does not open".
 
 **Back to the pilot.** Reverse the order and restore the value on each
 service, then restart only that service:
@@ -682,6 +774,7 @@ Verification for this mode:
 
 ```bash
 uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py \
+  modules/sheets/tests/test_zelerdata_all_sellers_sweeps.py \
   tests/operations/test_zelerdata_all_sellers_dry_run.py
 uv run pytest modules/sheets/tests/test_formula_recovery.py -k "all_mode or numeric_allowlist_claim"
 ```

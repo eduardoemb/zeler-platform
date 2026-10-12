@@ -108,6 +108,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-049 | Sheets DLQ | Archive on a per-resource read stamp, not on a window marker | active |
 | L-050 | ZelerData | Exclude one listed claim Mercado Libre forbids, and log what the quota runner swallows | active |
 | L-051 | ZelerData | Renew on-demand acquisitions before their readers' limit, one pass per fixed slot | active |
+| L-052 | ZelerData | Give whole-fleet renewal passes one seller at a time, missed sellers first | active |
 
 ## Cloud Build and VM deployment
 
@@ -861,7 +862,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
   reopened). Never plan while any explicit-ID pass of the model runs. Select with
   the readers' own predicates evaluated half an interval ahead, so absent,
   mismatched or aging data is renewed and a fresh declared `NA` is not. On by
-  default for numeric sellers; `false` is the emergency switch.
+  default (in `all` mode too, one seller at a time, L-052); `false` is the
+  emergency switch.
 - failed path: Selecting only what the reader already rejects: with a 24-hour
   limit and a 12-hour interval, data acquired by one pass expires before the
   pass after next, so the gap returns. Anchoring the spacing on any catalog-sized
@@ -873,4 +875,27 @@ repeat failures, and promote stable knowledge to its proper operational form.
   (planner and factory), `docs/sheets/zelerdata-refresh.md` ("Renewal of
   on-demand acquisitions", call and memory estimates from code). Not yet
   observed in production.
+- status: active
+
+### L-052 — Give whole-fleet renewal passes one seller at a time, missed sellers first
+- area: ZelerData scheduled refresh (`all` mode)
+- proven path: Plan renewal once per refresh cycle for the whole fleet. While
+  any seller's renewal pass of this or the previous slot is pending or running,
+  only that seller plans; then the turn goes to the first seller with something
+  due, those with no pass in the previous slot first. Read the turn by slot key
+  (`renewal_passes`), so it survives restarts and needs no job field. Inventory
+  and catalog sweeps need no cap: lanes claim one chunk per job, oldest first,
+  so passes of several sellers already interleave.
+- failed path: Letting each seller plan its own slot pass. All N passes start
+  at the slot and share the `ids` lane chunk by chunk, so each takes about N
+  times longer; each buybox pass pauses its seller's inventory that much longer
+  (L-037), and at N = 5 the renewal age bound passes 24 hours. Serving sellers
+  in a fixed order without the missed-first rule starves the last sellers once
+  a slot cannot hold every pass.
+- verification/source: `modules/sheets/tests/test_zelerdata_refresh.py`
+  (`plan_renewals` turn tests), `test_zelerdata_all_sellers_sweeps.py` (real
+  Mongo, pilot and new seller), `docs/sheets/zelerdata-refresh.md` ("Several
+  sellers take turns", "Capacity for N sellers"). Capacity is from code, not
+  production; at 180 per minute about 4 pilot-sized sellers fit with room, 6
+  exceed it.
 - status: active

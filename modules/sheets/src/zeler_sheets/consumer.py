@@ -1867,8 +1867,8 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     sweep_intervals: dict[str, timedelta] = {}
     # Buybox, quality and costs are acquired only by recovery and served for
     # 24 hours (L-044). Renewing them in fixed slots keeps a sheet opened after
-    # a quiet day filled. On by default for named sellers; `false` is the
-    # emergency switch. In `all` mode passes multiply by seller, so opt in.
+    # a quiet day filled. On by default, for named sellers and in `all` mode,
+    # where sellers take turns; `false` is the emergency switch.
     renewal_setting = _env_flag_setting("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED")
     renewal_hours = _positive_env_number(
         "ZELERDATA_RENEWAL_REFRESH_HOURS",
@@ -1879,11 +1879,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             "ZELERDATA_RENEWAL_REFRESH_HOURS must be at most 12 so renewals stay "
             "inside the readers' 24 hours"
         )
-    if (
-        renewal_setting
-        if renewal_setting is not None
-        else allowed is not None and not scheduled_bulk
-    ):
+    if renewal_setting if renewal_setting is not None else not scheduled_bulk:
         for sweep in RENEWAL_SWEEP_READ_MODELS:
             sweep_intervals[sweep] = timedelta(hours=renewal_hours)
     if _env_flag_enabled("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"):
@@ -1917,6 +1913,9 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             planner.plan_inventory
             if scheduled_bulk or "item_formula_rows" in sweep_intervals
             else None
+        ),
+        renewal_planner=(
+            planner.plan_renewals if set(sweep_intervals) & set(RENEWAL_SWEEP_READ_MODELS) else None
         ),
         # The 12-month pilot backfill seeds a plan for every seller it sees, so
         # it stays bound to named sellers and never runs in `all` mode.

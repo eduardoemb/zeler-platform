@@ -262,6 +262,9 @@ class RefreshPlanner(Protocol):
     async def plan(self, *, seller_id: str, mode: str = FAST_MODE) -> bool: ...
 
 
+RenewalPlanner = Callable[[tuple[str, ...]], Awaitable[bool]]
+
+
 class ZelerDataRefreshPlanner:
     """Plan bounded recovery for one seller without touching Mercado Libre."""
 
@@ -463,8 +466,63 @@ class ZelerDataRefreshPlanner:
             for request in requests:
                 admitted = await self._admit(request) or admitted
         # Spaced sweeps ignore the mode window; their own guard decides.
-        for read_model in sorted(self._sweep_intervals):
+        # Renewals take turns across sellers in `plan_renewals` instead.
+        for read_model in sorted(set(self._sweep_intervals) - set(RENEWAL_SWEEP_READ_MODELS)):
             admitted = await self._plan_spaced_sweep(seller_id, read_model) or admitted
+        return admitted
+
+    async def plan_renewals(self, seller_ids: Iterable[str]) -> bool:
+        """Admit the renewal passes of one seller at a time.
+
+        Every seller's passes share the recovery `ids` lane and one pacer.
+        Together, N sellers' passes would each take N times longer, and so
+        would the inventory pause of each buybox pass (L-037) and the age of
+        what they renew. While a seller's renewal pass is pending or running,
+        only that seller may plan its other model. Then the turn goes to the
+        first seller with something due, sellers whose previous slot was never
+        reached first, so an overloaded fleet rotates instead of starving the
+        last sellers.
+        """
+        sweeps = sorted(set(self._sweep_intervals) & set(RENEWAL_SWEEP_READ_MODELS))
+        sellers = tuple(
+            dict.fromkeys(
+                seller_id
+                for seller_id in seller_ids
+                if self._allowed_sellers is None or seller_id in self._allowed_sellers
+            )
+        )
+        if not sweeps or not sellers:
+            return False
+        now = self._now()
+        owners: dict[str, tuple[str, bool]] = {}
+        for seller_id in sellers:
+            for sweep in sweeps:
+                interval = self._sweep_intervals[sweep]
+                slot = renewal_slot(now, interval)
+                read_model = RENEWAL_SWEEP_READ_MODELS[sweep]
+                for start, previous in ((slot, False), (slot - interval, True)):
+                    key = RenewalRecoveryRequest.slot_key(seller_id, read_model, start)
+                    owners[key] = (seller_id, previous)
+        try:
+            async with asyncio.timeout(2):
+                passes = await self._queue.renewal_passes(tuple(owners))
+        except Exception:  # noqa: BLE001 - an unreadable turn skips renewal this cycle
+            logger.warning("zelerdata.refresh_renewal_turn_failed")
+            return False
+        in_flight = {"pending", "running"}
+        holders = {owners[key][0] for key, state in passes.items() if state in in_flight}
+        reached = {owners[key][0] for key in passes if owners[key][1]}
+        if holders:
+            candidates = [seller_id for seller_id in sellers if seller_id in holders]
+        else:
+            candidates = [seller_id for seller_id in sellers if seller_id not in reached]
+            candidates += [seller_id for seller_id in sellers if seller_id in reached]
+        admitted = False
+        for seller_id in candidates:
+            for sweep in sweeps:
+                admitted = await self._plan_renewal_sweep(seller_id, sweep) or admitted
+            if admitted and not holders:
+                break
         return admitted
 
     async def _identity_requests(self, *, seller_id: str, read_model: str) -> tuple[Any, ...]:
@@ -798,6 +856,7 @@ class ZelerDataRefreshSupervisor:
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
         refresh_failure_reporter: Callable[[int], Awaitable[None]] | None = None,
         inventory_refresher: Callable[[str], Awaitable[bool]] | None = None,
+        renewal_planner: RenewalPlanner | None = None,
         history_backfill: Callable[[str], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         inventory_interval_seconds: float = DEFAULT_INVENTORY_INTERVAL_SECONDS,
@@ -825,6 +884,7 @@ class ZelerDataRefreshSupervisor:
         self._refresh_failure_reporter = refresh_failure_reporter
         self._interval = interval_seconds
         self._inventory_refresher = inventory_refresher
+        self._renewal_planner = renewal_planner
         self._history_backfill = history_backfill
         self._inventory_interval = inventory_interval_seconds
         # Markers last two intervals and a cycle is followed by one interval of
@@ -940,6 +1000,14 @@ class ZelerDataRefreshSupervisor:
         now = self._now().astimezone(UTC)
         modes = self._due_modes(now)
         sellers = await self._explorer.discover_sellers()
+        admitted = False
+        if self._renewal_planner is not None:
+            try:
+                # Renewal passes take turns across sellers, so the planner
+                # sees the whole fleet once per cycle, in discovery order.
+                admitted = await self._renewal_planner(tuple(sellers))
+            except Exception:  # noqa: BLE001 - renewal must not stop the cycle
+                logger.warning("zelerdata.refresh_renewal_failed")
         if self._warm_resume_from in sellers:
             # Resume warming where the last budgeted cycle stopped.
             start = sellers.index(self._warm_resume_from)
@@ -947,7 +1015,6 @@ class ZelerDataRefreshSupervisor:
         self._warm_resume_from = None
         warm_spent = 0.0
         warm_deferred = 0
-        admitted = False
         for seller_id in sellers:
             for mode in modes:
                 try:

@@ -523,12 +523,16 @@ def test_a_renewal_interval_must_leave_margin_under_the_readers_day(
 
 
 class FakeRenewalQueue(FakeQueue):
-    """Queue double for renewal passes: one in-flight flag and taken pass keys."""
+    """Queue double for renewal passes.
+
+    ``in_flight`` holds read models (any seller) or ``seller:read_model`` with an
+    explicit-ID pass in flight; ``passes`` maps each pass key to its state.
+    """
 
     def __init__(self, *, in_flight: set[str] | None = None, taken: set[str] | None = None) -> None:
         super().__init__()
         self.in_flight = in_flight or set()
-        self.taken = taken or set()
+        self.passes: dict[str, str] = dict.fromkeys(taken or (), "completed")
         self.status_calls: list[str] = []
         self.reopen: list[bool] = []
 
@@ -536,12 +540,20 @@ class FakeRenewalQueue(FakeQueue):
         self, *, seller_id: str, read_model: str, slot_key: str
     ) -> tuple[bool, bool]:
         self.status_calls.append(read_model)
-        return read_model in self.in_flight, slot_key in self.taken
+        held = read_model in self.in_flight or f"{seller_id}:{read_model}" in self.in_flight
+        return held, slot_key in self.passes
+
+    async def renewal_passes(self, keys: tuple[str, ...]) -> dict[str, str]:
+        return {key: self.passes[key] for key in keys if key in self.passes}
 
     async def enqueue(self, request: Any, *, reopen_terminal: bool = True) -> str:
         self.reopen.append(reopen_terminal)
-        self.taken.add(request.key)
+        self.passes[request.key] = "pending"
         return await super().enqueue(request)
+
+    def finish_passes(self) -> None:
+        for key in self.passes:
+            self.passes[key] = "completed"
 
 
 class FakeRenewalIdentities(FakeIdentitySource):
@@ -551,28 +563,48 @@ class FakeRenewalIdentities(FakeIdentitySource):
         buybox: tuple[str, ...] = (),
         enrichment: tuple[str, ...] = (),
         failing: bool = False,
+        due: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
         super().__init__()
         self._buybox = buybox
         self._enrichment = enrichment
         self._failing = failing
+        # Per seller, the same identities for both models when given.
+        self._due = due
         self.renew_after: list[timedelta] = []
+        self.sellers: list[str] = []
 
     async def buybox_renewal_ids(
         self, seller_id: str, *, renew_after: timedelta
     ) -> tuple[str, ...]:
         self.calls.append("buybox_renewal_ids")
+        self.sellers.append(seller_id)
         self.renew_after.append(renew_after)
         if self._failing:
             raise RuntimeError("storage unavailable")
-        return self._buybox
+        return self._due.get(seller_id, ()) if self._due is not None else self._buybox
 
     async def enrichment_renewal_ids(
         self, seller_id: str, *, renew_after: timedelta
     ) -> tuple[str, ...]:
         self.calls.append("enrichment_renewal_ids")
+        self.sellers.append(seller_id)
         self.renew_after.append(renew_after)
-        return self._enrichment
+        return self._due.get(seller_id, ()) if self._due is not None else self._enrichment
+
+
+PILOT = "82453304"
+NEW_SELLER = "90000001"
+
+
+def _renewals(queue: FakeQueue) -> list[tuple[str, str]]:
+    from zeler_sheets.formulas.recovery import RenewalRecoveryRequest
+
+    return [
+        (request.seller_id, request.read_model)
+        for request in queue.enqueued
+        if isinstance(request, RenewalRecoveryRequest)
+    ]
 
 
 def _renewal_planner(
@@ -622,7 +654,7 @@ async def test_renewal_plans_one_slot_pass_of_what_is_due() -> None:
     identities = FakeRenewalIdentities(buybox=("MLM1", "MLM2"), enrichment=("MLM3",))
     planner = _renewal_planner(queue, identities)
 
-    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert await planner.plan_renewals((PILOT,)) is True
 
     renewals = [r for r in queue.enqueued if isinstance(r, RenewalRecoveryRequest)]
     assert [(r.read_model, r.ids) for r in renewals] == [
@@ -631,14 +663,26 @@ async def test_renewal_plans_one_slot_pass_of_what_is_due() -> None:
     ]
     assert {r.slot for r in renewals} == {datetime(2026, 9, 10, 13, tzinfo=UTC)}
     # Terminal jobs are evidence of earlier passes; a pass never reopens one.
-    assert queue.reopen == [True, False, False]
+    assert queue.reopen == [False, False]
     # Renew what would expire before the next slot could reach it.
     assert identities.renew_after == [timedelta(hours=6)] * 2
 
-    # The same slot, even in a later mode of the same cycle, admits nothing more.
-    assert await planner.plan(seller_id="82453304", mode="daily") is True
-    assert len([r for r in queue.enqueued if isinstance(r, RenewalRecoveryRequest)]) == 2
+    # The same slot, even in a later cycle, admits nothing more.
+    assert await planner.plan_renewals((PILOT,)) is False
+    assert len(queue.enqueued) == 2
     assert identities.calls == ["buybox_renewal_ids", "enrichment_renewal_ids"]
+
+
+@pytest.mark.asyncio
+async def test_per_seller_planning_leaves_renewal_to_the_cycle() -> None:
+    """Renewal is planned once per cycle across sellers, never per seller and mode."""
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan(seller_id=PILOT, mode="fast") is True
+    assert [r.read_model for r in queue.enqueued] == ["orders"]
+    assert identities.calls == []
 
 
 @pytest.mark.asyncio
@@ -647,15 +691,20 @@ async def test_renewal_waits_while_a_pass_of_the_same_model_is_in_flight() -> No
     identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
     planner = _renewal_planner(queue, identities)
 
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
 
     assert identities.calls == ["enrichment_renewal_ids"]
-    assert sorted(r.read_model for r in queue.enqueued) == ["item_formula_rows", "orders"]
+    assert _renewals(queue) == [(PILOT, "item_formula_rows")]
 
-    # Once that pass ends, the slot still gets its own pass.
+    # Once that pass ends, the slot still gets its own pass, although the
+    # seller's other renewal is still running.
     queue.in_flight.clear()
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
     assert identities.calls == ["enrichment_renewal_ids", "buybox_renewal_ids"]
+    assert _renewals(queue) == [
+        (PILOT, "item_formula_rows"),
+        (PILOT, "catalog_buybox_snapshots"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -664,14 +713,14 @@ async def test_a_slot_that_already_had_its_pass_is_not_recomputed() -> None:
 
     slot = datetime(2026, 9, 10, 13, tzinfo=UTC)
     queue = FakeRenewalQueue(
-        taken={RenewalRecoveryRequest("82453304", "catalog_buybox_snapshots", ("MLM1",), slot).key}
+        taken={RenewalRecoveryRequest(PILOT, "catalog_buybox_snapshots", ("MLM1",), slot).key}
     )
     identities = FakeRenewalIdentities(buybox=("MLM1",))
     planner = _renewal_planner(queue, identities, catalog_buybox_snapshots=timedelta(hours=12))
 
-    assert await planner.plan(seller_id="82453304", mode="fast") is True
+    assert await planner.plan_renewals((PILOT,)) is False
     assert identities.calls == []
-    assert [r.read_model for r in queue.enqueued] == ["orders"]
+    assert queue.enqueued == []
 
 
 @pytest.mark.asyncio
@@ -683,13 +732,13 @@ async def test_nothing_due_is_checked_once_per_slot() -> None:
         queue, identities, clock=clock, catalog_buybox_snapshots=timedelta(hours=12)
     )
 
-    await planner.plan(seller_id="82453304", mode="fast")
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
+    await planner.plan_renewals((PILOT,))
     assert identities.calls == ["buybox_renewal_ids"]
-    assert [r.read_model for r in queue.enqueued] == ["orders", "orders"]
+    assert queue.enqueued == []
 
     clock["now"] = datetime(2026, 9, 11, 1, tzinfo=UTC)
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
     assert identities.calls == ["buybox_renewal_ids", "buybox_renewal_ids"]
 
 
@@ -699,11 +748,11 @@ async def test_a_failed_renewal_selection_skips_only_that_sweep() -> None:
     identities = FakeRenewalIdentities(enrichment=("MLM3",), failing=True)
     planner = _renewal_planner(queue, identities)
 
-    assert await planner.plan(seller_id="82453304", mode="fast") is True
-    assert sorted(r.read_model for r in queue.enqueued) == ["item_formula_rows", "orders"]
+    assert await planner.plan_renewals((PILOT,)) is True
+    assert _renewals(queue) == [(PILOT, "item_formula_rows")]
 
     # The failed selection is retried on the next cycle, not after the slot.
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
     assert identities.calls.count("buybox_renewal_ids") == 2
 
 
@@ -719,8 +768,8 @@ async def test_a_rejected_renewal_admission_is_retried_next_cycle() -> None:
     identities = FakeRenewalIdentities(buybox=("MLM1",))
     planner = _renewal_planner(queue, identities, catalog_buybox_snapshots=timedelta(hours=12))
 
-    await planner.plan(seller_id="82453304", mode="fast")
-    await planner.plan(seller_id="82453304", mode="fast")
+    await planner.plan_renewals((PILOT,))
+    await planner.plan_renewals((PILOT,))
     assert identities.calls == ["buybox_renewal_ids", "buybox_renewal_ids"]
 
 
@@ -734,9 +783,152 @@ async def test_unreadable_renewal_status_skips_the_sweep_but_not_the_cycle() -> 
     identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
     planner = _renewal_planner(queue, identities)
 
-    assert await planner.plan(seller_id="82453304", mode="fast") is True
-    assert [r.read_model for r in queue.enqueued] == ["orders"]
+    assert await planner.plan_renewals((PILOT,)) is False
+    assert queue.enqueued == []
     assert identities.calls == []
+
+
+@pytest.mark.asyncio
+async def test_renewal_passes_run_for_one_seller_at_a_time() -> None:
+    """Every seller's passes share one lane and pacer (L-051).
+
+    Running them together would stretch each pass N times, and with it the
+    inventory pause of each buybox pass (L-037) and the age of what it renews.
+    """
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is True
+    assert _renewals(queue) == [
+        (PILOT, "catalog_buybox_snapshots"),
+        (PILOT, "item_formula_rows"),
+    ]
+    # The next seller is not even selected while the first one's passes run.
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is False
+    assert identities.sellers == [PILOT, PILOT]
+
+    queue.finish_passes()
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is True
+    assert _renewals(queue)[2:] == [
+        (NEW_SELLER, "catalog_buybox_snapshots"),
+        (NEW_SELLER, "item_formula_rows"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_seller_holding_the_turn_still_plans_its_other_model() -> None:
+    # The pilot's buybox renewal runs; its enrichment waits for an on-demand pass.
+    queue = FakeRenewalQueue(in_flight={f"{PILOT}:item_formula_rows"})
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    await planner.plan_renewals((PILOT, NEW_SELLER))
+    assert _renewals(queue) == [(PILOT, "catalog_buybox_snapshots")]
+
+    queue.in_flight.clear()
+    await planner.plan_renewals((PILOT, NEW_SELLER))
+    assert _renewals(queue) == [
+        (PILOT, "catalog_buybox_snapshots"),
+        (PILOT, "item_formula_rows"),
+    ]
+    assert NEW_SELLER not in identities.sellers
+
+
+@pytest.mark.asyncio
+async def test_a_seller_with_nothing_to_renew_or_its_own_pass_does_not_hold_the_turn() -> None:
+    third = "90000002"
+    # The pilot has nothing due; the new seller waits for its own on-demand pass.
+    queue = FakeRenewalQueue(
+        in_flight={
+            f"{NEW_SELLER}:catalog_buybox_snapshots",
+            f"{NEW_SELLER}:item_formula_rows",
+        }
+    )
+    identities = FakeRenewalIdentities(due={NEW_SELLER: ("MLM1",), third: ("MLM2",)})
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan_renewals((PILOT, NEW_SELLER, third)) is True
+    assert _renewals(queue) == [
+        (third, "catalog_buybox_snapshots"),
+        (third, "item_formula_rows"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_seller_whose_previous_slot_was_never_reached_goes_first() -> None:
+    """An overloaded fleet rotates instead of starving the last sellers."""
+    from zeler_sheets.formulas.recovery import RenewalRecoveryRequest
+
+    previous = datetime(2026, 9, 10, 1, tzinfo=UTC)
+    queue = FakeRenewalQueue(
+        taken={
+            RenewalRecoveryRequest(PILOT, read_model, ("MLM1",), previous).key
+            for read_model in ("catalog_buybox_snapshots", "item_formula_rows")
+        }
+    )
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is True
+    assert {seller for seller, _ in _renewals(queue)} == {NEW_SELLER}
+
+
+@pytest.mark.asyncio
+async def test_a_pass_still_running_from_the_previous_slot_holds_the_turn() -> None:
+    from zeler_sheets.formulas.recovery import RenewalRecoveryRequest
+
+    previous = datetime(2026, 9, 10, 1, tzinfo=UTC)
+    key = RenewalRecoveryRequest(PILOT, "catalog_buybox_snapshots", ("MLM1",), previous).key
+    queue = FakeRenewalQueue()
+    queue.passes[key] = "running"
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    await planner.plan_renewals((PILOT, NEW_SELLER))
+    assert NEW_SELLER not in identities.sellers
+
+
+@pytest.mark.asyncio
+async def test_unreadable_renewal_turn_skips_renewal_this_cycle() -> None:
+    class BrokenQueue(FakeRenewalQueue):
+        async def renewal_passes(self, keys: tuple[str, ...]) -> dict[str, str]:
+            raise RuntimeError("storage unavailable")
+
+    queue = BrokenQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",), enrichment=("MLM3",))
+    planner = _renewal_planner(queue, identities)
+
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is False
+    assert identities.calls == []
+
+
+@pytest.mark.asyncio
+async def test_renewal_respects_the_seller_allowlist() -> None:
+    queue = FakeRenewalQueue()
+    identities = FakeRenewalIdentities(buybox=("MLM1",))
+    planner = ZelerDataRefreshPlanner(
+        queue=queue,
+        enabled_models=frozenset({"orders"}),
+        sweep_intervals={"catalog_buybox_snapshots": timedelta(hours=12)},
+        identity_source=identities,
+        allowed_sellers=frozenset({NEW_SELLER}),
+        now=lambda: NOW,
+    )
+
+    assert await planner.plan_renewals((PILOT, NEW_SELLER)) is True
+    assert _renewals(queue) == [(NEW_SELLER, "catalog_buybox_snapshots")]
+
+
+@pytest.mark.asyncio
+async def test_a_planner_without_renewal_sweeps_plans_no_renewal() -> None:
+    queue = FakeRenewalQueue()
+    planner = ZelerDataRefreshPlanner(
+        queue=queue, enabled_models=frozenset({"orders"}), now=lambda: NOW
+    )
+
+    assert await planner.plan_renewals((PILOT,)) is False
+    assert queue.enqueued == []
 
 
 def test_a_model_is_either_planned_every_cycle_or_spaced() -> None:
@@ -1923,6 +2115,7 @@ async def test_refresh_factory_renews_on_demand_data_by_default_for_named_seller
     # Whole-seller inventory and catalog sweeps stay opt-in.
     assert supervisor._planner._sweep_intervals == RENEWAL_SWEEPS
     assert supervisor._inventory_refresher is None
+    assert supervisor._renewal_planner == supervisor._planner.plan_renewals
 
 
 @pytest.mark.asyncio
@@ -1937,6 +2130,7 @@ async def test_refresh_factory_renewal_has_an_emergency_off_switch(
     supervisor = await build_zelerdata_refresh_supervisor(db=_IndexedDb())
     assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
     assert supervisor._planner._sweep_intervals == {}
+    assert supervisor._renewal_planner is None
 
 
 @pytest.mark.asyncio

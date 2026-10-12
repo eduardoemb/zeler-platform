@@ -890,6 +890,21 @@ class FormulaRecoveryQueue:
         taken = await self.collection.find_one({"_id": slot_key}, {"_id": 1})
         return False, taken is not None
 
+    async def renewal_passes(self, slot_keys: tuple[str, ...]) -> dict[str, str]:
+        """The state of each renewal pass that exists, by slot key.
+
+        Renewal passes are keyed by seller, model and slot, so the passes of a
+        whole fleet are read by identity, without a marker field.
+        """
+        if not slot_keys:
+            return {}
+        return {
+            str(job["_id"]): str(job.get("state"))
+            async for job in self.collection.find(
+                {"_id": {"$in": list(slot_keys)}}, {"_id": 1, "state": 1}
+            )
+        }
+
     async def checkpoint_inventory(
         self,
         job: dict[str, Any],

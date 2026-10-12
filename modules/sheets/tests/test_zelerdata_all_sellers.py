@@ -249,14 +249,15 @@ async def test_refresh_builder_all_mode_discovers_eligible_sellers_without_histo
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("value", "renewed"), [(None, False), ("true", True)])
-async def test_refresh_all_mode_renews_on_demand_data_only_when_asked(
+@pytest.mark.parametrize(("value", "renewed"), [(None, True), ("true", True), ("false", False)])
+async def test_refresh_all_mode_renews_on_demand_data_by_default(
     monkeypatch: pytest.MonkeyPatch, value: str | None, renewed: bool
 ) -> None:
-    """Whole-seller passes multiply by seller count, so `all` keeps them opt-in."""
+    """Every eligible seller gets the pilot's renewal; passes take turns across sellers."""
     from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
 
     _enable_refresh(monkeypatch, "all")
+    monkeypatch.delenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", raising=False)
     if value is None:
         monkeypatch.delenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", raising=False)
     else:
@@ -267,6 +268,81 @@ async def test_refresh_all_mode_renews_on_demand_data_only_when_asked(
     assert set(supervisor._planner._sweep_intervals) == (
         {"catalog_buybox_snapshots", "item_enrichment"} if renewed else set()
     )
+    assert supervisor._renewal_planner == (supervisor._planner.plan_renewals if renewed else None)
+
+
+@pytest.mark.asyncio
+async def test_refresh_all_mode_runs_the_spaced_inventory_and_catalog_sweeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pilot's sweeps are not a pilot privilege: `all` wires them the same way."""
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+
+    _enable_refresh(monkeypatch, "all")
+    monkeypatch.delenv("ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED", raising=False)
+    monkeypatch.delenv("ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED", raising=False)
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED", "true")
+    monkeypatch.setenv("ZELERDATA_SCHEDULED_CATALOG_REFRESH_ENABLED", "true")
+    supervisor = await build_zelerdata_refresh_supervisor(db=_eligibility_db(datetime.now(UTC)))
+
+    assert isinstance(supervisor._planner, ZelerDataRefreshPlanner)
+    assert set(supervisor._planner._sweep_intervals) == {
+        "item_formula_rows",
+        "catalog_product_snapshots",
+        "catalog_buybox_snapshots",
+        "item_enrichment",
+    }
+    assert supervisor._inventory_refresher == supervisor._planner.plan_inventory
+    assert await supervisor._explorer.discover_sellers() == ("1", "2")
+
+
+@pytest.mark.asyncio
+async def test_refresh_cycle_plans_renewals_once_with_every_seller() -> None:
+    """Renewal takes turns across sellers, so it sees the whole fleet once per cycle."""
+    calls: list[tuple[str, ...]] = []
+
+    async def plan_renewals(sellers: tuple[str, ...]) -> bool:
+        calls.append(tuple(sellers))
+        return True
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=_Sellers(("1", "2", "3")),
+        planner=_NoPlan(),
+        renewal_planner=plan_renewals,
+        interval_seconds=900,
+        # 03:30 UTC also runs the daily mode: still one renewal call.
+        now=lambda: datetime(2026, 10, 7, 3, 30, tzinfo=UTC),
+    )
+    # A warm budget that stopped at seller 2 does not reorder the renewal turn.
+    supervisor._warm_resume_from = "2"
+
+    assert await supervisor.run_cycle() is True
+    assert calls == [("1", "2", "3")]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_renewal_plan_does_not_stop_the_cycle() -> None:
+    markers: list[str] = []
+
+    async def plan_renewals(sellers: tuple[str, ...]) -> bool:
+        raise RuntimeError("storage unavailable")
+
+    async def publish(seller_id: str) -> tuple[str, ...]:
+        markers.append(seller_id)
+        return ()
+
+    supervisor = ZelerDataRefreshSupervisor(
+        explorer=_Sellers(("1", "2")),
+        planner=_NoPlan(),
+        renewal_planner=plan_renewals,
+        observed_marker_publisher=publish,
+        interval_seconds=900,
+        now=lambda: NOW,
+    )
+
+    assert await supervisor.run_cycle() is False
+    assert supervisor.health_status == "ok"
+    assert markers == ["1", "2"]
 
 
 @pytest.mark.asyncio

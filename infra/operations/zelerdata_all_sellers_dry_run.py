@@ -132,6 +132,23 @@ async def _active_jobs(db: Any, eligible: frozenset[str]) -> dict[str, int]:
     return {"total": total, "for_ineligible_sellers": ineligible}
 
 
+async def _eligible_inventory(db: Any, eligible: frozenset[str]) -> dict[str, int]:
+    """Size of the latest inventory enumeration of each eligible seller, as counts."""
+    sizes: list[int] = []
+    async for job in db["sheets_formula_recovery_jobs"].find(
+        {"inventory_scope": True, "seller_id": {"$in": sorted(eligible)}},
+        {"inventory_ids": 1},
+    ):
+        identities = job.get("inventory_ids")
+        if isinstance(identities, list):
+            sizes.append(len(identities))
+    return {
+        "sellers_enumerated": len(sizes),
+        "publications": sum(sizes),
+        "largest_seller_publications": max(sizes, default=0),
+    }
+
+
 def _configuration(environ: Any) -> dict[str, Any]:
     def scope(name: str) -> str:
         try:
@@ -178,6 +195,9 @@ async def build_report(
         "excluded_sellers_by_reason": excluded,
         "matches_runtime_rule": explained == eligible,
         "active_recovery_jobs": await _active_jobs(db, eligible),
+        # The capacity table in docs/sheets/zelerdata-refresh.md counts sellers
+        # of the pilot's size (about 1,900 publications).
+        "eligible_inventory": await _eligible_inventory(db, eligible),
         "configuration": _configuration(os.environ if environ is None else environ),
     }
     if seller_id is not None:
