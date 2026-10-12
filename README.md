@@ -44,11 +44,3 @@ Non-production use (learning, research, personal projects, and self-hosted
 non-commercial evaluation) is permitted. Running this code to serve a
 commercial product requires a commercial license from the Licensor. Each
 version converts to Apache License 2.0 on its Change Date.
-
-## SDD artifacts
-
-The authoritative SDD artifacts currently live in this repository:
-
-- `sdd/zeler-platform-greenfield/`
-
-See `docs/README.md` and `sdd/README.md` for pointers.

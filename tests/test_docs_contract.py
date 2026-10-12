@@ -12,7 +12,6 @@ def test_contributing_documents_local_workflow_and_tdd_rules() -> None:
     assert "uv run mypy ." in contributing
     assert "RED → GREEN → REFACTOR" in contributing
     assert "feat:" in contributing
-    assert "../zeler-core/sdd/zeler-platform-greenfield/" in contributing
 
 
 def test_agents_and_security_docs_capture_required_rules() -> None:

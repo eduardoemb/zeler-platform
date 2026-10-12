@@ -24,9 +24,8 @@ Their display names are ZelerPricing, ZelerData, ZelerListings, and ZelerSupport
 respectively. Module IDs remain stable API, registry, event and runtime contracts;
 display-name changes do not authorize renaming them.
 Fulldock is retired and must remain unavailable unless explicitly reactivated.
-For integration or runtime assessments, consult the relevant implementation,
-verification notes under `sdd/zeler-platform-greenfield/`, and deployment
-runbooks. Code and historical notes alone do not prove current production health.
+For integration or runtime assessments, consult the relevant implementation
+and deployment runbooks. Code and historical notes alone do not prove current production health.
 
 ## Skill registry
 
@@ -66,15 +65,10 @@ Skill registry lives at `.atl/skill-registry.md`, relative to this checkout.
   verifying image drift instead of assuming the runtime is current.
 - Do not mutate `../zeler-core` artifacts from this repository unless the user
   explicitly asks for cross-repo migration/decommission work.
-- Prefer local `sdd/zeler-platform-greenfield/` artifacts as the source of truth
-  for the original platform design. For an individual change, use its selected
-  artifacts, including `openspec/changes/<change>/` when applicable; do not
-  substitute a different change's or store's copy.
-- For substantial product changes, use SDD (`/sdd-new`, `/sdd-ff`, `/sdd-apply`,
-  `/sdd-verify`, `/sdd-archive`) instead of ad-hoc implementation. This includes
-  changes to contracts, persistence, service boundaries, or product workflows.
-  Questions, documentation-only changes, and localized fixes preserving those
-  contracts and boundaries do not require the full SDD workflow.
+- Do not use SDD (user decision, Oct 12, 2026). Changes to contracts,
+  persistence, service boundaries or product workflows are made in a normal
+  worktree with tests, like any other change. Applying a validator, index or
+  data migration in production remains a separate production mutation.
 - Worktrees, branches, and parallel sessions follow
   [Parallel sessions and worktrees](#parallel-sessions-and-worktrees-user-decision-oct-7-2026).
 - Work in the checkout and branch selected by the user. Before editing, inspect
@@ -207,14 +201,14 @@ Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP.
 - HTTP services/jobs target Cloud Run where applicable.
 - Always-on APIs/workers currently run through VM Docker Compose in production.
 - MongoDB targets are local Docker for development and the documented production
-  MongoDB deployment path; older Atlas mentions in SDD/tasks may be historical
-  or superseded.
+  MongoDB deployment path; older Atlas mentions in historical notes may be
+  superseded.
 - Secrets/crypto use GCP Secret Manager and KMS where applicable.
 - Root quality gates: `uv run pytest`, `uv run ruff check .`,
   `uv run ruff format --check .`, and `uv run mypy .`.
   Run focused checks during implementation and all four gates when code changes
   are complete. Repeat checks when changes, failures, or invalidated evidence
-  justify it. Preserve independent final SDD verification when applicable.
+  justify it.
   Documentation-only tasks require documentation validation, not the code suite.
 - CI also runs `uv run python -m infra.lint.check_direct_meli .` and
   `uv run python -m zeler_platform_core.cli.export_schemas infra/mongo/schemas --check`.
@@ -395,15 +389,3 @@ When adapting legacy products:
 - If `docs/live-readiness-validation.md` conflicts with deploy seeds about
   `zeler-app` scopes, prefer `docs/deploy.md` and
   `infra/mongo/seeds/module_registry.admin_clients.json`.
-
-## SDD design
-
-Use `sdd/zeler-platform-greenfield/design.md` for platform design work. Consult
-the related artifacts below for the change or verification question at hand;
-they are not mandatory reading for unrelated tasks.
-
-Related local artifacts:
-
-- `sdd/zeler-platform-greenfield/spec.md`
-- `sdd/zeler-platform-greenfield/tasks.md`
-- `sdd/zeler-platform-greenfield/verify-report*.md`
