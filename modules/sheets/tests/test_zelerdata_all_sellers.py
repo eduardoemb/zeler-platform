@@ -637,6 +637,7 @@ async def test_refresh_cycle_reports_seller_count_and_duration() -> None:
             "log_level": "info",
             "sellers": 3,
             "warm_deferred": 0,
+            "devoluciones_windows": 0,
             "elapsed_seconds": 7.5,
         }
     ]

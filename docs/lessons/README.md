@@ -109,6 +109,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-050 | ZelerData | Exclude one listed claim Mercado Libre forbids, and log what the quota runner swallows | active |
 | L-051 | ZelerData | Renew on-demand acquisitions before their readers' limit, one pass per fixed slot | active |
 | L-052 | ZelerData | Give whole-fleet renewal passes one seller at a time, missed sellers first | active |
+| L-053 | ZelerData | Activate a new seller's DEVOLUCIONES from its own first window, one window per cycle for the fleet | active |
 
 ## Cloud Build and VM deployment
 
@@ -902,4 +903,27 @@ repeat failures, and promote stable knowledge to its proper operational form.
   sellers take turns", "Capacity for N sellers"). Capacity is from code, not
   production; at 180 per minute about 4 pilot-sized sellers fit with room, 6
   exceed it.
+- status: active
+
+### L-053 — Activate a new seller's DEVOLUCIONES from its own first window, one window per cycle for the fleet
+- area: ZelerData DEVOLUCIONES coverage (`all` mode, new sellers)
+- proven path: For an eligible seller whose control is absent or legacy, with
+  no certificate and no legacy proof of another run, admit one 10-day window
+  90 days back (`refresh-initial:v1`), run it with the tail's executor,
+  finalize, release the lease, then run the operator migration from the worker
+  (`migrate_certificates(run_id=..., write=True, activate=True)`); the tail
+  catches up the rest. Renew every seller in the per-seller loop and give source
+  work its own pass after it: one window per cycle for all sellers, turns
+  starting after the last seller served.
+- failed path: The bootstrap leaves a legacy control, so the onboarding
+  initializer (no control at all) never matches, and the tail needs a
+  certificate. A single 90-day initial run (9 windows) expires 8,230 s after
+  admission while nine turns take longer, and one failed window would discard
+  the range. Advancing inside the per-seller loop lets N sellers catching up
+  add N windows of up to 3 minutes each to one cycle.
+- verification/source: `tests/integration/test_devoluciones_new_sellers.py`
+  (pilot unchanged, new seller covered and served, two workers),
+  `modules/sheets/tests/test_devoluciones_initial_coverage.py`,
+  `docs/sheets/zelerdata-refresh.md` ("Initial coverage for a new seller").
+  Not yet observed in production.
 - status: active

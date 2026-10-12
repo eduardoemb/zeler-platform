@@ -57,6 +57,8 @@ _SCOPE_FLAGS = (
     "ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED",
     "ZELERDATA_HISTORY_ON_LINK_ENABLED",
 )
+# On unless explicitly off, as the worker reads them.
+_DEFAULT_ON_FLAGS = ("ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED",)
 
 
 def _seller_key(value: Any) -> str | None:
@@ -165,6 +167,10 @@ def _configuration(environ: Any) -> dict[str, Any]:
         "flags": {
             name: str(environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
             for name in _SCOPE_FLAGS
+        }
+        | {
+            name: str(environ.get(name, "")).strip().lower() not in {"0", "false", "no", "off"}
+            for name in _DEFAULT_ON_FLAGS
         },
     }
 

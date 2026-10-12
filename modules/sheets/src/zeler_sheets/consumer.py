@@ -65,7 +65,10 @@ from zeler_sheets.devoluciones_reconciliation import (
     GatewayDevolucionesSource,
     is_terminal_cancellation_claim,
 )
-from zeler_sheets.devoluciones_runner import advance_due_devoluciones_run
+from zeler_sheets.devoluciones_runner import (
+    admit_initial_devoluciones_coverage,
+    advance_due_devoluciones_run,
+)
 from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
 from zeler_sheets.event_stage_telemetry import EventStageTelemetry
@@ -101,7 +104,7 @@ from zeler_sheets.formulas.refresh import (
     ZelerDataRefreshSupervisor,
     refresh_sellers,
 )
-from zeler_sheets.formulas.seller_scope import seller_gate_for
+from zeler_sheets.formulas.seller_scope import EligibleSellerGate, seller_gate_for
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
     RetryableGoogleSheetsApiError,
@@ -1839,6 +1842,24 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
     # the evaluator only reads durable markers and never acquires from Meli.
     devoluciones_advance = _env_flag_enabled("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED")
     history_work_enabled = _env_flag_enabled("ZELERDATA_HISTORY_ON_LINK_ENABLED")
+    # An eligible seller without coverage gets its initial window and its
+    # certificate activation from the loop. On by default, for named sellers
+    # and in `all` mode; `false` is the emergency switch.
+    initial_coverage_setting = _env_flag_setting("ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED")
+    admit_initial: Callable[..., Awaitable[str | None]] | None = None
+    if initial_coverage_setting is not False:
+        # Re-checked for every admission, also for a numeric allowlist, which
+        # otherwise does not check eligibility.
+        initial_coverage_gate = EligibleSellerGate(db)
+
+        async def admit_initial_window(
+            db: Any, seller_id: str, *, now: Callable[[], datetime] | None = None
+        ) -> str | None:
+            return await admit_initial_devoluciones_coverage(
+                db, seller_id, eligible=initial_coverage_gate, now=now
+            )
+
+        admit_initial = admit_initial_window
     alert_reporter = FreshnessAlarmReporter()
     expected_models = refresh_owned_read_models(
         observed_models=OBSERVED_READ_MODEL_SOURCES,
@@ -1935,18 +1956,34 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             db, seller_id
         ),
         # DEVOLUCIONES moved off its own systemd timer into this loop (Q2-b,
-        # Q7-a). With history on link on, the runner only advances an
-        # already-authorized run. With it off, pilot runs are ignored and the
-        # runner admits one ordinary forward tail per day, so a paused pilot
-        # cannot freeze coverage (L-036). The renewal inside it always runs,
-        # because a settled proof must stay productive without source work.
+        # Q7-a). Every seller's proof is renewed every cycle, because a settled
+        # proof must stay productive without source work. Source work has its
+        # own pass, one window per cycle for the whole fleet. With history on
+        # link on, it only advances an already-authorized run. With it off,
+        # pilot runs are ignored and it admits one ordinary forward tail per
+        # day, so a paused pilot cannot freeze coverage (L-036), or the initial
+        # window of an eligible seller without coverage.
         devoluciones_runner=(
             lambda seller_id: advance_due_devoluciones_run(
                 db,
                 seller_id,
-                advance_enabled=devoluciones_advance,
+                advance_enabled=False,
                 history_work_enabled=history_work_enabled,
             )
+        ),
+        devoluciones_advancer=(
+            (
+                lambda seller_id: advance_due_devoluciones_run(
+                    db,
+                    seller_id,
+                    advance_enabled=True,
+                    history_work_enabled=history_work_enabled,
+                    admit_initial=admit_initial,
+                    renew=False,
+                )
+            )
+            if devoluciones_advance
+            else None
         ),
         precalculated_warmer=precalculated_warmer,
         dlq_archiver=dlq_archiver,

@@ -12,7 +12,10 @@ guarantees. Automatic policy does not re-authorize terminal operator runs.
 
 With history on link off, a paused pilot plan cannot authorize its runs, so the
 loop ignores them and extends certified coverage with one ordinary bounded tail
-run per day instead (L-036: a paused pilot must not hold ordinary work).
+run per day instead (L-036: a paused pilot must not hold ordinary work). An
+eligible seller without coverage gets one initial window, is activated into
+certificate coverage from that window's proof, and is then extended by the same
+tail.
 """
 
 from __future__ import annotations
@@ -48,12 +51,18 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "ADVANCEABLE_RUN_STATES",
+    "INITIAL_COVERAGE_AUTHORIZATION",
+    "INITIAL_COVERAGE_DAYS",
     "ORDINARY_TAIL_AUTHORIZATION",
+    "activate_initial_devoluciones_coverage",
+    "admit_initial_devoluciones_coverage",
     "advance_due_devoluciones_run",
     "admit_onboarding_devoluciones",
     "admit_ordinary_devoluciones_tail",
     "advance_onboarding_devoluciones",
     "advance_ordinary_devoluciones_tail",
+    "initial_coverage_binding",
+    "initial_coverage_bounds",
     "ordinary_tail_binding",
     "ordinary_tail_bounds",
     "renew_devoluciones_marker_if_proven",
@@ -82,6 +91,8 @@ async def advance_due_devoluciones_run(
     advance_enabled: bool = True,
     history_work_enabled: bool = True,
     admit_tail: Callable[..., Awaitable[str | None]] | None = None,
+    admit_initial: Callable[..., Awaitable[str | None]] | None = None,
+    renew: bool = True,
 ) -> bool:
     """Advance at most one due DEVOLUCIONES window for ``seller_id``.
 
@@ -90,18 +101,22 @@ async def advance_due_devoluciones_run(
     foreign, or not-yet-due runs return ``False`` without touching the source.
 
     ``advance_enabled`` gates only source work. The marker renewal below is
-    always attempted: it never calls Mercado Libre and only restores a proof
-    whose fingerprint still matches the settled run.
+    attempted unless ``renew`` is off: it never calls Mercado Libre and only
+    restores a proof whose fingerprint still matches the settled run. The
+    refresh cycle renews every seller first and then gives source work its own
+    bounded pass with ``renew`` off.
 
     With ``history_work_enabled`` off, pilot (``onboarding:``) runs are
     ignored: their paused plan cannot authorize them, and they must not hold
     the single advancement slot. When nothing else is due, the cycle admits the
-    ordinary daily tail that the pilot's incremental run used to provide.
+    ordinary daily tail that the pilot's incremental run used to provide, or,
+    for a seller without coverage, ``admit_initial``'s first window.
     """
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
     if not advance_enabled:
-        await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
+        if renew:
+            await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
         return False
     query: dict[str, Any] = {
         "seller_id": str(seller_id),
@@ -120,12 +135,15 @@ async def advance_due_devoluciones_run(
         # also what repairs the marker after an acquisition that invalidated
         # readiness without publishing a replacement (for example an ``orders``
         # recovery job, which takes the same lease).
-        await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
+        if renew:
+            await renew_devoluciones_marker_if_proven(db, seller_id, now=clock)
         if history_work_enabled:
             return False
         tail_id = await (admit_tail or admit_ordinary_devoluciones_tail)(
             db, str(seller_id), now=clock
         )
+        if tail_id is None and admit_initial is not None:
+            tail_id = await admit_initial(db, str(seller_id), now=clock)
         if tail_id is None:
             return False
         run_id = tail_id
@@ -133,7 +151,8 @@ async def advance_due_devoluciones_run(
         # Existing independent proofs must get an opportunity even while a new
         # run has work on every refresh tick, or when that source attempt fails.
         # Renew before source work so a slow/failing upstream cannot starve history.
-        await _renew_active_before_advance(db, seller_id, clock)
+        if renew:
+            await _renew_active_before_advance(db, seller_id, clock)
         run_id = str(run["_id"])
     if advance is None:
         advance = _runtime_advance
@@ -164,7 +183,7 @@ async def _renew_active_before_advance(
 async def _runtime_advance(*, db: Any, run_id: str, now: Any = None) -> dict[str, int]:
     """Keep operator CLI authority separate from automatic product policy."""
     run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
-    if isinstance(run, Mapping) and run.get("authorization_id") == ORDINARY_TAIL_AUTHORIZATION:
+    if isinstance(run, Mapping) and run.get("authorization_id") in AUTOMATIC_AUTHORIZATIONS:
         return await advance_ordinary_devoluciones_tail(db, run_id, now=now)
     if isinstance(run, Mapping) and str(run.get("authorization_id", "")).startswith("onboarding:"):
         from infra.operations.zelerdata_read_model_reconcile import (
@@ -1130,6 +1149,26 @@ ORDINARY_TAIL_SETTLE = timedelta(hours=1)
 # One partition window per run keeps each run inside the existing call budget.
 ORDINARY_TAIL_MAX = timedelta(days=WINDOW_DAYS)
 
+# Initial coverage for an eligible seller without certificates (2026-10-12).
+# Until then a new seller never advanced: its bootstrap leaves a legacy control,
+# the onboarding initializer needs no control at all, and the tail needs a
+# certificate to extend. The refresh loop now acquires the seller's oldest
+# window, activates certificate coverage from that window's proof, and lets the
+# ordinary tail catch up the rest one window per cycle.
+INITIAL_COVERAGE_AUTHORIZATION = "refresh-initial:v1"
+INITIAL_COVERAGE_COHORT = "zelerdata-refresh-initial-v1"
+# What the bootstrap acquires at link time: 90 days of orders and claims.
+INITIAL_COVERAGE_DAYS = 90
+AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
+    {ORDINARY_TAIL_AUTHORIZATION, INITIAL_COVERAGE_AUTHORIZATION}
+)
+
+
+def _settled_midnight(now: datetime) -> datetime:
+    """The last UTC midnight at least one settle margin old."""
+    settled = _onboarding_utc(now) - ORDINARY_TAIL_SETTLE
+    return datetime.combine(settled.date(), time.min, tzinfo=UTC)
+
 
 def ordinary_tail_bounds(
     coverage_end: datetime | None, *, now: datetime
@@ -1137,15 +1176,164 @@ def ordinary_tail_bounds(
     """Return the next unacquired interval up to the last settled UTC midnight.
 
     The tail only moves forward from the newest certified interval. It never
-    starts without certified coverage: initial acquisition stays with the
-    operator or the onboarding policy.
+    starts without certified coverage: initial acquisition belongs to the
+    initial coverage run, the operator or the onboarding policy.
     """
     if coverage_end is None:
         return None
     start = _onboarding_utc(coverage_end)
-    settled = _onboarding_utc(now) - ORDINARY_TAIL_SETTLE
-    end = min(datetime.combine(settled.date(), time.min, tzinfo=UTC), start + ORDINARY_TAIL_MAX)
+    end = min(_settled_midnight(now), start + ORDINARY_TAIL_MAX)
     return (start, end) if start < end else None
+
+
+def initial_coverage_bounds(*, now: datetime) -> tuple[datetime, datetime]:
+    """The oldest window of the initial range: 90 days before the settled midnight.
+
+    Only the first window is an initial run. The ordinary tail then extends
+    certified coverage from its end up to the settled midnight, so every
+    window keeps its own proof and a failed window never discards the others.
+    """
+    start = _settled_midnight(now) - timedelta(days=INITIAL_COVERAGE_DAYS)
+    return start, start + timedelta(days=WINDOW_DAYS)
+
+
+def initial_coverage_binding(
+    seller_id: str, start: datetime, end: datetime, *, admitted_on: date
+) -> RunBinding:
+    # Like the tail: a failed or expired window is retried the next UTC day.
+    return RunBinding(
+        authorization_id=INITIAL_COVERAGE_AUTHORIZATION,
+        cohort_id=INITIAL_COVERAGE_COHORT,
+        seller_id=seller_id,
+        scope="devoluciones",
+        start=start,
+        end=end,
+        partition_version="v1",
+        release_fingerprints={"admitted_on": admitted_on.isoformat()},
+    )
+
+
+async def admit_initial_devoluciones_coverage(
+    db: Any,
+    seller_id: str,
+    *,
+    eligible: Callable[[str], Awaitable[bool]],
+    now: Callable[[], datetime] | None = None,
+) -> str | None:
+    """Admit the initial window of an eligible seller without coverage, or ``None``.
+
+    A seller already in certificate mode belongs to the tail. A seller with
+    certificates outside certificate mode (an operator rollback) or with a
+    legacy proof of its own (an operator reconciliation) is left to the
+    operator's migration. The bootstrap's stale marker is not a proof.
+    """
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
+    from zeler_platform_core.devoluciones_readiness import (
+        new_devoluciones_attempt_token,
+        stable_devoluciones_operation_id,
+    )
+
+    current = _onboarding_utc((now or (lambda: datetime.now(UTC)))())
+    if (await coverage_control(db, seller_id)).get("coverage_mode") == "active":
+        return None
+    if not await eligible(seller_id):
+        return None
+    if await db[CERTIFICATES].find_one({"seller_id": seller_id}) is not None:
+        _report_initial_refusal(seller_id, "certificates_need_operator_activation")
+        return None
+    marker = await db[FRESHNESS_COLLECTION].find_one(
+        {"_id": f"{seller_id}:{DEVOLUCIONES_READ_MODEL}", "seller_id": seller_id}
+    )
+    revision = str((marker or {}).get("revision") or "").strip()
+    if revision and str((marker or {}).get("proof_fingerprint") or "").strip():
+        proven = await db[RUNS_COLLECTION].find_one({"_id": revision, "seller_id": seller_id})
+        if (
+            not isinstance(proven, Mapping)
+            or proven.get("authorization_id") != INITIAL_COVERAGE_AUTHORIZATION
+        ):
+            _report_initial_refusal(seller_id, "legacy_proof_needs_operator_migration")
+            return None
+        # Our own initial window finalized but did not activate (a lost lease
+        # or a claim that changed in between). Activation is local; if the
+        # proof no longer holds, acquire the window again (once per UTC day).
+        if proven.get("state") == "completed" and await activate_initial_devoluciones_coverage(
+            db, seller_id, revision
+        ):
+            return None
+    binding = initial_coverage_binding(
+        seller_id, *initial_coverage_bounds(now=current), admitted_on=current.date()
+    )
+    if await db[RUNS_COLLECTION].find_one({"_id": binding.run_id}) is not None:
+        return None
+    operation = await _acquire_onboarding_operation(
+        db=db,
+        seller_id=seller_id,
+        scope="devoluciones",
+        operation_id=stable_devoluciones_operation_id("refresh_initial_admit", binding.run_id),
+        attempt_token=new_devoluciones_attempt_token(),
+        source_fingerprint=binding.run_id,
+        invalidate_readiness=False,
+    )
+    try:
+        if not await _OnboardingRepository(db).create(
+            binding, operation=operation, created_at=current
+        ):
+            raise RuntimeError("initial coverage admission failed")
+    except Exception:
+        await _finish_onboarding_operation(
+            db=db,
+            operation=operation,
+            succeeded=False,
+            error_code="refresh_initial_admission_failed",
+        )
+        raise
+    await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    logger.info(
+        "zelerdata.devoluciones_initial_admitted",
+        seller_id=seller_id,
+        run_id=binding.run_id,
+        start=binding.start.isoformat(),
+        end=binding.end.isoformat(),
+    )
+    return str(binding.run_id)
+
+
+async def activate_initial_devoluciones_coverage(db: Any, seller_id: str, run_id: str) -> bool:
+    """Certify a completed initial window and switch the seller to certificates.
+
+    This is the operator's ``devoluciones_certificate_migrate --run-id ...
+    --write --activate``: it publishes a certificate only from the run's
+    completed windows and the current joint facts, and activates in the same
+    fenced transaction, or changes nothing. The worker is the approved runtime,
+    and every writer it runs is certificate-compatible, which is what the
+    operator's confirmations attest.
+    """
+    from infra.operations.devoluciones_certificate_migrate import migrate_certificates
+
+    try:
+        summary = await migrate_certificates(
+            db,
+            seller_id,
+            write=True,
+            approved_runtime=True,
+            activate=True,
+            compatible_writers=True,
+            run_id=run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - a refused activation retries; never crash the cycle
+        logger.warning(
+            "zelerdata.devoluciones_activation_refused",
+            seller_id=seller_id,
+            run_id=run_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+    logger.info("zelerdata.devoluciones_coverage_activated", seller_id=seller_id, run_id=run_id)
+    return summary.get("mode") == "active"
+
+
+def _report_initial_refusal(seller_id: str, reason: str) -> None:
+    logger.info("zelerdata.devoluciones_initial_refused", seller_id=seller_id, reason=reason)
 
 
 def ordinary_tail_binding(
@@ -1229,7 +1417,12 @@ async def admit_ordinary_devoluciones_tail(
 async def advance_ordinary_devoluciones_tail(
     db: Any, run_id: str, *, now: Callable[[], datetime] | None = None
 ) -> dict[str, int]:
-    """Advance one tail window through the ordinary runtime gateway."""
+    """Advance one tail or initial coverage window through the ordinary runtime gateway.
+
+    Both are single-window automatic runs with the same tolerances (L-040,
+    L-050). A finalized initial window of a legacy seller then activates
+    certificate coverage, after this run's lease is released.
+    """
     from infra.operations.zelerdata_read_model_reconcile import (
         DevolucionesQuotaProofError,
         _finalize_devoluciones_quota_run,
@@ -1247,9 +1440,10 @@ async def advance_ordinary_devoluciones_tail(
     clock = now or (lambda: datetime.now(UTC))
 
     run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
-    if not isinstance(run, Mapping) or run.get("authorization_id") != ORDINARY_TAIL_AUTHORIZATION:
-        raise ValueError("run is not an ordinary tail run")
+    if not isinstance(run, Mapping) or run.get("authorization_id") not in AUTOMATIC_AUTHORIZATIONS:
+        raise ValueError("run is not an ordinary tail or initial coverage run")
     seller_id = str(run["seller_id"])
+    initial = run["authorization_id"] == INITIAL_COVERAGE_AUTHORIZATION
 
     async def readback(**kwargs: Any) -> Mapping[str, Any]:
         try:
@@ -1269,11 +1463,15 @@ async def advance_ordinary_devoluciones_tail(
         db=db,
         seller_id=seller_id,
         scope="devoluciones",
-        operation_id=stable_devoluciones_operation_id("refresh_tail_advance", run_id),
+        operation_id=stable_devoluciones_operation_id(
+            "refresh_initial_advance" if initial else "refresh_tail_advance", run_id
+        ),
         attempt_token=new_devoluciones_attempt_token(),
         source_fingerprint=run_id,
         invalidate_readiness=False,
-        require_coverage_compatible=True,
+        # An initial window runs before certificate mode exists; its finalize
+        # publishes the legacy proof that the activation then certifies.
+        require_coverage_compatible=not initial,
     )
 
     async def execute(*, window: Mapping[str, Any], **_: Any) -> dict[str, Any]:
@@ -1368,4 +1566,6 @@ async def advance_ordinary_devoluciones_tail(
         )
         raise
     await _finish_onboarding_operation(db=db, operation=operation, succeeded=True)
+    if initial and outcome.get("finalized") and operation.coverage_mode != "active":
+        await activate_initial_devoluciones_coverage(db, seller_id, run_id)
     return outcome

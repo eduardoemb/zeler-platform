@@ -225,17 +225,38 @@ DEVOLUCIONES used to be driven by its own systemd timer
 run failed with `quota_run_advancement_failed`. Per Q2-b/Q7-a that trigger moved
 into this loop, so one loop owns operational freshness.
 
-Each cycle calls `zeler_sheets.devoluciones_runner.advance_due_devoluciones_run`
-once per seller. The runner only *advances* an already-authorized run: the run
-must exist for that seller, be in an advanceable state (`authorized` or
-`active`), still be unexpired, and be past its own `not_before`. It never creates,
-re-authorizes, or widens a run; creating the run stays an explicit operator
-action (`infra.operations.devoluciones_quota_authorize`). The real advancement
-keeps the existing lease, 10-day window bound, and readback guarantees.
+Each cycle first renews every seller's proof, once per seller
+(`advance_due_devoluciones_run` with source work off). Renewal is local and
+runs whatever the source flags say; see "Renewing a settled marker".
 
-The absorbed trigger is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
-Turn it on only after an operator-authorized run exists for the pilot, or to run
-the ordinary tail below.
+Source work then gets its own pass after every seller's other steps, capped at
+**one window per cycle for all sellers together**. A window can take up to
+about three minutes (165 s of source work plus its local readback, finalize and
+activation) inside the serial cycle, and the warm budget does not cover it.
+The sellers take turns: the pass offers the turn in discovery order, starting
+after the last seller served, and stops at the first seller that does source
+work. A seller with nothing due passes the turn at the cost of a few Mongo
+reads. A failure counts as that seller's window (it may already have spent
+calls), is logged as `zelerdata.devoluciones_run_failed`, and the next cycle
+starts with the next seller, so no seller blocks the others. The turn is kept
+in memory; after a restart the pass starts again from the first seller.
+`zelerdata.refresh_cycle_completed` reports `devoluciones_windows` (0 or 1).
+
+For the seller that gets the turn, the runner advances one due window:
+
+1. a run that already exists for that seller, is advanceable (`authorized` or
+   `active`), unexpired and past its own `not_before` (operator or pilot runs,
+   or a resumed automatic run);
+2. otherwise, with history on link off, the ordinary daily tail of a seller in
+   certificate mode (below);
+3. otherwise, with history on link off, the initial window of an eligible seller
+   without coverage (see "Initial coverage for a new seller").
+
+It never re-authorizes or widens an operator run. The real advancement keeps the
+existing lease, 10-day window bound, and readback guarantees.
+
+The source pass is off by default (`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=false`).
+The ordinary tail and initial coverage both need it on.
 
 #### Ordinary tail while history on link is off (2026-10-07)
 
@@ -267,10 +288,11 @@ finalize step is a local readback with no source calls.
 
 The admission day is part of the run identity, so a failed or expired tail is
 retried at most once per UTC day. A longer gap catches up one 10-day window per
-cycle. The tail never starts without certified coverage and never re-acquires a
-stale interval; those remain operator runs. With history on link on, nothing
-changes: the pilot owns the incremental run. DEVOLUCIONES therefore answers
-ranges that end on the previous UTC day or earlier. A range that includes today
+turn. The tail never starts without certified coverage (a new seller first gets
+its initial window; see "Initial coverage for a new seller") and never
+re-acquires a stale interval; that remains an operator run. With history on
+link on, nothing changes: the pilot owns the incremental run. DEVOLUCIONES
+therefore answers ranges that end on the previous UTC day or earlier. A range that includes today
 needs coverage up to tomorrow 00:00 UTC and stays unavailable by design.
 
 ##### Pre-v2 rows in the tail window (2026-10-08)
@@ -321,6 +343,87 @@ Any tail failure is now logged as `zelerdata.devoluciones_tail_failed` with its
 error class, the bounded source diagnostic (`failure_class`, `source_stage`,
 `source_family`) and, for an incomplete readback, the four proof counts. It
 never logs exception text, URLs or tokens.
+
+#### Initial coverage for a new seller (2026-10-12)
+
+Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage
+leaves its coverage control in legacy mode with a stale marker, the onboarding
+initializer accepts only a seller with no control at all, and the tail needs a
+certificate to extend. The only way in was an operator quota run, which the CLI
+allows only for the pilot, followed by `devoluciones_certificate_migrate --run-id
+... --write --activate`. A new seller therefore never received DEVOLUCIONES.
+
+Now, when the seller gets the turn with history on link off, the runner admits
+its initial window if all of these hold:
+
+- it is in refresh scope (the numeric allowlist, or `all`) **and** eligible by
+  `eligible_sellers` (active or `refresh_pending` account plus an active
+  ZelerData extension token). The check also applies to a numeric allowlist,
+  which otherwise does not check eligibility;
+- its control is absent or in legacy mode;
+- it has no certificate. A seller with certificates outside certificate mode
+  (an operator rollback) is left to the operator and logged as
+  `zelerdata.devoluciones_initial_refused` with
+  `reason=certificates_need_operator_activation`;
+- its marker carries no legacy proof of another run. The bootstrap's stale
+  marker is not a proof. A legacy proof from an operator reconciliation or an
+  operator quota run is left to the operator's migration
+  (`reason=legacy_proof_needs_operator_migration`).
+
+The initial run (`authorization_id=refresh-initial:v1`) is **one 10-day window
+starting 90 days before the settled UTC midnight**: the 90 days are what the
+bootstrap acquired at link time. Its identity includes the admission day, like
+the tail, so a failed or expired window is retried on the next UTC day. It uses
+the tail's executor and tolerances: the ordinary runtime gateway, the same
+per-window call budgets (104 per pass, 208 per window), the same exact readback
+and fingerprints, the pre-v2 row quarantine (L-040) and the exclusion of one
+claim whose detail Mercado Libre forbids (L-050). It is admitted, acquired and
+finalized in the same invocation. In legacy mode the finalize publishes the
+legacy marker for that window. Right after it, and after the run's lease is
+released, the worker runs the operator's migration logic itself
+(`migrate_certificates(..., run_id=<run>, write=True, activate=True)`): it
+publishes a `quota_run` certificate only if the run's completed window and the
+current joint facts still match, and switches the control to certificate mode
+in the same fenced transaction, or changes nothing. Logs:
+`zelerdata.devoluciones_initial_admitted`, then
+`zelerdata.devoluciones_coverage_activated` or
+`zelerdata.devoluciones_activation_refused` (with `error_type`). A refused
+activation is retried on every later turn while the marker still names that
+run; if the proof no longer holds, the window is acquired again the next day.
+
+From then on the seller is an ordinary certificate seller: the tail extends
+coverage from the end of the initial window one 10-day window per turn up to
+the settled midnight (eight more windows), then once a day. The reader serves
+each range as soon as its windows are certified. Only the first window is an
+initial run, so every window keeps its own proof: a failure costs one window,
+not the whole range, and no single run has to outlive its expiry (a 9-window
+run expires 8,230 s after admission, and nine turns take longer than that).
+
+Initial coverage does not open the 12-month history and never runs with history
+on link on (the pilot owns its runs then, as for the tail).
+`ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED=false` is the emergency switch;
+sellers already in certificate mode keep their tail.
+
+How long it takes: one window per turn. With the pilot alone and one new
+seller, the new seller gets a window on almost every cycle, so 9 windows take
+about 9 cycles, each one interval plus the cycle (about 15 + 2 to 5 minutes):
+roughly two and a half to three hours. With K sellers catching up at once, each
+gets a window every K cycles, so about K times longer. The pilot's daily tail
+waits at most one round.
+
+How to verify (read-only, inside `sheets-worker`):
+
+```bash
+.venv/bin/python -m infra.operations.zelerdata_read_model_status \
+  --seller-id <new seller> --devoluciones-coverage --confirm-approved-runtime
+```
+
+Expect `mode=active`, `compatible=true`, intervals from 90 days before the
+admission day's settled midnight, with no `unacquired_gaps`, growing by 10 days
+per turn until they reach the settled midnight. In the worker log, expect one
+`zelerdata.devoluciones_initial_admitted` and one
+`zelerdata.devoluciones_coverage_activated` for the seller, then
+`zelerdata.devoluciones_tail_admitted` for each later window.
 
 #### Renewing a settled marker
 
@@ -401,7 +504,8 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_CATALOG_REFRESH_HOURS` | `3` | Hours from the end of one catalog pass to the next. |
 | `ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED` | on (off with BULK) | Renewal of buybox, quality and costs, for named sellers and in `all` mode. `false` is the emergency switch. Mutually exclusive with BULK when set to `true`. |
 | `ZELERDATA_RENEWAL_REFRESH_HOURS` | `12` | Renewal slot length, at most 12. |
-| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | Advance an already-authorized DEVOLUCIONES run from this loop; with history on link off, also admit the ordinary daily tail. |
+| `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | DEVOLUCIONES source work from this loop, one window per cycle for all sellers: advance an already-authorized run; with history on link off, also admit the ordinary daily tail and the initial window of a new seller. |
+| `ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED` | on | Initial window and certificate activation for an eligible seller without coverage. `false` is the emergency switch. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
 | `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
@@ -427,8 +531,10 @@ queries, which is the split agreed after a production write aborted with
   the worker and can be disabled without a deploy by setting the flag.
 - DEVOLUCIONES stays inside an explicit authorization boundary: the loop only
   advances operator or pilot runs, plus, with history on link off, one bounded
-  forward tail per day from existing certified coverage. The legacy systemd
-  timer is superseded.
+  forward tail per day from existing certified coverage and one initial window
+  for an eligible seller without coverage, at most one window per cycle in
+  total. Certificate mode is activated only from a completed window's proof.
+  The legacy systemd timer is superseded.
 - The DLQ archive stays evidence-based: a message is only removed when a
   reconciled marker already covers its window (questions only) or it is past
   retention, the sanitized record is written before the ack, and everything
@@ -512,14 +618,11 @@ as before.
   bootstrap job acquired at link time (orders and claims for 90 days) plus what
   refresh adds from then on (the weekly 90-day order and question window);
   ranges older than that stay unavailable.
-- **DEVOLUCIONES.** The daily tail runs only for sellers in certificate mode,
-  which is only the pilot today. A new seller without certificates gets no
-  returns acquisition. Its bootstrap claims stage already creates the
-  seller's coverage control in legacy mode, so neither the onboarding
-  initializer (which needs no control at all) nor the tail (which needs a
-  certificate to extend) can start it. Today the only way in is an operator
-  quota run followed by `devoluciones_certificate_migrate`; making it automatic
-  changes who may activate certificate coverage and needs its own change.
+- **DEVOLUCIONES beyond 90 days.** Since 2026-10-12 `all` does give every
+  eligible seller DEVOLUCIONES without an operator: an initial window 90 days
+  back, certificate activation from its proof, and the daily tail (see
+  "Initial coverage for a new seller"). Nothing older than those 90 days is
+  acquired for a new seller.
 - **Refresh without recovery.** `ZELERDATA_REFRESH_SELLERS=all` requires
   `ZELERDATA_FORMULA_RECOVERY_SELLERS=all`, otherwise startup fails. Refresh
   would otherwise queue jobs that the recovery worker never claims.
@@ -618,7 +721,8 @@ delays it. The period of a seller's refresh is `cycle duration + interval`.
 | Step | Cost | Scales with |
 | --- | --- | --- |
 | Planning (orders and questions ranges), observed markers, freshness alarms | A few Mongo reads and two enqueues, each capped at 2 s | N, in milliseconds |
-| DEVOLUCIONES runner | Three Mongo reads for a seller without certificates; it admits and advances a tail only for certificate sellers, which is the pilot today | Number of certificate sellers |
+| DEVOLUCIONES renewal | A few Mongo reads per seller; certificate sellers renew at most 20 due certificates within 30 s | N, in milliseconds |
+| DEVOLUCIONES source pass | At most one window per cycle for all sellers together (up to about 3 minutes), plus a few Mongo reads for each seller offered the turn before it | Constant: one window, whatever N is |
 | Precalculated formulas | 10 dispatcher runs (5 formulas × 2 header variants), reading the seller's local catalog. It dominates the roughly 130 s cycle of the pilot | Catalog size of each seller |
 
 **The concrete risk was the warmer.** Markers and precalculated entries last 30
@@ -667,9 +771,13 @@ needed a limit:
   consumers and three lanes in one process on a 3.9 GB VM that Mongo shares.
   Watch `docker stats` for `sheets-worker` during the first warm cycles; this
   document has no production measurement of it.
-- DEVOLUCIONES: only certificate sellers advance or admit a tail, and the tail
-  runs inside the refresh cycle. If more sellers gain certificates, their
-  advances add to `D` and are not covered by the warm budget.
+- DEVOLUCIONES: the source pass adds at most one window (about 3 minutes) to
+  `D`, whatever N is. With the warm budget (450 s plus one warm) a cycle stays
+  near 800 s at most, under the 900 s interval. Sellers take turns, so N
+  sellers in steady state need N windows a day out of about 80 cycles, and K
+  sellers catching up at once (9 windows each) share the slot, about K times
+  slower each. Revisit the cap (`devoluciones_windows_per_cycle` on the
+  supervisor) only if `D` stays far under the interval and many sellers wait.
 
 Revisit capacity when:
 
@@ -755,8 +863,18 @@ seller exists: today the dry run finds one eligible seller, the pilot.
    and the inventory and catalog flags, stay the emergency switches; each
    applies to every seller, the pilot included.
 
-The new seller still gets no DEVOLUCIONES and only the history its bootstrap
-acquired; see "What `all` does not open".
+7. **DEVOLUCIONES for the new seller** (no operator step). On its first turn
+   after the switch, the worker logs `zelerdata.devoluciones_initial_admitted`
+   and `zelerdata.devoluciones_coverage_activated` for it, then one
+   `zelerdata.devoluciones_tail_admitted` per later turn. Check its coverage
+   with `zelerdata_read_model_status --devoluciones-coverage` (see "Initial
+   coverage for a new seller"): about three hours after the first turn it
+   reaches the settled midnight. The pilot keeps its daily tail;
+   `devoluciones_windows` in `zelerdata.refresh_cycle_completed` stays at 0 or
+   1, and `elapsed_seconds` grows by at most one window.
+
+The new seller gets DEVOLUCIONES for the 90 days its bootstrap covered and from
+then on, but no older history; see "What `all` does not open".
 
 **Back to the pilot.** Reverse the order and restore the value on each
 service, then restart only that service:
@@ -775,6 +893,8 @@ Verification for this mode:
 ```bash
 uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py \
   modules/sheets/tests/test_zelerdata_all_sellers_sweeps.py \
+  modules/sheets/tests/test_devoluciones_initial_coverage.py \
+  tests/integration/test_devoluciones_new_sellers.py \
   tests/operations/test_zelerdata_all_sellers_dry_run.py
 uv run pytest modules/sheets/tests/test_formula_recovery.py -k "all_mode or numeric_allowlist_claim"
 ```

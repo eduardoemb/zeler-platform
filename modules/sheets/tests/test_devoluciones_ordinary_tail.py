@@ -711,10 +711,9 @@ async def test_tail_advance_refuses_a_run_it_does_not_own(
     assert admission.acquired == []
 
 
-@pytest.mark.asyncio
-async def test_refresh_wiring_passes_history_on_link_to_the_runner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def _refresh_wiring(
+    monkeypatch: pytest.MonkeyPatch, **env: str
+) -> tuple[Any, list[dict[str, Any]]]:
     from zeler_sheets import consumer
     from zeler_sheets.formulas.recovery import FormulaRecoveryQueue
 
@@ -736,13 +735,51 @@ async def test_refresh_wiring_passes_history_on_link_to_the_runner(
         "ZELERDATA_HISTORY_ON_LINK_ENABLED",
     ):
         monkeypatch.setenv(name, "false")
+    monkeypatch.delenv("ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED", raising=False)
     monkeypatch.setenv("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED", "true")
     monkeypatch.setenv("ZELERDATA_REFRESH_ENABLED", "true")
     monkeypatch.setenv("ZELERDATA_FORMULA_RECOVERY_ENABLED", "true")
     monkeypatch.setenv("ZELERDATA_REFRESH_SELLERS", SELLER)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return await consumer.build_zelerdata_refresh_supervisor(db=MagicMock()), captured
 
-    supervisor = await consumer.build_zelerdata_refresh_supervisor(db=MagicMock())
+
+@pytest.mark.asyncio
+async def test_refresh_wiring_passes_history_on_link_to_the_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, captured = await _refresh_wiring(monkeypatch)
+    assert supervisor._devoluciones_runner is not None
+    assert supervisor._devoluciones_advancer is not None
+
+    # Every seller is renewed in the loop; source work has its own pass.
+    await supervisor._devoluciones_runner(SELLER)
+    await supervisor._devoluciones_advancer(SELLER)
+
+    renewal, advance = captured
+    assert renewal == {"advance_enabled": False, "history_work_enabled": False}
+    assert advance.pop("admit_initial") is not None
+    assert advance == {"advance_enabled": True, "history_work_enabled": False, "renew": False}
+    assert supervisor._devoluciones_windows == 1
+
+
+@pytest.mark.asyncio
+async def test_refresh_wiring_switches_off_initial_coverage_and_source_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, captured = await _refresh_wiring(
+        monkeypatch, ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED="false"
+    )
+    assert supervisor._devoluciones_advancer is not None
+    await supervisor._devoluciones_advancer(SELLER)
+    assert captured[-1]["admit_initial"] is None
+
+    supervisor, captured = await _refresh_wiring(
+        monkeypatch, ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED="false"
+    )
+    # Without source work only the renewal remains.
+    assert supervisor._devoluciones_advancer is None
     assert supervisor._devoluciones_runner is not None
     await supervisor._devoluciones_runner(SELLER)
-
-    assert captured == [{"advance_enabled": True, "history_work_enabled": False}]
+    assert captured == [{"advance_enabled": False, "history_work_enabled": False}]

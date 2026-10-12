@@ -786,9 +786,16 @@ def test_refresh_loop_absorbing_devoluciones_is_documented_and_gated() -> None:
         if line.startswith("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=")
     )
     assert default_line.endswith("false")
-    # The loop only advances what an operator authorized; it never creates runs.
+    # The loop advances what an operator authorized and never widens it. The
+    # only runs it creates are bounded automatic windows (the daily tail and a
+    # new seller's initial window), one per cycle for all sellers, and it
+    # activates certificate mode only from a completed window's proof.
     assert "already-authorized" in refresh_doc
-    assert "never creates" in refresh_doc
+    assert "never re-authorizes or widens an operator run" in refresh_doc
+    assert "one window per cycle for all sellers together" in refresh_doc
+    assert "activated only from a completed window's proof" in refresh_doc
+    assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in refresh_doc
+    assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in consumer
 
 
 def test_deploy_runbook_states_devoluciones_trigger_moved_to_refresh_loop() -> None:

@@ -158,12 +158,15 @@ An absent, expired, malformed, non-enclosing, ambiguous, or drifted joint marker
 returns stable `DATA_UNAVAILABLE`. Formula execution must not query
 MercadoLibre, widen coverage, or synthesize returned quantities.
 
-A seller in certificate mode (the pilot since 2026-10-02) is read through
+A seller in certificate mode (the pilot since 2026-10-02, and every eligible
+seller after its initial window since 2026-10-12) is read through
 `sheets_devoluciones_certificates` instead of the marker, and the certificates
 must cover `[fecha_inicio 00:00Z, fecha_final + 1 day 00:00Z)` without a gap. A
 range that includes today is therefore unavailable by design. While history on
 link is off, the refresh loop extends coverage once per day up to the last UTC
 midnight; see [ZelerData refresh](zelerdata-refresh.md#ordinary-tail-while-history-on-link-is-off-2026-10-07).
+A new seller is covered from 90 days before its first turn, one 10-day window
+per turn; see [Initial coverage for a new seller](zelerdata-refresh.md#initial-coverage-for-a-new-seller-2026-10-12).
 
 ### Range decisions (2026-10-07)
 

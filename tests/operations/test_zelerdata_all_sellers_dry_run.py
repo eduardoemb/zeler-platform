@@ -188,7 +188,19 @@ async def test_configuration_reports_scope_kind_and_flags_not_values() -> None:
     assert configuration["flags"]["ZELERDATA_REFRESH_ENABLED"] is True
     assert configuration["flags"]["ZELERDATA_SCHEDULED_INVENTORY_REFRESH_ENABLED"] is False
     assert configuration["flags"]["ZELERDATA_SCHEDULED_RENEWAL_REFRESH_ENABLED"] is True
+    # On unless explicitly false: `all` gives every new seller DEVOLUCIONES.
+    assert configuration["flags"]["ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED"] is True
     assert "82453304" not in json.dumps(report)
+
+
+@pytest.mark.asyncio
+async def test_configuration_reports_initial_devoluciones_coverage_switched_off() -> None:
+    environ = {"ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED": "false"}
+
+    report = await dry_run.build_report(_db(), now=NOW, environ=environ)
+
+    flags = report["configuration"]["flags"]
+    assert flags["ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED"] is False
 
 
 def test_main_requires_the_database_environment(

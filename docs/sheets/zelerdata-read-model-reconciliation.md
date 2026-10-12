@@ -157,6 +157,11 @@ request/correlation ID. If neither is available, record
 
 ### Authorize a run
 
+This operator path is bounded to the pilot (the CLI refuses any other seller)
+and is not a step for new sellers: since 2026-10-12 the refresh loop gives an
+eligible seller without coverage its initial window and certificate activation
+itself; see [Initial coverage for a new seller](zelerdata-refresh.md#initial-coverage-for-a-new-seller-2026-10-12).
+
 Run this only from the approved VM after a separate production-write approval.
 `--date-to` is exclusive for this quota command. Do not print or inspect the
 generated authority value.

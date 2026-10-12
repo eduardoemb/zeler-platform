@@ -13,7 +13,7 @@ import asyncio
 import inspect
 import re
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -851,6 +851,8 @@ class ZelerDataRefreshSupervisor:
         planner: RefreshPlanner,
         observed_marker_publisher: Callable[[str], Awaitable[tuple[str, ...]]] | None = None,
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
+        devoluciones_advancer: Callable[[str], Awaitable[bool]] | None = None,
+        devoluciones_windows_per_cycle: int = 1,
         precalculated_warmer: Callable[[str], Awaitable[int]] | None = None,
         dlq_archiver: Callable[[], Awaitable[Any]] | None = None,
         freshness_alarm_reporter: Callable[[str], Awaitable[tuple[Any, ...]]] | None = None,
@@ -874,10 +876,19 @@ class ZelerDataRefreshSupervisor:
             raise ValueError("daily hour must be a valid UTC hour")
         if not 0 <= full_weekday <= 6:
             raise ValueError("full review weekday must be a valid UTC weekday")
+        if devoluciones_windows_per_cycle < 1:
+            raise ValueError("DEVOLUCIONES needs at least one window per cycle")
         self._explorer = explorer
         self._planner = planner
         self._observed_marker_publisher = observed_marker_publisher
         self._devoluciones_runner = devoluciones_runner
+        # A DEVOLUCIONES window can take up to about three minutes inside this
+        # serial cycle, and the warm budget does not cover it. Source work
+        # therefore gets its own pass, capped for the whole fleet, and the
+        # sellers take turns starting after the last one served.
+        self._devoluciones_advancer = devoluciones_advancer
+        self._devoluciones_windows = devoluciones_windows_per_cycle
+        self._devoluciones_last_served: str | None = None
         self._precalculated_warmer = precalculated_warmer
         self._dlq_archiver = dlq_archiver
         self._freshness_alarm_reporter = freshness_alarm_reporter
@@ -999,7 +1010,7 @@ class ZelerDataRefreshSupervisor:
         started = self._monotonic()
         now = self._now().astimezone(UTC)
         modes = self._due_modes(now)
-        sellers = await self._explorer.discover_sellers()
+        sellers = discovered = await self._explorer.discover_sellers()
         admitted = False
         if self._renewal_planner is not None:
             try:
@@ -1037,8 +1048,8 @@ class ZelerDataRefreshSupervisor:
             if self._devoluciones_runner is not None:
                 try:
                     # DEVOLUCIONES is absorbed into this loop (Q2-b/Q7-a). The
-                    # runner advances an authorized run; with history on link
-                    # off it may admit one bounded forward tail of coverage.
+                    # runner renews every seller's proof each cycle; without a
+                    # separate advancer it also advances an authorized run.
                     if await self._devoluciones_runner(seller_id):
                         admitted = True
                 except Exception:  # noqa: BLE001 - one model must not stop the loop
@@ -1077,6 +1088,8 @@ class ZelerDataRefreshSupervisor:
                     await self._freshness_alarm_reporter(seller_id)
                 except Exception:  # noqa: BLE001 - alerting must not stop the loop
                     logger.warning("zelerdata.freshness_alarm_failed", seller_id=seller_id)
+        devoluciones_windows = await self._advance_devoluciones(discovered)
+        admitted = admitted or devoluciones_windows > 0
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
             if self._dlq_archiver is not None:
@@ -1098,8 +1111,44 @@ class ZelerDataRefreshSupervisor:
             "zelerdata.refresh_cycle_completed",
             sellers=len(sellers),
             warm_deferred=warm_deferred,
+            devoluciones_windows=devoluciones_windows,
             elapsed_seconds=round(self._monotonic() - started, 3),
         )
         self.health_status = "ok"
         self._cycle.set()
         return admitted
+
+    async def _advance_devoluciones(self, sellers: Sequence[str]) -> int:
+        """Give DEVOLUCIONES source work to at most the per-cycle number of sellers.
+
+        Sellers are offered the turn in discovery order, starting after the
+        last one served, so a seller with work on every cycle (a new seller
+        catching up) cannot hold the pilot's daily tail or another seller's
+        initial window for more than one round. A failed attempt counts as a
+        window: it may already have spent its source calls.
+        """
+        if self._devoluciones_advancer is None or not sellers:
+            return 0
+        order = list(sellers)
+        if self._devoluciones_last_served in order:
+            start = order.index(self._devoluciones_last_served) + 1
+            order = order[start:] + order[:start]
+        windows = 0
+        for seller_id in order:
+            if windows >= self._devoluciones_windows or self._stop_event.is_set():
+                break
+            try:
+                advanced = await self._devoluciones_advancer(seller_id)
+            except Exception as exc:  # noqa: BLE001 - one seller must not stop the others
+                # The window's own phase and source diagnostic are logged by
+                # the tail executor; this names admission and lease failures.
+                logger.warning(
+                    "zelerdata.devoluciones_run_failed",
+                    seller_id=seller_id,
+                    error_type=type(exc).__name__,
+                )
+                advanced = True
+            if advanced:
+                windows += 1
+                self._devoluciones_last_served = seller_id
+        return windows
