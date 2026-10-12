@@ -47,22 +47,29 @@ Skill registry lives at `.atl/skill-registry.md`, relative to this checkout.
   not evidence of current health.
 - Conventional commits only.
 - No AI attribution in commits or pull requests.
-- Never commit without being asked, except that a worktree session integrates
-  its own branch as described in [Parallel sessions and worktrees](#parallel-sessions-and-worktrees-user-decision-oct-7-2026).
+- Sessions commit their own work without asking (user decision, Oct 12, 2026):
+  a worktree session commits and integrates its branch as described in
+  [Parallel sessions and worktrees](#parallel-sessions-and-worktrees-user-decision-oct-7-2026),
+  and the main session commits its own documentation or rule edits, naming only
+  its paths.
 - Never print secrets, tokens, connection strings, OAuth codes, cookies, or raw
   production environment values.
-- Never run local Docker builds. Use Cloud Build for production images only when
-  the user explicitly authorizes the build. Build authorization does not authorize
-  deployment.
+- Never run local Docker builds. Cloud Build images and their deploys are
+  authorized by default (user decision, Oct 12, 2026): the main session builds
+  and deploys on its own what is integrated in `main`, following
+  [Build, deploy, and runtime inspection](#build-deploy-and-runtime-inspection),
+  and reports the build ID, the digest, and the verification. Other production
+  mutations keep their own authorization: data migrations, validators or indexes
+  applied in production, cleanup or pruning on a VM, infrastructure, config or
+  secret changes, deleting resources, and paid changes.
 - At the end of a session that produces or confirms runtime-affecting changes
   merged into `main`, determine which service images are affected and compare
   the intended `main` commit with the deployed image/source commit when runtime
-  evidence is available. If an image is stale or must be rebuilt, explicitly
-  recommend a new Cloud Build image for the affected service and name the
-  required runtime verification. Building and deploying remain separate actions
-  that require explicit user authorization; never perform either action solely
-  because drift was detected. If deployment evidence is unavailable, recommend
-  verifying image drift instead of assuming the runtime is current.
+  evidence is available. If an image is stale or must be rebuilt, the main
+  session builds the affected service's image, deploys it, and runs the
+  required runtime verification (authorized since Oct 12, 2026). If deployment
+  evidence is unavailable, verify image drift first instead of assuming the
+  runtime is current.
 - Do not mutate `../zeler-core` artifacts from this repository unless the user
   explicitly asks for cross-repo migration/decommission work.
 - Do not use SDD (user decision, Oct 12, 2026). Changes to contracts,
@@ -90,7 +97,7 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
 - The main checkout (`~/Documents/repositorios/zeler-platform`, always on `main`)
   is the coordination checkout. Only it:
   - integrates branches into `main` and pushes;
-  - requests Cloud Build images, deploys, and inspects or operates production
+  - builds Cloud Build images, deploys, and inspects or operates production
     (GCP, `platform-vm`, CloudAMQP). Images are built only from commits on
     `main`, so unmerged worktree code never reaches production.
   - Never check out another branch there.
@@ -124,6 +131,24 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
     - The user follows it in herdr's sidebar like any other worktree. If a step
       fails, give the user a paste block for the worktree's terminal instead:
       `claude --model … --effort … -n <type>-<name> "$(cat <<'FIN_PROMPT' … FIN_PROMPT)"`.
+    5. The main session then watches that session until it finishes, without
+       being asked (user decision, Oct 12, 2026, as in `zeler-fabrica`). Right
+       after the prompt arrives it runs, with Bash `run_in_background` and no
+       timeout, `herdr agent wait <type>-<name> --until working --timeout 120000;
+       herdr agent wait <type>-<name>` (without `--until` it returns at idle,
+       done, or blocked), so it is notified when the session stops. Then it
+       reads the session (`herdr agent read <type>-<name> --source
+       recent-unwrapped`) and:
+       - if the branch is integrated: it reviews the integration (the commits
+         on `main`, the checks the session reported, CI on the push); if
+         runtime code changed, it builds and deploys the affected services and
+         verifies them ([Build, deploy, and runtime inspection](#build-deploy-and-runtime-inspection));
+         then it removes the worktree (cleanup below) and tells the user what
+         was confirmed and what waits for them;
+       - if the session stopped to ask something, failed a check, or left a
+         step for the user: it tells the user, and once the session goes on,
+         arms the watch again.
+       The main session only reviews: it never does the worktree's work itself.
   - Branch prefixes: `feat/`, `fix/`, `docs/`, `chore/`, `test/`.
   - First step in a new worktree: `uv sync --all-packages`. Do not symlink the
     main checkout's `.venv`: its editable installs point at the main checkout's
@@ -154,7 +179,9 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
 - Finishing: the worktree session integrates on its own once its checks pass,
   without waiting for the user to say "integra a main" (user decision, Oct 9,
   2026, as in `zeler-fabrica`). Prompts for worktree sessions must not ask it to
-  wait. Build, deploy, and production changes keep their own authorization.
+  wait. Builds and deploys run from the main session, which does them on its
+  own after the integration; other production changes keep their own
+  authorization.
   1. Run the focused checks and the four root gates in the worktree, plus the
      CI extras when they apply. If a check fails and the session cannot fix it,
      stop and report; do not integrate.
@@ -166,8 +193,8 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
      rebase and retry. If `.git/index.lock` exists, wait and retry; never
      delete it.
   4. Push `main`. CI runs on the push.
-  5. If runtime code changed, apply the end-of-session image drift rule. Build
-     and deploy still need explicit authorization and run from the main session.
+  5. If runtime code changed, say which services in the report: the main
+     session builds and deploys them (the end-of-session image drift rule).
   6. Report to the user that the branch is integrated. The worktree session does
      not remove its own worktree: the main session does, as below.
 - Two sessions in the same folder (small changes only):
@@ -341,17 +368,18 @@ When adapting legacy products:
 ## Build, deploy, and runtime inspection
 
 - For build/deploy work, read the applicable sections of `docs/deploy.md` and
-  deployment lessons. Confirm project, VM, zone, authorized commit and affected
+  deployment lessons. Confirm project, VM, zone, the commit to deploy and affected
   services; do not assume other VMs share `platform-vm`'s configuration.
-- Build from the connected repository at an exact authorized commit present in
-  `main`, not an uploaded local checkout. Use one deployable image per Cloud
+- Build from the connected repository at an exact commit present in `main`, not
+  an uploaded local checkout. Use one deployable image per Cloud
   Build with `options.requestedVerifyOption: VERIFIED`. Verify successful build,
   repository, source commit and immutable digest; record build ID, full commit
   and `repo@sha256:...`. Tags alone are not deployment authority.
-- Each deployment proposal names services, target images, bounded cleanup if
-  needed, verification and compatible rollback. One approval covers that explicit
-  scope; ask only for an expansion. Build permission remains separate. Prepare
-  the proposal completely before requesting any missing authorization.
+- Before each deployment, write down its plan (services, target images,
+  verification and compatible rollback) and report it with the result. Builds
+  and deploys of `main` need no approval (user decision, Oct 12, 2026); bounded
+  cleanup on the VM still does: when a deploy needs it, prepare the plan
+  completely and ask only for that.
 - A health/capacity inspection is read-only: check free bytes and inodes on `/`
   and `/var/lib/zeler-mongo`, the Mongo mount, available memory, Docker usage,
   service health, restart counts and OOM flags. Use sanitized, narrowly selected

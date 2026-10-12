@@ -675,10 +675,11 @@ on the VM as overlays; these values are now the repository baseline:
 
 ## 5. Re-deploy a Single Service
 
-Deploy only after explicit user authorization, separate from build authorization.
-The proposal must name commit, services, target digests, bounded cleanup if needed,
-verification and compatible rollback. One approval covers that explicit scope;
-request additional approval only for an expansion. Submit Cloud Build from the
+Builds and deploys of commits in `main` are authorized by default (user decision,
+Oct 12, 2026; see `AGENTS.md`): the main session runs them on its own. Before
+each deploy, write down its plan (commit, services, target digests, verification
+and compatible rollback) and report it with the result. Bounded cleanup on the
+VM still needs the user's approval: ask only for that. Submit Cloud Build from the
 operator environment, then execute this section inside `platform-vm`. The
 previous **running** digest is the rollback authority; it may differ from the
 image currently written in Compose.
@@ -782,8 +783,8 @@ sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
 Run the service-specific smoke from section 8, including dependency readiness.
 Observe health, restart count and available capacity again after the service-specific
 settling window; allow worker shutdown to finish and set the outer command timeout
-longer than Docker's stop grace. If deployment, health, or smoke fails and the
-proposal authorized this compatible rollback, replace `NEW_IMAGE` with the
+longer than Docker's stop grace. If deployment, health, or smoke fails, roll back
+to the compatible rollback in the deploy plan: replace `NEW_IMAGE` with the
 recorded `PRIOR_IMAGE`, recreate only the same service, and verify the rollback digest and health:
 
 ```bash
@@ -810,8 +811,8 @@ sudo docker compose --file "$COMPOSE_FILE" ps "$SERVICE"
 ```
 
 Repeat running-image identity, health, readiness and smoke checks against
-`PRIOR_IMAGE`; `ps` alone does not prove rollback success. If rollback was not
-included in approval, report the failure and request that specific action.
+`PRIOR_IMAGE`; `ps` alone does not prove rollback success. If the plan had no
+compatible rollback, or the rollback fails too, stop and report it to the user.
 
 The Compose backup preserves the pre-deploy file for investigation, but it is
 not automatically the runtime rollback target. Use the recorded running digest.
@@ -847,10 +848,10 @@ gcloud compute ssh platform-vm --tunnel-through-iap --zone=$ZONE --project=$PROJ
 ## 5b. Bootstrap Cloud Run Job rollout
 
 Build the `zeler-bootstrap` Job image with the single-image verified Cloud Build
-procedure above, then update the Job to the resulting immutable digest under
-separate deployment authorization. The older
-`infra/cloudbuild/bootstrap-job.yaml` combines build and deployment, so do not
-use it when authorization covers only the build. Before deployment, export a
+procedure above, then update the Job to the resulting immutable digest (builds
+and deploys of `main` are authorized by default since Oct 12, 2026). Keep the
+build and the deploy as separate, verified steps: do not use the older
+`infra/cloudbuild/bootstrap-job.yaml`, which combines them. Before deployment, export a
 sanitized binding contract for preflight:
 
 ```bash
