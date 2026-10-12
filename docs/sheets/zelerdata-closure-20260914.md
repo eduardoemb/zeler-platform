@@ -3,7 +3,7 @@
 Status: stopped at the user's request after verified worker/API delivery;
 see the [stop and status report](zelerdata-stop-report-20260914.md).
 The 90-minute certification window has not started. Source of acceptance: the updated
-`openspec/changes/zelerdata-live-formula-repairs/` artifacts and the user's
+the former `zelerdata-live-formula-repairs` change notes (deleted 2026-10-12) artifacts and the user's
 approved plan (35 simultaneous cases, 90 minutes, combined evidence for absent
 positive production fixtures).
 

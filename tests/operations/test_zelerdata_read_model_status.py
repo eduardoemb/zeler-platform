@@ -1,7 +1,7 @@
 """Tests for the sanitized read-only ZelerData read-model status report.
 
 Covers Phase 2 S4a-S5 tasks from
-``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: 17-row
+the former ``zelerdata-read-model-freshness-guards`` change tasks: 17-row
 synthesis with exact contracted keys for full and empty collections (2.1),
 sanitized output that excludes identifiers and degrades malformed or
 unknown-source evidence to ``null`` (2.2), ``in_productive_window`` gated on

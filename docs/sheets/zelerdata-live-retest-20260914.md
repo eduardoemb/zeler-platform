@@ -1,6 +1,6 @@
 # ZelerData: live formula retest, September 14, 2026
 
-Authority: `openspec/changes/zelerdata-live-formula-repairs/` and the user's
+Authority: the former `zelerdata-live-formula-repairs` change notes (deleted 2026-10-12) and the user's
 instruction to continue the existing formula tests and repairs. Target:
 spreadsheet `1NUYbJUgYEc6SumZ_IwOWXj_d9MC4grGO5c2XRrAM858`, tab `gpt`,
 sheet ID `1904231986`, seller `82453304`. Historical input dates remain

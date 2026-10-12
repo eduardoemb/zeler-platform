@@ -1,6 +1,6 @@
 # ZelerData live formula repairs
 
-Change authority: `openspec/changes/zelerdata-live-formula-repairs/`.
+Change authority: the former `zelerdata-live-formula-repairs` change notes (deleted 2026-10-12).
 The user authorized repairs and verification in the existing spreadsheet, including
 required builds and deployments. The user subsequently authorized commits and
 push to the selected `main` branch to continue that release and live verification.

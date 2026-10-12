@@ -30,4 +30,4 @@ los archivos de tests de handlers y en la prueba de cobertura de matriz
 
 Cada fila debe actualizarse con resultado observado, evidencia y defectos
 pendientes antes de la aceptación. Ver el documento completo en
-`openspec/changes/zelerdata-pilot-reliable-sync/formula-matrix.md`.
+the former `zelerdata-pilot-reliable-sync` change notes (deleted 2026-10-12).

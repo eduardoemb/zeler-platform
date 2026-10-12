@@ -35,8 +35,8 @@ image update does not change an execution already running.
 | Independent SDD diagnostics | Renewal starvation, invalid-certificate status and schema inventory findings resolved; final local diagnostics successful. No production acceptance implied. |
 
 Latest pre-release gate log: `/tmp/zeler-devoluciones-pre-release-gates-20261002.log`.
-Historical root failures remain recorded in [apply-progress](../../openspec/changes/zelerdata-devoluciones-multiperiod-coverage/apply-progress.md)
-and [verification report](../../openspec/changes/zelerdata-devoluciones-multiperiod-coverage/verify-report.md).
+Historical root failures remain recorded in apply-progress (former `zelerdata-devoluciones-multiperiod-coverage` change notes, deleted 2026-10-12)
+and verification report (former `zelerdata-devoluciones-multiperiod-coverage` change notes, deleted 2026-10-12).
 An untouched inventory deadline case once observed one HTTP attempt instead of
 zero; its whole file passed 11 tests immediately and an unchanged full-root rerun
 passed. Cause remains unconfirmed; no test/code workaround was introduced.
@@ -296,7 +296,7 @@ historical, not a substitute for this missing final broader check.
 | Native Google Sheets proof | Not performed; no Google writes |
 | August acquisition | Explicitly outside scope; not performed |
 
-Operator procedure: [multiperiod rollout](../../openspec/changes/zelerdata-devoluciones-multiperiod-coverage/rollout.md),
+Operator procedure: [multiperiod rollout](devoluciones-multiperiod-rollout-procedure.md),
 with the stricter DB-before-new-writer ordering above. Supporting sanitized inputs:
 `/tmp/devoluciones-release-plan-20261002.md` and
 `/tmp/devoluciones-new-builds-17c30f4.json`. These are snapshots, not live status.

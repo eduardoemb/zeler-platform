@@ -157,7 +157,7 @@ cualquiera de las rutas siguientes el mensaje pasa a decir desde cuándo hay dat
 
 **Estado 2026-10-09: implementado en código, pendiente de rollout.** Colección
 `sheets_item_availability_transitions`; diseño y decisiones en
-`openspec/changes/zelerdata-availability-history/` y
+the former `zelerdata-availability-history` change notes (deleted 2026-10-12) y
 [zelerdata-formulas.md](zelerdata-formulas.md#availability-history-9-october-2026).
 Se eligió el mensaje (no la parte cubierta) y el latido observed-only de
 `item_status_states` como gate. Las series son por publicación o variación (ID

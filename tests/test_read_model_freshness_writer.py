@@ -1,7 +1,7 @@
 """Tests for the guarded read-model freshness entry.
 
 Covers Phase 1 S1-S2 tasks from
-``openspec/changes/zelerdata-read-model-freshness-guards/tasks.md``: the
+the former ``zelerdata-read-model-freshness-guards`` change tasks: the
 17-name inventory contract and pre-DB validation (1.1-1.3), plus the
 generic ``stale``/``failed`` upsert at exact ``(seller_id, read_model)``
 identity with ``$$NOW``/source metadata, fail-closed session behavior,

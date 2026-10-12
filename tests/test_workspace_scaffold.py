@@ -19,7 +19,6 @@ def test_workspace_root_contains_required_files() -> None:
         ".github/workflows/test.yml",
         "infra/docker/mongo-dev.yml",
         "docs/README.md",
-        "sdd/README.md",
     ]
 
     missing = [file_name for file_name in required_files if not (ROOT / file_name).exists()]

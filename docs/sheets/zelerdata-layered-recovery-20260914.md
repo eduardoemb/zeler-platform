@@ -80,7 +80,7 @@ real-Mongo 1900-item workload; a later mixed-mode test passed separately.
 Independent review of the final diff passed 41 pacing/caller/lifecycle tests
 in 10.91 seconds and found no additional defect. The timing regression is a
 scheduler model, not live acceptance. Detailed TDD evidence is in
-`openspec/changes/zelerdata-live-formula-repairs/apply-progress-spaced-pacing.md`.
+the former `zelerdata-live-formula-repairs` change notes (deleted 2026-10-12).
 Only sheets-worker constructs these pacers; the current API image remains
 applicable to this localized worker correction.
 

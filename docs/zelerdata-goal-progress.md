@@ -8931,4 +8931,4 @@ arrived after the worker restart in this window, and a native Sheet formula
 readback is still pending. The claim-specific upstream 403 and historical
 DLQ remain exceptions. The bounded pilot assessment is **8/10**; detailed
 build, digest, rollback, and capacity evidence is in
-`openspec/changes/zelerdata-pilot-reliable-sync/apply-progress.md`.
+the former `zelerdata-pilot-reliable-sync` change notes (deleted 2026-10-12).

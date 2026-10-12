@@ -1640,7 +1640,7 @@ Cumulative coverage is **opt-in per seller**, not automatically enabled by deplo
 new code. Keep genuine June coverage while independently acquiring earlier/later
 periods; never expand one marker across an unacquired gap.
 
-Follow the [multiperiod rollout and rollback runbook](../openspec/changes/zelerdata-devoluciones-multiperiod-coverage/rollout.md).
+Follow the [multiperiod rollout and rollback runbook](ops/devoluciones-multiperiod-rollout-procedure.md).
 It provides exact approved-runtime inspection/migration/activation/status commands,
 writer compatibility ordering, separate schema/build/deploy authorization, and
 native June/August/gap acceptance beyond the 30-minute proof lifetime. Until those

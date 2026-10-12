@@ -21,7 +21,7 @@ as part of implementation.
    images, provenance, compatibility and retrievable rollback. Use the documented
    dry-run preflight; do not prune volumes or restart the whole Compose project.
 4. Apply additive certificate/operation validators and indexes using the approved
-   schema rollout in [deploy.md](../../../docs/deploy.md) **before activation**.
+   schema rollout in [deploy.md](../deploy.md) **before activation**.
    The validator loader must preserve sibling `$expr`, not only `$jsonSchema`.
    Retain existing indexes; certificate history has no TTL eviction.
 5. Deploy compatible Sheets API and worker images and update every bootstrap/job
@@ -156,5 +156,5 @@ and genuine acquisition evidence, never just flip the mode bit.
 | Bootstrap OrdersStage and order identity/normalization repair | Existing `guarded_devoluciones_write` default before/after dependency guard. |
 | Unknown relevance, explicit stale/failed state | Conservative shared invalidation; qualified known writes can recertify only exact proven pre/post transitions. |
 
-See [apply-progress.md](apply-progress.md) for the detailed source/test inventory,
+See the former `zelerdata-devoluciones-multiperiod-coverage` apply-progress notes (deleted with `openspec/` on 2026-10-12) for the detailed source/test inventory,
 local evidence and intentionally unperformed production acceptance.

@@ -11,7 +11,7 @@ needed only for a row the tail will not reach.
 
 The selected closure design explicitly says “No new recovery protocol, TTL
 expansion, or migration” in
-[design.md](../../openspec/changes/zelerdata-live-formula-repairs/design.md).
+design.md (former `zelerdata-live-formula-repairs` change notes, deleted 2026-10-12).
 Existing reconciliation can repair productive returns, but cannot resolve one
 legacy claim from 2026-06-23 that the canonical source excludes because it has no
 authoritative item identity. Keeping that row in active claims blocks the

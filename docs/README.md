@@ -1,6 +1,5 @@
 # Documentation index
 
-- The original platform design notes (historical) are in `sdd/zeler-platform-greenfield/`.
 - Local documentation for this repo should be added here as implementation grows.
 - [Bootstrap runtime wiring](bootstrap-runtime-wiring.md) — required env vars and safe dry-run behavior for the bootstrap Cloud Run Job entrypoint.
 - [Legacy decommission runbook](legacy-decommission-runbook.md) — Phase 7 safety-gated manual plan.

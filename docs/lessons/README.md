@@ -182,7 +182,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `bootstrap/tests/test_bootstrap_phase3.py` accounts-stage
   regression tests and a disposable local Mongo smoke with the checked-in
   validator; first production rollout record in
-  `openspec/changes/bootstrap-accounts-linked-dispatch/verify-report.md`.
+  the former `bootstrap-accounts-linked-dispatch` change notes (deleted 2026-10-12).
 - status: active
 
 ### L-017 — Inspect metrics before the telemetry cutoff
@@ -238,7 +238,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - failed path: Retry a full item chunk for every optional performance 404, or
   key large recovery sweeps only by the exact changing ID list. Both multiply
   source calls and queue work without adding source evidence.
-- verification/source: `openspec/changes/zelerdata-quality-load-control/`,
+- verification/source: the former `zelerdata-quality-load-control` change notes (deleted 2026-10-12),
   `modules/sheets/tests/test_formula_recovery.py`, and
   `docs/ops/zelerdata-quality-load-control.md`.
 - status: active
@@ -253,7 +253,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   admitting changing, overlapping ID lists. On 26 September, nine active
   buybox jobs contained 8,368 IDs but only 937 distinct IDs, with hundreds of
   failed chunks and sustained offers 404 traffic.
-- verification/source: `openspec/changes/zelerdata-buybox-load-control/`,
+- verification/source: the former `zelerdata-buybox-load-control` change notes (deleted 2026-10-12),
   `modules/sheets/tests/test_formula_recovery.py`, and
   `docs/ops/zelerdata-buybox-load-control.md`. The 26 September pilot rollout
   consolidated eight active jobs into one; at 90 minutes it had reached 760/937
@@ -271,7 +271,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   terminal jobs whose full-seller passes take much longer. A superseded 934-ID
   buybox job reopened after the consolidated 937-ID job finished, and the
   inventory sweep restarted after its cooldown, sustaining source traffic.
-- verification/source: `openspec/changes/zelerdata-periodic-sweep-control/`,
+- verification/source: the former `zelerdata-periodic-sweep-control` change notes (deleted 2026-10-12),
   the refresh factory tests, and the 27 September pilot worker rollout. The
   settled post-backlog call rate remains to be measured.
 - status: active
@@ -287,7 +287,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   four already-proven order months were admitted again and sustained hundreds
   of order-detail gateway calls.
 - verification/source: `modules/sheets/tests/test_pilot_history_cutoff_lifecycle.py`
-  and `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
+  and the former `zelerdata-periodic-sweep-control` change notes (deleted 2026-10-12).
 - status: active
 
 ### L-023 — Revalidate locally stored questions omitted by a complete scan
@@ -303,7 +303,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   complete scan and returned 404 by detail; two one-hour jobs each fetched
   the same 229 visible question details, then failed `source_incomplete`.
 - verification/source: `modules/sheets/tests/test_formula_recovery.py` and
-  `openspec/changes/zelerdata-periodic-sweep-control/verify-report.md`.
+  the former `zelerdata-periodic-sweep-control` change notes (deleted 2026-10-12).
 - status: active
 
 ### L-024 — Verify the claims DLQ and binding, not just the source queue
@@ -427,7 +427,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   descriptor exhaustion and protected test workflow;
   `tests/integration/test_stock_time_forward_*_rs0.py` enforces the isolated target.
   `tests/test_phase3_validator_contract.py` requires a default database;
-  `openspec/changes/zelerdata-pilot-reliable-sync/apply-progress.md` records the
+  the former `zelerdata-pilot-reliable-sync` change notes (deleted 2026-10-12) records the
   full-suite rerun with a named disposable database.
 - status: active
 
@@ -501,7 +501,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - verification/source: `tests/test_broker_probe_ownership.py`,
   `gateway/tests/test_rabbit_readiness_ownership.py`, and
   `gateway/tests/test_rabbit_readiness_transport.py`; implementation and TDD
-  evidence in `openspec/changes/zelerdata-live-formula-repairs/`
+  evidence in the former `zelerdata-live-formula-repairs` change notes (deleted 2026-10-12)
   `apply-progress-broker-probes.md` and `apply-progress-gateway-ownership.md`.
 - status: promoted/reference
 
