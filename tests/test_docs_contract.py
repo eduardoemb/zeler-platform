@@ -23,7 +23,7 @@ def test_agents_and_security_docs_capture_required_rules() -> None:
     assert skill_registry in agents
     assert "/Users/" not in agents
     assert "TDD strict" in agents
-    assert "Never commit without being asked" in agents
+    assert "Sessions commit their own work without asking" in agents
     assert "Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP" in agents
     assert "Tokens are NEVER stored plaintext" in security
     assert "AES-256-GCM + GCP KMS wrapped DEKs" in security
