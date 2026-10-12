@@ -381,16 +381,24 @@ class ItemShippingCatalogFormulaHandlers:
         )
         values = _header_row(context.args.get("encabezados"), headers)
         by_id = {snapshot["catalog_product_id"]: snapshot for snapshot in snapshots}
-        cached_ids = (set(by_id) & set(source_missing)) | {
-            identity
-            for identity, snapshot in by_id.items()
-            if _as_utc_datetime(snapshot["snapshot_at"]) <= now - CATALOG_PRODUCT_CURRENT_AGE
+        # A product declared absent is served as NA and, like any served value,
+        # reported as cached once its observation is no longer current.
+        observed_at = {
+            **{identity: _as_utc_datetime(row["snapshot_at"]) for identity, row in by_id.items()},
+            **source_missing,
         }
-        recoverable = tuple(identity for identity in missing if identity not in source_missing)
-        for identity in sorted(set(by_id) | set(missing)):
+        cached = {
+            identity: observed
+            for identity, observed in sorted(observed_at.items())
+            if observed <= now - CATALOG_PRODUCT_CURRENT_AGE
+        }
+        recoverable = missing
+        for identity in sorted(set(by_id) | set(missing) | set(source_missing)):
             values.append(
                 _catalogo_completo_row(by_id[identity])[: len(headers)]
                 if identity in by_id
+                else [NA_VALUE] * len(headers)
+                if identity in source_missing
                 else ["DATA_UNAVAILABLE"] * len(headers)
             )
         inventory_gap = not inventory_current or bool(missing_items)
@@ -421,21 +429,18 @@ class ItemShippingCatalogFormulaHandlers:
             recovery=recovery,
             additional_recoveries=tuple(additional_recoveries),
             meta={
-                "rows_count": len(by_id) + len(missing) + int(inventory_gap),
+                "rows_count": len(by_id) + len(missing) + len(source_missing) + int(inventory_gap),
                 "available_products": len(by_id),
-                "cached_products": len(cached_ids),
+                "cached_products": len(cached),
                 "source_unavailable_products": len(source_missing),
                 "unavailable_product_reasons": {
                     identity: "catalog_product_not_found" for identity in source_missing
                 },
-                "cached_product_observed_at": {
-                    identity: _as_utc_datetime(by_id[identity]["snapshot_at"])
-                    for identity in sorted(cached_ids)
-                },
+                "cached_product_observed_at": cached,
                 "unavailable_products": len(missing),
                 "unavailable_items": len(missing_items),
                 "inventory_enumeration_current": inventory_current,
-                "catalog_products_complete": not inventory_gap and not missing and not cached_ids,
+                "catalog_products_complete": not inventory_gap and not missing and not cached,
                 **(
                     {
                         "unavailable_reason": "inventory_incomplete"

@@ -219,32 +219,82 @@ async def test_catalog_product_cache_has_four_hour_cutoff_and_visible_acquisitio
 
 
 @pytest.mark.asyncio
-async def test_catalog_product_cached_after_404_requires_recent_disposition() -> None:
+@pytest.mark.parametrize(
+    "formula,width", [("ZELERDATA_OBTENER_CATALOGO", 3), ("ZELERDATA_CATALOGO_COMPLETO", 6)]
+)
+@pytest.mark.parametrize("prior_payload", [False, True])
+@pytest.mark.parametrize(
+    ("age", "declared"),
+    [
+        (timedelta(minutes=1), True),
+        (timedelta(hours=3, minutes=30), True),
+        (timedelta(hours=23, minutes=59), True),
+        (timedelta(hours=24), False),
+    ],
+)
+async def test_catalog_product_declared_not_found_is_na_while_the_declaration_holds(
+    formula: str, width: int, prior_payload: bool, age: timedelta, declared: bool
+) -> None:
     db = FakeDb()
-    db["sheets_catalog_product_snapshots"].documents = {"product": {"title": "Prior title"}}
+    products = db["sheets_catalog_product_snapshots"]
+    products.documents = {"first": {"title": "Available"}, "gone": {"title": "Prior title"}}
+    _seed_catalog_inventory(db)
+    gone = products.documents["gone"]
+    checked = NOW - age
+    if prior_payload:
+        # A payload read before the 404 is older than the declaration.
+        gone["snapshot_at"] = checked - timedelta(hours=1)
+    else:
+        # What the recovery worker inserts when the product was never read.
+        for field in ("title", "description", "image_url", "attributes"):
+            del gone[field]
+        gone["snapshot_at"] = checked
+    gone["source_unavailable"] = {"reason": "catalog_product_not_found", "observed_at": checked}
+
+    result = await _dispatcher(db).execute(_context(formula, {"encabezados": False}))
+
+    assert result.values[0] == ["Available", *(["NA"] * (width - 1))]
+    meta = result.meta
+    if declared:
+        current = age < timedelta(minutes=15)
+        assert result.values[1] == ["NA"] * width
+        assert result.recovery is None
+        assert meta["unavailable_products"] == 0
+        assert meta["source_unavailable_products"] == 1
+        assert meta["unavailable_product_reasons"] == {"MLM1": "catalog_product_not_found"}
+        assert meta["catalog_products_complete"] is current
+        assert meta["cached_product_observed_at"] == ({} if current else {"MLM1": checked})
+    else:
+        assert result.values[1] == ["DATA_UNAVAILABLE"] * width
+        assert result.recovery is not None
+        assert result.recovery.catalog_product_ids == ("MLM1",)
+        assert meta["unavailable_products"] == 1
+        assert meta["source_unavailable_products"] == 0
+        assert meta["catalog_products_complete"] is False
+    assert meta["rows_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_product_declaration_older_than_its_payload_is_ignored() -> None:
+    db = FakeDb()
+    db["sheets_catalog_product_snapshots"].documents = {"product": {"title": "Current title"}}
     _seed_catalog_inventory(db)
     snapshot = db["sheets_catalog_product_snapshots"].documents["product"]
-    snapshot["snapshot_at"] = NOW - timedelta(hours=3)
     snapshot["source_unavailable"] = {
         "reason": "catalog_product_not_found",
         "observed_at": NOW - timedelta(minutes=1),
     }
 
-    current = await _dispatcher(db).execute(
+    result = await _dispatcher(db).execute(
         _context("ZELERDATA_OBTENER_CATALOGO", {"encabezados": False})
     )
-    assert current.values == [["Prior title", "NA", "NA"]]
-    assert current.meta["cached_product_observed_at"] == {"MLM0": NOW - timedelta(hours=3)}
-    assert current.meta["catalog_products_complete"] is False
-    assert current.recovery is None
 
-    snapshot["source_unavailable"]["observed_at"] = NOW - timedelta(minutes=16)
-    expired = await _dispatcher(db).execute(
-        _context("ZELERDATA_OBTENER_CATALOGO", {"encabezados": False})
-    )
-    assert expired.values == [["DATA_UNAVAILABLE"] * 3]
-    assert expired.meta["cached_products"] == 0
-    assert expired.recovery is not None
+    # A stale declaration never hides a newer read, but its presence is not a
+    # payload the reader can trust either: recover it.
+    assert result.values == [["DATA_UNAVAILABLE"] * 3]
+    assert result.meta["source_unavailable_products"] == 0
+    assert result.recovery is not None
+    assert result.recovery.catalog_product_ids == ("MLM0",)
 
 
 @pytest.mark.asyncio

@@ -737,11 +737,11 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - status: active
 
 ### L-045 — Serve a source-declared absence as NA instead of recovering it
-- area: ZelerData buybox and quality readers
+- area: ZelerData buybox, quality and catalog product readers
 - proven path: When Mercado Libre answers that a datum does not exist for a
-  publication (`not_listed` competition, quality not generated or HTTP 400),
-  the reader serves `NA` while that answer is fresh and does not request
-  recovery; only absent, expired or failed acquisitions stay
+  publication (`not_listed` competition, quality not generated or HTTP 400,
+  catalog product 404), the reader serves `NA` while that answer is fresh and
+  does not request recovery; only absent, expired or failed acquisitions stay
   `DATA_UNAVAILABLE` and recoverable. Decide it in the reader from the stored
   status and its observation time, without changing writers.
 - failed path: Treating every non-value as `DATA_UNAVAILABLE`: 657 `not_listed`
@@ -752,8 +752,12 @@ repeat failures, and promote stable knowledge to its proper operational form.
   unrecoverable rows because the winning-user column of the same `not_listed`
   snapshots (no `winning_user_id`) stayed `DATA_UNAVAILABLE`. Check each column
   that feeds `recoverable`, not only the one that exposed the loop.
+  A declaration honored for less than the cycle that renews it loops too: a
+  catalog product 404 counted for 15 minutes while the catalog sweep re-reads
+  it every ~3 hours, so two products stayed `DATA_UNAVAILABLE` and re-requested
+  on every read. Make the limit outlast that cycle (24 hours, as the others).
 - verification/source: `test_formula_handlers_item_shipping_catalog.py`,
-  `test_formula_handlers_remaining_phase4.py`,
+  `test_formula_recovery.py`, `test_formula_handlers_remaining_phase4.py`,
   `test_formula_handlers_quality_calculator.py`,
   `docs/sheets/zelerdata-formulas.md`. Not yet observed in production.
 - status: active

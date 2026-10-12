@@ -1557,15 +1557,15 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
             ready = await client.post("/sheets/formulas:execute", headers=headers, json=payload)
             assert ready.status_code == 200
             recovered = ["Recovered product", "Recovered description", *(["NA"] * (width - 2))]
-            expected_first = (
-                recovered if product_state == "available" else ["DATA_UNAVAILABLE"] * width
-            )
+            # A product Mercado Libre declares absent is NA, not a gap to recover.
+            expected_first = recovered if product_state == "available" else ["NA"] * width
             assert ready.json()["values"] == [expected_first, recovered]
             meta = ready.json()["meta"]
-            assert meta["catalog_products_complete"] is (product_state == "available")
+            assert meta["catalog_products_complete"] is True
             assert "recovery_requested" not in meta
             if product_state != "available":
                 assert meta["unavailable_product_reasons"] == {"MLA1": "catalog_product_not_found"}
+                assert meta["unavailable_products"] == 0
                 assert meta["cached_products"] == 0
                 assert meta["source_unavailable_products"] == 1
                 assert meta["cached_product_observed_at"] == {}
@@ -1579,7 +1579,7 @@ async def test_catalog_product_http_admission_reaches_worker_and_persists(
                     **cached,
                     "snapshot_at": cached["snapshot_at"].replace(tzinfo=None),
                 }
-            for checked_at in (now - timedelta(minutes=16), now + timedelta(minutes=1)):
+            for checked_at in (now - timedelta(hours=24, minutes=1), now + timedelta(minutes=1)):
                 await recovery_db.sheets_catalog_product_snapshots.update_one(
                     {"_id": f"{seller}:MLA1"},
                     {"$set": {"source_unavailable.observed_at": checked_at}},

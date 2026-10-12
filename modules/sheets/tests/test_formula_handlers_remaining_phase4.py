@@ -345,7 +345,7 @@ async def test_catalog_recovery_does_not_starve_known_items_behind_inventory_gap
         ("MLA9",),
         ("MLA2",),
         True,
-        (),
+        {},
     )
     repository.find_recent_catalog_inventory.return_value = (
         repository.find_recent_item_inventory.return_value,

@@ -18,7 +18,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_CALIDAD` | `=ZELERDATA_CALIDAD("cuenta", "si")` | Modern quality projection from local item rows: identity/status/publication fields, quality score/level, component statuses/scores, and pending actions. A trusted quality acquisition younger than 24 hours whose basis still matches the publication is served; `CALCULADO EN` shows when Mercado Libre calculated it. Legacy `PRECIO SUGERIDO` is intentionally not exposed. |
 | `ZELERDATA_CATALOGO` | `=ZELERDATA_CATALOGO("cuenta", "base", "si")` | Legacy 24-column catalog matrix from current item rows, catalog buybox snapshots, and local order sales windows; verified buybox snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. `% TIEMPO GANANDO` uses the same observed calculation as `ZELERDATA_CATALOGOTIEMPO` over the rolling last 30 days, or `Sin histórico antes de <fecha hora>` when observations start inside that window. |
 | `ZELERDATA_CATALOGOBUYBOX` | `=ZELERDATA_CATALOGOBUYBOX("cuenta", "base", "si")` | Catalog buybox rows from `sheets_catalog_buybox_snapshots`; values follow visible header order. Verified snapshots younger than 24 hours may be shown as cached with their acquisition time in response metadata. |
-| `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
+| `ZELERDATA_CATALOGO_COMPLETO` | `=ZELERDATA_CATALOGO_COMPLETO("cuenta", "si")` | Enriched catalog product rows from local snapshots; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. A product Mercado Libre answers 404 for shows `NA` for 24 hours. |
 | `ZELERDATA_CATALOGOSINVINCULAR` | `=ZELERDATA_CATALOGOSINVINCULAR("cuenta", "si")` | Current publications locally marked as catalog-link suggestions. |
 | `ZELERDATA_CATALOGOTIEMPO` | `=ZELERDATA_CATALOGOTIEMPO("cuenta", "2026-01-01", "2026-01-31", "todos", "si")` | Catalog winning hours, hours with stock and winning percent, computed at read time from `sheets_catalog_competition_observations` (each observed state holds until the next observation; `winning`/`sharing_first_place` win, `competing` loses, stock 0 or any other state does not compete). Days follow the seller's time zone and a range reaching today ends now. A publication whose observations start after the range start answers `Sin histórico antes de <fecha hora>` instead of a partial sum; one never observed answers `Sin histórico de catálogo`. No legacy-import marker and no formula-time MercadoLibre calls. |
 | `ZELERDATA_CATEGORIAS` | `=ZELERDATA_CATEGORIAS("cuenta", "MLA1")` | Category by item ID. |
@@ -38,7 +38,7 @@ ZelerData formulas are Google Sheets custom functions backed by the zeler-platfo
 | `ZELERDATA_IMAGENES` | `=ZELERDATA_IMAGENES("cuenta", "todos", "todos")` | Image URLs from the current item read model. |
 | `ZELERDATA_MEDIDAS` | `=ZELERDATA_MEDIDAS("cuenta", "MLA1", "SKU-1")` | Combined `LARGO * ALTO * ANCHO` measurement cell from local item rows. |
 | `ZELERDATA_MEDIDASGENERAL` | `=ZELERDATA_MEDIDASGENERAL("cuenta", "todos", "todos", "si")` | Item/SKU/title table with one combined measurement cell. |
-| `ZELERDATA_OBTENER_CATALOGO` | `=ZELERDATA_OBTENER_CATALOGO("cuenta")` | Legacy-simple catalog rows: TITULO, DESCRIPCION, IMAGEN as `=IMAGE("url")`; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. |
+| `ZELERDATA_OBTENER_CATALOGO` | `=ZELERDATA_OBTENER_CATALOGO("cuenta")` | Legacy-simple catalog rows: TITULO, DESCRIPCION, IMAGEN as `=IMAGE("url")`; verified snapshots younger than four hours may be shown as cached with their acquisition time in response metadata. A product Mercado Libre answers 404 for shows `NA` for 24 hours. |
 | `ZELERDATA_ORDENES` | `=ZELERDATA_ORDENES("cuenta", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders table for a date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_ORDENESPORSKU` | `=ZELERDATA_ORDENESPORSKU("cuenta", "SKU-1", "2026-01-01", "2026-01-31", "todos", "", "si")` | Orders filtered by SKU and date range; `ID Carrito` comes only from MercadoLibre `orders.pack_id`. |
 | `ZELERDATA_PAUSADAS` | `=ZELERDATA_PAUSADAS("cuenta", "MLA1")` | Paused days for the current paused period. If Mercado Libre does not inform when the listing became paused, Zeler counts from the first accepted synchronization where it observed the listing paused; missing current basis returns `NA`. |
@@ -283,6 +283,29 @@ were switched off after the VM froze for about five hours.
   fresh source-declared absence stays `NA` and is not selected. The 24-hour
   limits are unchanged. See "Renewal of on-demand acquisitions" in
   `zelerdata-refresh.md` (`test_zelerdata_renewal_sweep.py`).
+- **A catalog product Mercado Libre answers 404 for is NA (12 October 2026).**
+  On the pilot, `OBTENER_CATALOGO` and `CATALOGO_COMPLETO` always reported
+  `unavailable_products=2` and `catalog_products_complete=false`: two products
+  answered `/products/{id}` with 404 on every catalog sweep (about every 3
+  hours), but the reader honored that answer for only 15 minutes, so between
+  sweeps both rows were `DATA_UNAVAILABLE` and every read requested them again.
+  The recovery worker records the 404 as `source_unavailable` with reason
+  `catalog_product_not_found` and its observation time; a later successful read
+  replaces the document and clears it. The reader now serves such a product as
+  `NA` in every column while the declaration is newer than any payload beside
+  it and younger than `CATALOG_PRODUCT_NOT_FOUND_MAX_AGE` (24 hours), and does
+  not recover it. The limit only matters when no sweep renews the declaration
+  (sweep off, delayed or failing): formula reads then re-check it once a day,
+  the same limit as the other declared absences. A payload read before the 404
+  is not shown. The product is counted in `source_unavailable_products` and
+  `unavailable_product_reasons`, not in `unavailable_products`, and, like a
+  served payload, in `cached_product_observed_at` (with its 404 time) once
+  older than 15 minutes, so `catalog_products_complete` is `true` when every
+  payload and declaration is current and nothing else is missing. 403, 429 and
+  5xx answers record nothing: the product stays `DATA_UNAVAILABLE` and
+  recoverable (`test_formula_handlers_item_shipping_catalog.py`,
+  `test_formula_recovery.py`). Writers are unchanged. The 404s on
+  `/products/{id}/items` are the optional buybox offers of L-020, not this case.
 - **Still open.** `resolve_item_history_sources` (stock-time and history
   formulas) keeps full documents. Their formulas are out of scope here.
   Item `price` in a buybox row can still be `DATA_UNAVAILABLE` after a re-sync,

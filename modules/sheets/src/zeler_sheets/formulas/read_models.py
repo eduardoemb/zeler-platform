@@ -59,6 +59,12 @@ ITEM_ENRICHMENT_CACHE_MAX_AGE = timedelta(hours=24)
 CATALOG_PRODUCT_SNAPSHOTS_READ_MODEL = "catalog_product_snapshots"
 CATALOG_PRODUCT_CURRENT_AGE = timedelta(minutes=15)
 CATALOG_PRODUCT_CACHE_MAX_AGE = timedelta(hours=4)
+# A product Mercado Libre answers 404 for is served as NA for a day (L-045).
+# The catalog sweep re-reads every product about every 3 hours and a later
+# successful read replaces the declaration, so this limit only bounds how long
+# a declaration stands when no sweep renews it (sweep off, delayed or failing):
+# formula reads then re-check it once a day instead of on every read.
+CATALOG_PRODUCT_NOT_FOUND_MAX_AGE = timedelta(hours=24)
 CATALOG_TIME_METRICS_READ_MODEL = "catalog_time_metrics"
 CLAIMS_READ_MODEL = "claims"
 DEVOLUCIONES_READ_MODEL = "devoluciones"
@@ -811,7 +817,10 @@ class FormulaReadModelRepository:
 
     async def find_recent_catalog_product_inventory(
         self, *, seller_id: str, formula: str, now: datetime
-    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool, tuple[str, ...]]:
+    ) -> tuple[list[dict[str, Any]], tuple[str, ...], tuple[str, ...], bool, dict[str, datetime]]:
+        """Return served payloads, recoverable IDs, invalid items, enumeration
+        currency and the products Mercado Libre declared absent, with the time
+        of each declaration."""
         inventory_snapshot = await self._find_recent_item_inventory_snapshot(
             seller_id=seller_id, formula=formula, now=now
         )
@@ -841,7 +850,7 @@ class FormulaReadModelRepository:
             else []
         )
         ready = []
-        source_missing: set[str] = set()
+        source_missing: dict[str, datetime] = {}
         for snapshot in snapshots:
             observed = _safe_utc_datetime(snapshot.get("snapshot_at"))
             title = snapshot.get("title")
@@ -858,27 +867,35 @@ class FormulaReadModelRepository:
                 if isinstance(unavailable, dict)
                 else None
             )
-            known_missing = (
+            if (
                 isinstance(unavailable, dict)
                 and unavailable.get("reason") == "catalog_product_not_found"
                 and checked is not None
-                and now - CATALOG_PRODUCT_CURRENT_AGE < checked <= now
+                and now - CATALOG_PRODUCT_NOT_FOUND_MAX_AGE < checked <= now
                 and checked >= observed
-            )
-            if known_missing:
-                source_missing.add(snapshot["catalog_product_id"])
+            ):
+                # The declaration is newer than any payload kept beside it, so
+                # the product is served as absent, never with the old payload.
+                source_missing[snapshot["catalog_product_id"]] = checked
+                continue
             if (
                 now - CATALOG_PRODUCT_CACHE_MAX_AGE < observed
-                and (unavailable is None or known_missing)
+                and unavailable is None
                 and isinstance(title, str)
                 and bool(title.strip())
                 and {"description", "image_url", "attributes"} <= snapshot.keys()
             ):
-                # A recent cached payload may be served, but a recorded 404
-                # needs a fresh disposition and never claims current completeness.
                 ready.append(snapshot)
-        missing = tuple(sorted(product_ids - {row["catalog_product_id"] for row in ready}))
-        return ready, missing, tuple(sorted(invalid_items)), current, tuple(sorted(source_missing))
+        missing = tuple(
+            sorted(product_ids - {row["catalog_product_id"] for row in ready} - set(source_missing))
+        )
+        return (
+            ready,
+            missing,
+            tuple(sorted(invalid_items)),
+            current,
+            dict(sorted(source_missing.items())),
+        )
 
     async def find_recent_catalog_buybox_inventory(
         self,
