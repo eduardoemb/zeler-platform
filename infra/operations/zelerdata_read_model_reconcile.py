@@ -67,6 +67,39 @@ class DevolucionesQuotaProofError(RuntimeError):
         self.counts = {key: proof.get(key) for key in self.COUNT_KEYS}
 
 
+INCOMPLETE_WINDOW_PROOF = "window_proof_incomplete"
+# MongoDB's DocumentValidationFailure.
+_DOCUMENT_VALIDATION_FAILURE = 121
+
+
+def devoluciones_window_failure_reason(exc: Exception) -> str:
+    """Why a quota window failed, as a stable code: no identities, amounts or source text."""
+    from zeler_sheets.devoluciones_reconciliation import devoluciones_failure_reason
+
+    if isinstance(exc, DevolucionesQuotaProofError):
+        return INCOMPLETE_WINDOW_PROOF
+    return devoluciones_failure_reason(exc)
+
+
+async def _keep_devoluciones_run_failure_reason(runs: Any, run_id: str, reason: str) -> None:
+    """Store why a run failed, once its failure is committed.
+
+    Kept apart from the fenced failure write: until the runs validator that
+    allows ``failure_reason`` is applied (its own production step), Mongo
+    rejects the field, and the run must still fail exactly as before; the
+    reason is then only in the log.
+    """
+    from pymongo.errors import WriteError
+
+    try:
+        await runs.update_one(
+            {"_id": run_id, "state": "failed"}, {"$set": {"failure_reason": reason}}
+        )
+    except WriteError as exc:
+        if exc.code != _DOCUMENT_VALIDATION_FAILURE:
+            raise
+
+
 READ_MODELS: tuple[str, ...] = (
     "orders",
     "shipments",
@@ -1409,6 +1442,7 @@ async def advance_devoluciones_quota_run(
         checkpoint={"phase": "quota_window_prepare", "run_id": run_id, "index": window["index"]},
         writer=prepare,
     )
+    failure_reason: str | None = None
     try:
         proof = await source(
             window=window,
@@ -1420,8 +1454,11 @@ async def advance_devoluciones_quota_run(
         )
     except HistoryPolicyWaitError:
         raise
-    except Exception:  # noqa: BLE001 - every source failure is terminal and markerless.
+    except Exception as exc:  # noqa: BLE001 - every source failure is terminal and markerless.
         proof = {}
+        failure_reason = devoluciones_window_failure_reason(exc)
+    if not _complete_quota_proof(proof):
+        failure_reason = failure_reason or INCOMPLETE_WINDOW_PROOF
 
     async def finish(session: Any) -> None:
         session_kwargs = {"session": session} if session is not None else {}
@@ -1469,6 +1506,8 @@ async def advance_devoluciones_quota_run(
         checkpoint={"phase": "quota_window_finish", "run_id": run_id, "index": window["index"]},
         writer=finish,
     )
+    if failure_reason is not None:
+        await _keep_devoluciones_run_failure_reason(runs, run_id, failure_reason)
     return outcome
 
 

@@ -1645,6 +1645,7 @@ async def year_history_window_runs(db: Any, seller_id: str, end: datetime) -> li
                 "updated_at": 1,
                 "expires_at": 1,
                 "not_before": 1,
+                "failure_reason": 1,
             },
         )
         .sort([("created_at", -1), ("_id", 1)])
@@ -1689,13 +1690,16 @@ async def year_history_retrying(
         return None
     latest = runs[0]
     state = str(latest.get("state"))
-    return {
+    retrying: dict[str, Any] = {
         "date_from": _onboarding_utc(latest["start"]).isoformat(),
         "date_to": _onboarding_utc(latest["end"]).isoformat(),
         # Still active past its deadline: abandoned, as by a restart.
         "state": "expired" if state in ADVANCEABLE_RUN_STATES else state,
         "runs": len(runs),
     }
+    if isinstance(latest.get("failure_reason"), str):
+        retrying["failure_reason"] = latest["failure_reason"]
+    return retrying
 
 
 async def advance_year_history_devoluciones(
@@ -1775,6 +1779,7 @@ async def advance_ordinary_devoluciones_tail(
         DevolucionesQuotaProofError,
         _finalize_devoluciones_quota_run,
         advance_devoluciones_quota_run,
+        devoluciones_window_failure_reason,
         execute_devoluciones_quota_window,
         readback_devoluciones_quota_run,
     )
@@ -1783,7 +1788,10 @@ async def advance_ordinary_devoluciones_tail(
         new_devoluciones_attempt_token,
         stable_devoluciones_operation_id,
     )
-    from zeler_sheets.devoluciones_reconciliation import _private_focused_devoluciones_diagnostic
+    from zeler_sheets.devoluciones_reconciliation import (
+        DevolucionesReadModelVerificationError,
+        _private_focused_devoluciones_diagnostic,
+    )
 
     clock = now or (lambda: datetime.now(UTC))
 
@@ -1809,6 +1817,9 @@ async def advance_ordinary_devoluciones_tail(
                 seller_id=seller_id,
                 run_id=run_id,
                 error_type=type(exc).__name__,
+                failure_reason=(
+                    exc.reason if isinstance(exc, DevolucionesReadModelVerificationError) else None
+                ),
             )
             raise
 
@@ -1846,7 +1857,8 @@ async def advance_ordinary_devoluciones_tail(
         except Exception as exc:
             # The quota runner turns every source failure into a failed run
             # without a trace (2026-10-09/10). Bounded fields only: no
-            # exception text, URL or token.
+            # exception text, URL or token. ``failure_reason`` names the
+            # check that refused the window (2026-10-13), as the run keeps it.
             counts = exc.counts if isinstance(exc, DevolucionesQuotaProofError) else {}
             logger.warning(
                 "zelerdata.devoluciones_tail_failed",
@@ -1855,6 +1867,7 @@ async def advance_ordinary_devoluciones_tail(
                 run_id=run_id,
                 window_index=window.get("index"),
                 error_type=type(exc).__name__,
+                failure_reason=devoluciones_window_failure_reason(exc),
                 **_private_focused_devoluciones_diagnostic(exc),
                 **counts,
             )

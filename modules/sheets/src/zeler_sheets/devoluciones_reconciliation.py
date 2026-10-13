@@ -160,7 +160,15 @@ class ClaimInventoryError(RuntimeError):
 
 
 class DevolucionesReadModelVerificationError(RuntimeError):
-    pass
+    """A DEVOLUCIONES proof check refused the window.
+
+    ``reason`` is a stable code naming the check, safe to log and store: never
+    identities, amounts or source text, which the message may carry.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class SourceCallBudgetError(RuntimeError):
@@ -324,6 +332,22 @@ def _private_focused_devoluciones_diagnostic(exc: Exception) -> dict[str, str]:
         reason.value if isinstance(reason, ClaimProjectionReason) else "projection_unknown"
     )
     return diagnostic
+
+
+def devoluciones_failure_reason(exc: Exception) -> str:
+    """A stable code for why a window failed, safe to log and store.
+
+    A verification check names itself; any other failure falls back to its
+    bounded source diagnosis. Never the exception text.
+    """
+    if isinstance(exc, DevolucionesReadModelVerificationError):
+        return exc.reason
+    diagnostic = _private_focused_devoluciones_diagnostic(exc)
+    if "projection_reason" in diagnostic:
+        return diagnostic["projection_reason"]
+    if "source_stage" in diagnostic:
+        return f"{diagnostic['source_stage']}_{diagnostic['source_family']}"
+    return diagnostic["failure_class"]
 
 
 class FrozenDict(dict[str, Any]):
@@ -588,14 +612,17 @@ async def read_devoluciones_claims_keyset(
             created_at = _utc_datetime(document.get("date_created"), field="claim date_created")
             if not claim_id or claim_id in seen_ids:
                 raise DevolucionesReadModelVerificationError(
-                    "claim keyset contains a missing or duplicate identity"
+                    "claim keyset contains a missing or duplicate identity",
+                    reason="claim_keyset_identity_invalid",
                 )
             if (
                 last_date is not None
                 and last_id is not None
                 and (created_at < last_date or (created_at == last_date and claim_id <= last_id))
             ):
-                raise DevolucionesReadModelVerificationError("claim keyset did not advance")
+                raise DevolucionesReadModelVerificationError(
+                    "claim keyset did not advance", reason="claim_keyset_not_advancing"
+                )
             seen_ids.add(claim_id)
             documents.append(dict(document))
             last_date = created_at
@@ -635,7 +662,8 @@ async def read_devoluciones_orders_by_id_keyset(
             order_id = str(document.get("_id") or "").strip()
             if not order_id or order_id in seen_ids or order_id not in chunk:
                 raise DevolucionesReadModelVerificationError(
-                    "order keyset contains an unexpected or duplicate identity"
+                    "order keyset contains an unexpected or duplicate identity",
+                    reason="order_keyset_identity_invalid",
                 )
             seen_ids.add(order_id)
             documents.append(dict(document))
@@ -668,7 +696,8 @@ async def verify_devoluciones_read_model(
     persisted_ids = frozenset(str(claim.get("_id") or "").strip() for claim in claims)
     if persisted_ids != expected_ids:
         raise DevolucionesReadModelVerificationError(
-            "persisted claim identities do not match authoritative inventory"
+            "persisted claim identities do not match authoritative inventory",
+            reason="persisted_claims_differ_from_inventory",
         )
 
     productive_claims = 0
@@ -681,11 +710,15 @@ async def verify_devoluciones_read_model(
         _required_text(claim.get("status"), field="claim status")
         claim_version = claim.get("claim_version")
         if isinstance(claim_version, bool) or not isinstance(claim_version, int):
-            raise DevolucionesReadModelVerificationError("claim source version is required")
+            raise DevolucionesReadModelVerificationError(
+                "claim source version is required", reason="persisted_claim_version_missing"
+            )
         _utc_datetime(claim.get("last_updated"), field="claim last_updated")
         _utc_datetime(claim.get("return_last_updated"), field="claim return_last_updated")
         if str(claim.get("seller_id")) != str(seller_id) or claim.get("type") != "returns":
-            raise DevolucionesReadModelVerificationError("claim scope is not canonical")
+            raise DevolucionesReadModelVerificationError(
+                "claim scope is not canonical", reason="persisted_claim_scope_not_canonical"
+            )
         productive = claim.get("productive")
         if productive is True:
             quantity = claim.get("returned_quantity")
@@ -696,16 +729,20 @@ async def verify_devoluciones_read_model(
                 or claim.get("return_quantity_basis") != "v2_return_order"
             ):
                 raise DevolucionesReadModelVerificationError(
-                    "productive claim lacks exact v2 return quantity"
+                    "productive claim lacks exact v2 return quantity",
+                    reason="persisted_claim_quantity_not_v2",
                 )
             productive_claims += 1
         else:
             raise DevolucionesReadModelVerificationError(
-                "only positive integral v2 return proof is complete"
+                "only positive integral v2 return proof is complete",
+                reason="persisted_claim_not_productive",
             )
         required_orders.setdefault(order_id, []).append(item_id)
         if not claim_id:
-            raise DevolucionesReadModelVerificationError("claim identity is required")
+            raise DevolucionesReadModelVerificationError(
+                "claim identity is required", reason="persisted_claim_identity_missing"
+            )
 
     orders = await read_devoluciones_orders_by_id_keyset(
         db=db,
@@ -716,14 +753,20 @@ async def verify_devoluciones_read_model(
     )
     orders_by_id = {str(order.get("_id") or "").strip(): order for order in orders}
     if set(orders_by_id) != set(required_orders):
-        raise DevolucionesReadModelVerificationError("required canonical orders are missing")
+        raise DevolucionesReadModelVerificationError(
+            "required canonical orders are missing", reason="persisted_orders_missing"
+        )
     for order_id, claim_item_ids in required_orders.items():
         order = orders_by_id[order_id]
         if str(order.get("seller_id")) != str(seller_id):
-            raise DevolucionesReadModelVerificationError("order seller does not match claim seller")
+            raise DevolucionesReadModelVerificationError(
+                "order seller does not match claim seller", reason="persisted_order_seller_mismatch"
+            )
         items = order.get("items")
         if not isinstance(items, list):
-            raise DevolucionesReadModelVerificationError("canonical order items are missing")
+            raise DevolucionesReadModelVerificationError(
+                "canonical order items are missing", reason="persisted_order_items_missing"
+            )
         for item_id in claim_item_ids:
             matches = [
                 item
@@ -732,7 +775,12 @@ async def verify_devoluciones_read_model(
             ]
             if len(matches) != 1:
                 raise DevolucionesReadModelVerificationError(
-                    "claim item does not have one unique canonical order line"
+                    "claim item does not have one unique canonical order line",
+                    reason=(
+                        "persisted_order_line_ambiguous"
+                        if matches
+                        else "persisted_order_line_missing"
+                    ),
                 )
 
     if expected_read_model_fingerprint is not None:
@@ -743,7 +791,8 @@ async def verify_devoluciones_read_model(
         )
         if persisted_fingerprint != expected_read_model_fingerprint:
             raise DevolucionesReadModelVerificationError(
-                "persisted DEVOLUCIONES facts differ from hydrated source facts"
+                "persisted DEVOLUCIONES facts differ from hydrated source facts",
+                reason="persisted_facts_differ_from_source",
             )
 
     return VerifiedDevolucionesReadModel(
@@ -1199,9 +1248,13 @@ async def revalidate_devoluciones_snapshot(
         or operation.lease_lost
     )
     if invalid_owner:
-        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+        raise DevolucionesReadModelVerificationError(
+            "root operation does not own snapshot scope", reason="operation_scope_not_owned"
+        )
     if operation.source_fingerprint != snapshot.source_fingerprint:
-        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+        raise DevolucionesReadModelVerificationError(
+            "root operation source fingerprint changed", reason="operation_fingerprint_changed"
+        )
     require_snapshot_publication_age(snapshot=snapshot, current_time=now())
 
     current = await collect_devoluciones_snapshot(
@@ -1217,26 +1270,49 @@ async def revalidate_devoluciones_snapshot(
         heartbeat=heartbeat,
         exclude_forbidden_claim_details=exclude_forbidden_claim_details,
     )
-    if (
-        current.source_fingerprint != snapshot.source_fingerprint
-        or current.read_model_fingerprint != snapshot.read_model_fingerprint
-        or current.inventory.fingerprint != snapshot.inventory.fingerprint
-        or current.exclusion_fingerprint != snapshot.exclusion_fingerprint
-        or current.expected_claim_ids != snapshot.expected_claim_ids
-        or current.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
-        != snapshot.counters.get("excluded_low_cost_no_authoritative_item_identity", 0)
-        or current.counters.get("excluded_outside_requested_range", 0)
-        != snapshot.counters.get("excluded_outside_requested_range", 0)
-        or current.counters.get("excluded_claim_detail_forbidden", 0)
-        != snapshot.counters.get("excluded_claim_detail_forbidden", 0)
-    ):
+    change = _revalidation_change(current=current, snapshot=snapshot)
+    if change is not None:
         raise DevolucionesReadModelVerificationError(
             "DEVOLUCIONES source, read-model fingerprint, or counter changed "
-            "during targeted revalidation"
+            "during targeted revalidation",
+            reason=change,
         )
     require_snapshot_publication_age(snapshot=snapshot, current_time=now())
     await heartbeat()
     return current
+
+
+_REVALIDATED_COUNTERS = (
+    "excluded_low_cost_no_authoritative_item_identity",
+    "excluded_outside_requested_range",
+    "excluded_claim_detail_forbidden",
+)
+
+
+def _revalidation_change(
+    *, current: CollectedDevolucionesSnapshot, snapshot: CollectedDevolucionesSnapshot
+) -> str | None:
+    """What the source changed between collection and revalidation, most specific first.
+
+    The source fingerprint covers the inventory, read model and exclusions, so
+    it is checked last.
+    """
+    if current.inventory.fingerprint != snapshot.inventory.fingerprint:
+        return "revalidation_inventory_changed"
+    if current.exclusion_fingerprint != snapshot.exclusion_fingerprint:
+        return "revalidation_exclusions_changed"
+    if current.expected_claim_ids != snapshot.expected_claim_ids:
+        return "revalidation_claims_changed"
+    if current.read_model_fingerprint != snapshot.read_model_fingerprint:
+        return "revalidation_read_model_changed"
+    if any(
+        current.counters.get(counter, 0) != snapshot.counters.get(counter, 0)
+        for counter in _REVALIDATED_COUNTERS
+    ):
+        return "revalidation_counters_changed"
+    if current.source_fingerprint != snapshot.source_fingerprint:
+        return "revalidation_source_changed"
+    return None
 
 
 def require_snapshot_publication_age(
@@ -1244,7 +1320,14 @@ def require_snapshot_publication_age(
 ) -> None:
     publication_age = _utc_datetime(current_time, field="publication time") - snapshot.captured_at
     if publication_age < timedelta(0) or publication_age > timedelta(seconds=150):
-        raise DevolucionesReadModelVerificationError("snapshot publication age is invalid")
+        raise DevolucionesReadModelVerificationError(
+            "snapshot publication age is invalid",
+            reason=(
+                "snapshot_publication_before_capture"
+                if publication_age < timedelta(0)
+                else "snapshot_publication_too_old"
+            ),
+        )
 
 
 async def write_devoluciones_snapshot(
@@ -1254,9 +1337,13 @@ async def write_devoluciones_snapshot(
     operation: Any,
 ) -> dict[str, int]:
     if operation.seller_id != snapshot.seller_id or not operation.owns_lease:
-        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+        raise DevolucionesReadModelVerificationError(
+            "root operation does not own snapshot scope", reason="operation_scope_not_owned"
+        )
     if operation.source_fingerprint != snapshot.source_fingerprint:
-        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+        raise DevolucionesReadModelVerificationError(
+            "root operation source fingerprint changed", reason="operation_fingerprint_changed"
+        )
 
     from zeler_sheets.claim_projection import persist_claim_projection
     from zeler_sheets.event_persistence import SheetsEventPersistence
@@ -1308,9 +1395,13 @@ async def quarantine_unreported_legacy_claims(
     from zeler_platform_core.devoluciones_readiness import guarded_devoluciones_write
 
     if operation.seller_id != snapshot.seller_id or not operation.owns_lease:
-        raise DevolucionesReadModelVerificationError("root operation does not own snapshot scope")
+        raise DevolucionesReadModelVerificationError(
+            "root operation does not own snapshot scope", reason="operation_scope_not_owned"
+        )
     if operation.source_fingerprint != snapshot.source_fingerprint:
-        raise DevolucionesReadModelVerificationError("root operation source fingerprint changed")
+        raise DevolucionesReadModelVerificationError(
+            "root operation source fingerprint changed", reason="operation_fingerprint_changed"
+        )
     selector: dict[str, Any] = {
         "seller_id": snapshot.seller_id,
         "type": "returns",
@@ -1359,7 +1450,9 @@ async def quarantine_unreported_legacy_claims(
             )
             removed = await claims.delete_one(exact, **session_kwargs)
             if getattr(removed, "deleted_count", 0) != 1:
-                raise DevolucionesReadModelVerificationError("legacy claim changed in quarantine")
+                raise DevolucionesReadModelVerificationError(
+                    "legacy claim changed in quarantine", reason="quarantine_claim_changed"
+                )
             await invalidate_claim_impact(db, snapshot.seller_id, [original], session=session)
             quarantined += 1
 
@@ -1669,7 +1762,7 @@ def devoluciones_read_model_fingerprint(
         )
         if order_id in orders_by_id:
             raise DevolucionesReadModelVerificationError(
-                "hydrated source proof contains duplicate orders"
+                "hydrated source proof contains duplicate orders", reason="source_orders_duplicated"
             )
         orders_by_id[order_id] = source_order
 
@@ -1679,30 +1772,34 @@ def devoluciones_read_model_fingerprint(
         claim_seller_id = _required_text(claim.get("seller_id"), field="claim seller_id")
         if claim_seller_id != normalized_seller_id:
             raise DevolucionesReadModelVerificationError(
-                "claim seller does not match hydrated source proof scope"
+                "claim seller does not match hydrated source proof scope",
+                reason="source_claim_seller_mismatch",
             )
         order_id = _required_text(claim.get("order_id"), field="claim order_id")
         item_id = _required_text(claim.get("item_id"), field="claim item_id")
         matched_order = orders_by_id.get(order_id)
         if matched_order is None:
             raise DevolucionesReadModelVerificationError(
-                "hydrated source proof is missing a required order"
+                "hydrated source proof is missing a required order", reason="source_order_missing"
             )
         order_seller_id = _order_seller_id(matched_order)
         if order_seller_id != normalized_seller_id:
             raise DevolucionesReadModelVerificationError(
-                "order seller does not match hydrated source proof scope"
+                "order seller does not match hydrated source proof scope",
+                reason="source_order_seller_mismatch",
             )
         order_line = _unique_order_line(matched_order, item_id=item_id)
         claim_version = claim.get("claim_version")
         if isinstance(claim_version, bool) or not isinstance(claim_version, int):
             raise DevolucionesReadModelVerificationError(
-                "claim source version is required for hydrated source proof"
+                "claim source version is required for hydrated source proof",
+                reason="source_claim_version_missing",
             )
         productive = claim.get("productive")
         if not isinstance(productive, bool):
             raise DevolucionesReadModelVerificationError(
-                "claim productive classification is required for hydrated source proof"
+                "claim productive classification is required for hydrated source proof",
+                reason="source_claim_productive_missing",
             )
         returned_quantity = claim.get("returned_quantity")
         if productive:
@@ -1712,11 +1809,13 @@ def devoluciones_read_model_fingerprint(
                 or returned_quantity < 1
             ):
                 raise DevolucionesReadModelVerificationError(
-                    "productive claim quantity is required for hydrated source proof"
+                    "productive claim quantity is required for hydrated source proof",
+                    reason="source_claim_quantity_invalid",
                 )
         elif returned_quantity is not None:
             raise DevolucionesReadModelVerificationError(
-                "non-productive claim quantity must be absent from hydrated source proof"
+                "non-productive claim quantity must be absent from hydrated source proof",
+                reason="source_claim_quantity_unexpected",
             )
 
         rows.append(
@@ -1830,14 +1929,15 @@ def _unique_order_line(order: Mapping[str, Any], *, item_id: str) -> Mapping[str
     raw_items = order.get("items") or order.get("order_items")
     if not isinstance(raw_items, list):
         raise DevolucionesReadModelVerificationError(
-            "hydrated source proof order items are missing"
+            "hydrated source proof order items are missing", reason="source_order_items_missing"
         )
     matches = [
         row for row in raw_items if isinstance(row, Mapping) and _order_line_item_id(row) == item_id
     ]
     if len(matches) != 1:
         raise DevolucionesReadModelVerificationError(
-            "hydrated source proof requires one unique order line"
+            "hydrated source proof requires one unique order line",
+            reason="source_order_line_ambiguous" if matches else "source_order_line_missing",
         )
     return matches[0]
 
@@ -1882,21 +1982,31 @@ def _order_line_quantity(row: Mapping[str, Any]) -> int:
     value = row.get("qty", row.get("quantity"))
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise DevolucionesReadModelVerificationError(
-            "hydrated source proof order line quantity is invalid"
+            "hydrated source proof order line quantity is invalid",
+            reason="source_order_line_quantity_invalid",
         )
     return cast(int, value)
+
+
+def _field_reason(field: str, check: str) -> str:
+    # ``field`` is always a literal of this module, never a source value.
+    return "_".join(re.findall(r"[a-z0-9]+", field.lower()) + [check])
 
 
 def _required_text(value: Any, *, field: str) -> str:
     normalized = str(value or "").strip()
     if not normalized:
-        raise DevolucionesReadModelVerificationError(f"{field} is required")
+        raise DevolucionesReadModelVerificationError(
+            f"{field} is required", reason=_field_reason(field, "required")
+        )
     return normalized
 
 
 def _utc_datetime(value: Any, *, field: str) -> datetime:
     if not isinstance(value, datetime):
-        raise DevolucionesReadModelVerificationError(f"{field} must be a datetime")
+        raise DevolucionesReadModelVerificationError(
+            f"{field} must be a datetime", reason=_field_reason(field, "not_datetime")
+        )
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 

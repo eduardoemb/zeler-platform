@@ -348,6 +348,24 @@ error class, the bounded source diagnostic (`failure_class`, `source_stage`,
 `source_family`) and, for an incomplete readback, the four proof counts. It
 never logs exception text, URLs or tokens.
 
+Since 2026-10-13 a window failure also logs `failure_reason`, a stable code
+for the check that refused it, and the quota runner stores it on the failed
+run (`sheets_devoluciones_runs.failure_reason`, every run kind). Each of the
+roughly 35 checks that raise `DevolucionesReadModelVerificationError` has its
+own code: `source_*` for the hydrated source proof built while collecting
+(for example `source_order_missing`, `source_order_line_ambiguous`), a field
+name plus `_required` or `_not_datetime` for a missing field
+(`return_subtype_required`), `revalidation_*_changed` for what the source
+changed before publication, `snapshot_publication_too_old`, and `persisted_*`
+for the read model's own readback. Any other failure gives its source stage and
+family (`claim_search_server`), its projection reason, `window_proof_incomplete`
+for a readback that does not match, or its `failure_class`. A readback failure
+logs `failure_reason` only for a verification check. The pilot's year window
+of 2026-05-12 to 05-22 failed twice on 2026-10-13 with only the error class,
+and about 35 checks raise it. The runs validator must allow the field before
+it is stored (applying it is a separate production step). Until then, the run
+fails exactly as before and the reason is only in the log.
+
 #### Initial coverage for a new seller (2026-10-12)
 
 Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage
@@ -850,14 +868,15 @@ the target, plus the seller's year-history portions by state; no identities.
 A source held at its edge also shows `retrying`: for orders and questions the
 failed (or waiting) portion at the edge with its `failure_reason` and
 `attempts`, for DEVOLUCIONES the next window with the `state` of its latest run
-(`failed`, or `expired` when abandoned) and how many `runs` it has had. For a
+(`failed`, or `expired` when abandoned), its `failure_reason` when the run
+kept one, and how many `runs` it has had. For a
 new seller, expect the `orders` and `questions` edges to move back about one
 portion per cycle and DEVOLUCIONES 10 days per year window, `portions` mostly
 `completed` with at most one `pending` or `running`, and `failed` only with a
 later, narrower retry. A `retrying` that stays on a one-hour portion, or on one
 window with several `runs`, is a row the source does not give whole: the
 worker log names the check (`zelerdata.year_history_portion_incomplete`, or
-`zelerdata.devoluciones_tail_failed` with its `source_stage`). Also:
+`zelerdata.devoluciones_tail_failed` with its `failure_reason`). Also:
 
 - `zelerdata_read_model_status --devoluciones-coverage`: no `unacquired_gaps`,
   and the capacity reads `sufficient` with a year of certificates.

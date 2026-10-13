@@ -1409,6 +1409,8 @@ ENTITY_SCHEMAS: dict[str, dict[str, Any]] = {
             "created_at": DATE,
             "updated_at": NULLABLE_DATE,
             "expires_at": DATE,
+            # The stable code of the check that failed its window (2026-10-13).
+            "failure_reason": {"bsonType": ["string", "null"]},
             **SCHEMA_VERSION,
         },
     },

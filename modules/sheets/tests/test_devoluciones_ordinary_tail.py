@@ -585,11 +585,47 @@ async def test_tail_logs_the_window_failure_the_quota_runner_swallows(
             "run_id": "t" * 64,
             "window_index": 2,
             "error_type": "HTTPStatusError",
+            "failure_reason": "claim_detail_client_other",
             "failure_class": "source_failure",
             "source_stage": "claim_detail",
             "source_family": "client_other",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_tail_logs_which_verification_check_refused_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-13: the pilot's year window of 2026-05-12 to 05-22 failed twice
+    with ``DevolucionesReadModelVerificationError`` and nothing else; about 35
+    checks raise it. The log now names the check, never its message.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    from zeler_sheets.devoluciones_reconciliation import DevolucionesReadModelVerificationError
+
+    _Admission(monkeypatch)
+
+    async def execute(**_: Any) -> dict[str, Any]:
+        raise DevolucionesReadModelVerificationError(
+            "order 2000001 of claim 5500001", reason="source_order_line_ambiguous"
+        )
+
+    monkeypatch.setattr(reconcile, "execute_devoluciones_quota_window", execute)
+    monkeypatch.setattr(
+        reconcile, "advance_devoluciones_quota_run", _swallowing_advance({"index": 0})
+    )
+    db = _runs_db(_run(_id="t" * 64, authorization_id=ORDINARY_TAIL_AUTHORIZATION))
+
+    with capture_logs() as logs:
+        await runner.advance_ordinary_devoluciones_tail(db, "t" * 64, now=lambda: NOW)
+
+    (failure,) = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
+    assert failure["error_type"] == "DevolucionesReadModelVerificationError"
+    assert failure["failure_reason"] == "source_order_line_ambiguous"
+    assert "5500001" not in repr(failure) and "2000001" not in repr(failure)
 
 
 @pytest.mark.asyncio
@@ -616,6 +652,7 @@ async def test_tail_logs_the_proof_counts_of_an_incomplete_window(
 
     failure = next(log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed")
     assert failure["error_type"] == "DevolucionesQuotaProofError"
+    assert failure["failure_reason"] == "window_proof_incomplete"
     assert {key: failure[key] for key in counts} == counts
 
 
@@ -693,9 +730,12 @@ async def test_tail_logs_a_final_readback_that_does_not_certify(
 
     assert outcome == {"advanced": 1, "finalized": 0}
     failures = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
-    assert [(log["phase"], log.get("error_type")) for log in failures] == [
-        ("readback", "RuntimeError"),
-        ("finalize", None),
+    assert [
+        (log["phase"], log.get("error_type"), log.get("failure_reason")) for log in failures
+    ] == [
+        # Only a verification check has a reason here: a readback makes no source call.
+        ("readback", "RuntimeError", None),
+        ("finalize", None, None),
     ]
 
 

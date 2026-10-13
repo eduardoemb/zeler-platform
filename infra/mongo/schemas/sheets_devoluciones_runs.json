@@ -21,6 +21,12 @@
       "expires_at": {
         "bsonType": "date"
       },
+      "failure_reason": {
+        "bsonType": [
+          "string",
+          "null"
+        ]
+      },
       "next_window_index": {
         "bsonType": [
           "int",

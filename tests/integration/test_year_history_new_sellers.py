@@ -844,6 +844,8 @@ async def test_a_failed_year_window_left_prepared_is_replaced_and_the_walk_goes_
     assert await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
     (failed,) = await db[RUNS].find(year).to_list(None)
     assert failed["state"] == "failed" and failed["end"] == oldest
+    # The run keeps which check refused it (2026-10-13: production kept none).
+    assert failed["failure_reason"] == "claim_search_server"
     window = await db.sheets_devoluciones_run_windows.find_one({"run_id": failed["_id"]})
     assert window["state"] == "prepared"
     # Sixteen hours later, as in production.
@@ -864,6 +866,7 @@ async def test_a_failed_year_window_left_prepared_is_replaced_and_the_walk_goes_
         "date_to": oldest.isoformat(),
         "state": "failed",
         "runs": 1,
+        "failure_reason": "claim_search_server",
     }
 
     supervisor = await build_zelerdata_refresh_supervisor(db=db)
@@ -895,6 +898,60 @@ async def test_a_failed_year_window_left_prepared_is_replaced_and_the_walk_goes_
     status = await year_history_status(db, PILOT, current)
     assert status["sources"]["devoluciones"]["edge"] == completed[1]["start"].isoformat()
     assert "retrying" not in status["sources"]["devoluciones"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_window_fails_closed_under_the_runs_validator_without_its_reason(
+    year_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker may run before the runs validator that allows ``failure_reason``.
+
+    Applying a validator is its own production step, so the reason is stored
+    only once the collection accepts it; until then the run still fails as
+    before and the reason is only in the log.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+    from structlog.testing import capture_logs
+
+    from zeler_sheets.devoluciones_runner import (
+        YEAR_HISTORY_AUTHORIZATION,
+        advance_year_history_devoluciones,
+    )
+    from zeler_sheets.formulas.seller_scope import EligibleSellerGate
+    from zeler_sheets.formulas.year_history import year_history_target
+
+    db = year_db
+    schema = json.loads(
+        (Path(__file__).resolve().parents[2] / "infra/mongo/schemas" / f"{RUNS}.json").read_text()
+    )["$jsonSchema"]
+    assert schema["properties"].pop("failure_reason") == {"bsonType": ["string", "null"]}
+    await db.command({"collMod": RUNS, "validator": {"$jsonSchema": schema}})
+    now = datetime.now(UTC).replace(microsecond=datetime.now(UTC).microsecond // 1000 * 1000)
+    gateway = YearGateway(
+        now=now, sellers=(PILOT,), first=year_history_target(now) - timedelta(days=40)
+    )
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+    await _paused_pilot(db, gateway, now)
+    await _link(db, PILOT)
+    _enable_all_mode(monkeypatch)
+    gateway.fail(PILOT, "/post-purchase/v1/claims/search?", 1)
+
+    with capture_logs() as logs:
+        assert await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
+
+    (failed,) = (
+        await db[RUNS]
+        .find({"seller_id": PILOT, "authorization_id": YEAR_HISTORY_AUTHORIZATION})
+        .to_list(None)
+    )
+    assert failed["state"] == "failed"
+    assert "failure_reason" not in failed
+    (logged,) = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
+    assert logged["failure_reason"] == "claim_search_server"
 
 
 async def _live_markers(db: Any, seller_id: str, now: datetime) -> None:

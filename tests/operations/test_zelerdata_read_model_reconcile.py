@@ -1051,6 +1051,52 @@ async def test_quota_run_failure_is_markerless_and_terminal_429_is_not_retried()
 
 
 @pytest.mark.asyncio
+async def test_a_failed_quota_window_keeps_the_reason_on_its_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2026-10-13: a failed run kept no reason, so only a log could say why."""
+    run = {
+        "_id": "run-verify",
+        "cohort_id": "cohort-1",
+        "seller_id": "82453304",
+        "scope": "devoluciones",
+        "authorization_id": "refresh-year-history:v1",
+        "state": "authorized",
+        "start": _dt(1),
+        "end": _dt(11),
+        "partition_version": "v1",
+        "release_fingerprints": {},
+        "window_count": 1,
+        "next_window_index": 0,
+        "created_at": _dt(1),
+        "expires_at": _dt(30),
+        "schema_version": 1,
+    }
+    db = FakeAsyncDb({"sheets_devoluciones_runs": [run]})
+
+    async def guarded_write(**kwargs: Any) -> None:
+        await kwargs["writer"](None)
+
+    monkeypatch.setattr(reconcile_operation_module, "guarded_devoluciones_write", guarded_write)
+
+    async def refused(**_: Any) -> dict[str, Any]:
+        raise devoluciones_module.DevolucionesReadModelVerificationError(
+            "claim 5500001", reason="source_order_line_ambiguous"
+        )
+
+    result = await reconcile_operation_module.advance_devoluciones_quota_run(
+        db=db, run_id="run-verify", operation=_operation(), now=lambda: _dt(2), source=refused
+    )
+
+    assert result == {"advanced": 0, "finalized": 0}
+    stored = db["sheets_devoluciones_runs"].documents[0]
+    assert stored["state"] == "failed"
+    assert stored["failure_reason"] == "source_order_line_ambiguous"
+    validator = json.loads((ROOT / "infra/mongo/schemas/sheets_devoluciones_runs.json").read_text())
+    assert validate_document_against_schema(stored, validator).valid
+
+
+@pytest.mark.asyncio
 async def test_quota_advancement_rejects_invalid_runs_before_source_work() -> None:
     base = {
         "seller_id": "82453304",
