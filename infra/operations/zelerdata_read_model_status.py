@@ -134,6 +134,11 @@ def build_status_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report independent DEVOLUCIONES certificates and renewal capacity.",
     )
+    parser.add_argument(
+        "--year-history",
+        action="store_true",
+        help="Report where orders, questions and DEVOLUCIONES coverage start against a year.",
+    )
     return parser
 
 
@@ -161,6 +166,23 @@ def main(argv: Sequence[str], db: Any) -> str:
     """
     args = validate_status_argv(argv)
     now = datetime.now(UTC)
+    if args.year_history:
+        from zeler_sheets.formulas import year_history
+
+        progress = asyncio.run(
+            year_history.year_history_status(db, str(args.seller_id).strip(), now)
+        )
+        report_year: dict[str, Any] = {"year_history": progress}
+        if args.readiness:
+            # The paused pilot keeps its own plan; it is not waiting for a year.
+            ready = bool(progress["covered"] or progress["excluded"])
+            report_year.update(
+                {
+                    "status": "ready" if ready else "degraded",
+                    "blocking": [] if ready else ["year_history"],
+                }
+            )
+        return json.dumps(report_year, sort_keys=True)
     if args.devoluciones_coverage:
         from zeler_platform_core.devoluciones_certificates import certificate_status
 

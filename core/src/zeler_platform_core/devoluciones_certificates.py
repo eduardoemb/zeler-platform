@@ -16,6 +16,10 @@ from typing import Any
 CERTIFICATES = "sheets_devoluciones_certificates"
 KINDS = frozenset({"quota_run", "joint_snapshot", "legacy_joint_snapshot"})
 VALIDITY = timedelta(minutes=30)
+# Renewal batches of at most 20 certificates a seller may get in one refresh
+# cycle. A year of 10-day windows needs two; every certificate must be renewed
+# within its 30-minute validity, and a cycle lasts the interval plus its work.
+RENEWAL_BATCHES_PER_CYCLE = 3
 
 
 class CoverageUnavailableError(ValueError):
@@ -541,7 +545,8 @@ def renewal_capacity(eligible_count: int, measurement: Mapping[str, Any] | None)
     ):
         return unknown
     sustainable = min(20, max(1, int(30 / slowest)))
-    revisit = math.ceil(eligible_count / sustainable) * interval + 30 + 60
+    per_cycle = sustainable * RENEWAL_BATCHES_PER_CYCLE
+    revisit = math.ceil(eligible_count / per_cycle) * interval + 30 * RENEWAL_BATCHES_PER_CYCLE + 60
     return {
         "status": "sufficient" if revisit < 1800 else "degraded",
         "sustainable_batch": sustainable,

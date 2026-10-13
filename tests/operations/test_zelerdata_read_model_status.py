@@ -847,3 +847,33 @@ def test_certificate_status_cli_uses_explicit_interval_report(
     ready = capacity == "sufficient" and invalid == 0
     assert report["status"] == ("ready" if ready else "degraded")
     assert report["blocking"] == ([] if ready else ["devoluciones"])
+
+
+@pytest.mark.parametrize("covered,excluded", [(True, False), (False, True), (False, False)])
+def test_year_history_status_cli_reports_progress(
+    monkeypatch: pytest.MonkeyPatch, covered: bool, excluded: bool
+) -> None:
+    from infra.operations import zelerdata_read_model_status as status_module
+
+    from zeler_sheets.formulas import year_history
+
+    async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
+        return {"covered": covered, "excluded": excluded, "sources": {}, "portions": {}}
+
+    monkeypatch.setattr(year_history, "year_history_status", year_history_status)
+    report = json.loads(
+        status_module.main(
+            [
+                "--seller-id",
+                "seller",
+                "--confirm-approved-runtime",
+                "--year-history",
+                "--readiness",
+            ],
+            object(),
+        )
+    )
+    assert report["year_history"]["covered"] is covered
+    ready = covered or excluded
+    assert report["status"] == ("ready" if ready else "degraded")
+    assert report["blocking"] == ([] if ready else ["year_history"])

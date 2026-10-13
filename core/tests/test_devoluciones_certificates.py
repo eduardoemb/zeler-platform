@@ -266,12 +266,17 @@ def test_capacity_is_unknown_without_measurement_and_honest_on_overload() -> Non
 
     assert renewal_capacity(2, None)["status"] == "unknown"
     measured = {"slowest_seconds": 1.0, "observed_interval_seconds": 900.0}
+    # A cycle renews up to three batches of 20: a year of 10-day windows
+    # (about 40 certificates) is renewed every cycle.
     assert renewal_capacity(20, measured) == {
         "status": "sufficient",
         "sustainable_batch": 20,
-        "revisit_seconds": 990.0,
+        "revisit_seconds": 1050.0,
     }
-    assert renewal_capacity(21, measured)["status"] == "degraded"
+    assert renewal_capacity(60, measured)["status"] == "sufficient"
+    assert renewal_capacity(61, measured)["status"] == "degraded"
+    slow = {"slowest_seconds": 3.0, "observed_interval_seconds": 900.0}
+    assert renewal_capacity(31, slow)["status"] == "degraded"
     assert (
         renewal_capacity(2, {"slowest_seconds": 1, "observed_interval_seconds": 5})["status"]
         == "unknown"

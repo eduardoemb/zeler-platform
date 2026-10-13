@@ -1290,6 +1290,10 @@ Windows nobody needs for that go, since 2026-10-12, to the hourly cut of the
 day in progress of each certificate seller
 (`ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED`, on by default); see
 [Intraday coverage](sheets/zelerdata-refresh.md#intraday-coverage-of-the-day-in-progress-2026-10-12).
+Windows those leave go back towards a year for every eligible seller without a
+legacy history plan (`ZELERDATA_YEAR_HISTORY_ENABLED`, on by default, which
+also walks orders and questions back one portion per cycle); see
+[Twelve months of history](sheets/zelerdata-refresh.md#twelve-months-of-history-2026-10-12).
 `infra.operations.devoluciones_quota_authorize` remains the pilot's operator
 path for an explicitly authorized range, and never widens on its own.
 

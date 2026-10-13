@@ -63,6 +63,7 @@ __all__ = [
     "advance_intraday_devoluciones",
     "advance_onboarding_devoluciones",
     "advance_ordinary_devoluciones_tail",
+    "advance_year_history_devoluciones",
     "initial_coverage_binding",
     "initial_coverage_bounds",
     "intraday_binding",
@@ -71,6 +72,8 @@ __all__ = [
     "ordinary_tail_binding",
     "ordinary_tail_bounds",
     "renew_devoluciones_marker_if_proven",
+    "year_history_binding",
+    "year_history_bounds",
 ]
 
 FRESHNESS_COLLECTION = "sheets_read_model_freshness"
@@ -130,9 +133,9 @@ async def advance_due_devoluciones_run(
         "expires_at": {"$gt": current},
         "$or": [{"not_before": {"$exists": False}}, {"not_before": {"$lte": current}}],
     }
-    # An intraday run belongs to its own pass, which never takes a window from
-    # the tail, an initial window or an operator run.
-    query["authorization_id"] = {"$ne": INTRADAY_AUTHORIZATION}
+    # Intraday and year-history runs belong to their own passes, which never
+    # take a window from the tail, an initial window or an operator run.
+    query["authorization_id"] = {"$nin": [INTRADAY_AUTHORIZATION, YEAR_HISTORY_AUTHORIZATION]}
     if not history_work_enabled:
         query["authorization_id"]["$not"] = {"$regex": "^onboarding:"}
     run = await db[RUNS_COLLECTION].find_one(query, sort=[("created_at", -1)])
@@ -257,11 +260,22 @@ async def renew_devoluciones_marker_if_proven(
     acquisition set ``stale`` is repaired the same way, since its fingerprint
     still proves the settled run.
     """
-    from zeler_platform_core.devoluciones_certificates import coverage_control
+    from zeler_platform_core.devoluciones_certificates import (
+        RENEWAL_BATCHES_PER_CYCLE,
+        coverage_control,
+    )
 
     if (await coverage_control(db, str(seller_id))).get("coverage_mode") == "active":
-        summary = await renew_due_certificates(db, str(seller_id), now=now)
-        return bool(summary["renewed"])
+        # A year of 10-day windows is about 40 certificates. Each lasts 30
+        # minutes and one batch renews at most 20, so a full batch is followed
+        # by another, up to the per-cycle limit.
+        renewed = False
+        for _ in range(RENEWAL_BATCHES_PER_CYCLE):
+            summary = await renew_due_certificates(db, str(seller_id), now=now)
+            renewed = renewed or bool(summary["renewed"])
+            if summary.get("attempted") != CERTIFICATE_RENEWAL_BATCH:
+                break
+        return renewed
     clock = now or (lambda: datetime.now(UTC))
     current = clock().astimezone(UTC)
     marker_id = f"{seller_id}:{DEVOLUCIONES_READ_MODEL}"
@@ -439,12 +453,15 @@ async def _runtime_range_certification(*, db: Any, run: Mapping[str, Any]) -> st
     return None
 
 
+CERTIFICATE_RENEWAL_BATCH = 20
+
+
 async def renew_due_certificates(
     db: Any,
     seller_id: str,
     *,
     now: Callable[[], datetime] | None = None,
-    max_count: int = 20,
+    max_count: int = CERTIFICATE_RENEWAL_BATCH,
     seconds: float = 30,
 ) -> dict[str, Any]:
     import asyncio
@@ -1180,8 +1197,19 @@ INTRADAY_COHORT = "zelerdata-refresh-intraday-v1"
 INTRADAY_SETTLE = timedelta(minutes=30)
 # The cut is the run identity, so each cut is acquired at most once.
 INTRADAY_STEP = timedelta(hours=1)
+# Twelve months for an eligible seller (2026-10-12). Once certificate coverage
+# is active, the loop acquires one 10-day window ending at the seller's oldest
+# certificate, back to a full year, only with windows the tail, an initial
+# window and the intraday cuts leave. The paused pilot keeps its own plan.
+YEAR_HISTORY_AUTHORIZATION = "refresh-year-history:v1"
+YEAR_HISTORY_COHORT = "zelerdata-refresh-year-history-v1"
 AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
-    {ORDINARY_TAIL_AUTHORIZATION, INITIAL_COVERAGE_AUTHORIZATION, INTRADAY_AUTHORIZATION}
+    {
+        ORDINARY_TAIL_AUTHORIZATION,
+        INITIAL_COVERAGE_AUTHORIZATION,
+        INTRADAY_AUTHORIZATION,
+        YEAR_HISTORY_AUTHORIZATION,
+    }
 )
 
 
@@ -1548,6 +1576,87 @@ async def advance_intraday_devoluciones(
     return True
 
 
+def year_history_bounds(
+    oldest: datetime | None, *, now: datetime
+) -> tuple[datetime, datetime] | None:
+    """The 10-day window that ends at the oldest certificate, or ``None`` once a year is covered."""
+    from zeler_sheets.formulas.year_history import year_history_target
+
+    if oldest is None:
+        return None
+    end = _onboarding_utc(oldest)
+    start = max(year_history_target(now), end - timedelta(days=WINDOW_DAYS))
+    return (start, end) if start < end else None
+
+
+def year_history_binding(
+    seller_id: str, start: datetime, end: datetime, *, admitted_on: date
+) -> RunBinding:
+    # Like the tail: a failed or expired window is retried the next UTC day.
+    return RunBinding(
+        authorization_id=YEAR_HISTORY_AUTHORIZATION,
+        cohort_id=YEAR_HISTORY_COHORT,
+        seller_id=seller_id,
+        scope="devoluciones",
+        start=start,
+        end=end,
+        partition_version="v1",
+        release_fingerprints={"admitted_on": admitted_on.isoformat()},
+    )
+
+
+async def advance_year_history_devoluciones(
+    db: Any,
+    seller_id: str,
+    *,
+    eligible: Callable[[str], Awaitable[bool]],
+    now: Callable[[], datetime] | None = None,
+    advance: Callable[..., Awaitable[dict[str, int]]] | None = None,
+) -> bool:
+    """Acquire one window of the seller's year, backwards from its oldest certificate.
+
+    Returns ``True`` only when a run was handed to the executor, which is the
+    cycle's one window. Only an eligible certificate seller without a legacy
+    history plan is served, until its certificates reach a full year back.
+    """
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
+    from zeler_sheets.formulas.year_history import has_legacy_history_plan
+
+    clock = now or (lambda: datetime.now(UTC))
+    current = _onboarding_utc(clock())
+    control = await coverage_control(db, seller_id)
+    if not _certificate_mode(control):
+        return False
+    if await has_legacy_history_plan(db, seller_id):
+        # The paused history pilot keeps its own plan; nothing is resumed.
+        return False
+    if not await eligible(seller_id):
+        return False
+    oldest = await db[CERTIFICATES].find_one(
+        {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
+        {"date_from": 1},
+        sort=[("date_from", 1)],
+    )
+    bounds = year_history_bounds(
+        oldest.get("date_from") if isinstance(oldest, Mapping) else None, now=current
+    )
+    if bounds is None:
+        return False
+    binding = year_history_binding(seller_id, *bounds, admitted_on=current.date())
+    run = await db[RUNS_COLLECTION].find_one({"_id": binding.run_id})
+    if run is None:
+        await _admit_automatic_run(db, binding, kind="year_history", current=current)
+    elif not (
+        run.get("state") in ADVANCEABLE_RUN_STATES
+        and _onboarding_utc(run["expires_at"]) > current
+        and (run.get("not_before") is None or _onboarding_utc(run["not_before"]) <= current)
+    ):
+        # Failed or expired today: the next UTC day admits it again.
+        return False
+    await (advance or advance_ordinary_devoluciones_tail)(db, binding.run_id, now=clock)
+    return True
+
+
 async def advance_ordinary_devoluciones_tail(
     db: Any, run_id: str, *, now: Callable[[], datetime] | None = None
 ) -> dict[str, int]:
@@ -1578,9 +1687,11 @@ async def advance_ordinary_devoluciones_tail(
         raise ValueError("run is not an ordinary tail or initial coverage run")
     seller_id = str(run["seller_id"])
     initial = run["authorization_id"] == INITIAL_COVERAGE_AUTHORIZATION
-    kind = {INITIAL_COVERAGE_AUTHORIZATION: "initial", INTRADAY_AUTHORIZATION: "intraday"}.get(
-        run["authorization_id"], "tail"
-    )
+    kind = {
+        INITIAL_COVERAGE_AUTHORIZATION: "initial",
+        INTRADAY_AUTHORIZATION: "intraday",
+        YEAR_HISTORY_AUTHORIZATION: "year_history",
+    }.get(run["authorization_id"], "tail")
 
     async def readback(**kwargs: Any) -> Mapping[str, Any]:
         try:

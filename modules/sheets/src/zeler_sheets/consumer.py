@@ -69,6 +69,7 @@ from zeler_sheets.devoluciones_runner import (
     admit_initial_devoluciones_coverage,
     advance_due_devoluciones_run,
     advance_intraday_devoluciones,
+    advance_year_history_devoluciones,
 )
 from zeler_sheets.dlq_auto_archive import build_dlq_auto_archiver
 from zeler_sheets.event_persistence import SheetsEventPersistence, StatusObservationContentionError
@@ -106,6 +107,7 @@ from zeler_sheets.formulas.refresh import (
     refresh_sellers,
 )
 from zeler_sheets.formulas.seller_scope import EligibleSellerGate, seller_gate_for
+from zeler_sheets.formulas.year_history import YearHistoryPlanner
 from zeler_sheets.full_operations import FBM_STOCK_OPERATIONS_EVENT_TYPE, acquire_full_operation
 from zeler_sheets.google_errors import (
     GoogleSheetsApiError,
@@ -1738,6 +1740,8 @@ async def build_formula_recovery_poller(
         reserved_inventory_slots=1,
         allowed_sellers=allowed_sellers,
         seller_gate=seller_gate_for(db, allowed_sellers),
+        # The emergency switch also leaves queued year-history portions alone.
+        year_history_enabled=_year_history_enabled(),
     )
     await recovery_queue.ensure_indexes()
     pacer = pacer or RecoveryRequestPacer(
@@ -1898,6 +1902,26 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             return await advance_intraday_devoluciones(db, seller_id)
 
         intraday_advancer = advance_intraday
+    # Twelve months of orders, questions and DEVOLUCIONES for every eligible
+    # seller without a legacy history plan, one backward portion per cycle for
+    # the fleet and one DEVOLUCIONES window only when nothing more recent wants
+    # it. Like the tail, only with history on link off. On by default; `false`
+    # is the emergency switch.
+    year_history_planner = None
+    year_history_advancer: Callable[[str], Awaitable[bool]] | None = None
+    if _year_history_enabled() and not history_work_enabled:
+        year_history_gate = EligibleSellerGate(db)
+        year_history_planner = YearHistoryPlanner(
+            db=db, queue=queue, eligible=year_history_gate
+        ).plan
+        if devoluciones_advance:
+
+            async def advance_year_history(seller_id: str) -> bool:
+                return await advance_year_history_devoluciones(
+                    db, seller_id, eligible=year_history_gate
+                )
+
+            year_history_advancer = advance_year_history
     alert_reporter = FreshnessAlarmReporter()
     expected_models = refresh_owned_read_models(
         observed_models=OBSERVED_READ_MODEL_SOURCES,
@@ -2024,6 +2048,8 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
             else None
         ),
         devoluciones_intraday_advancer=intraday_advancer,
+        devoluciones_year_history_advancer=year_history_advancer,
+        year_history_planner=year_history_planner,
         precalculated_warmer=precalculated_warmer,
         dlq_archiver=dlq_archiver,
         freshness_alarm_reporter=(
@@ -2052,6 +2078,11 @@ def _account_status_source_from_db(db: Any) -> AccountStatusSource:
 
 def _env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _year_history_enabled() -> bool:
+    """Twelve months of history is on unless explicitly switched off."""
+    return _env_flag_setting("ZELERDATA_YEAR_HISTORY_ENABLED") is not False
 
 
 def _env_flag_setting(name: str) -> bool | None:

@@ -112,6 +112,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-053 | ZelerData | Activate a new seller's DEVOLUCIONES from its own first window, one window per cycle for the fleet | active |
 | L-054 | ZelerData | Cover the day in progress with replaceable hourly cuts, never ahead of the tail | active |
 | L-055 | ZelerData | Backfill an unclassified notification topic from `webhook_events` before its 45-day TTL | active |
+| L-056 | ZelerData | Walk a new seller's year back from its proofs, one bounded portion per cycle for the fleet | active |
 
 ## Cloud Build and VM deployment
 
@@ -972,4 +973,32 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_formula_retiros.py`,
   `docs/sheets/zelerdata-formulas.md` ("Full withdrawals"). Not yet run in
   production.
+- status: active
+
+### L-056 — Walk a new seller's year back from its proofs, one bounded portion per cycle for the fleet
+- area: ZelerData twelve-month history (`all` mode, new sellers)
+- proven path: Take the edge from the proofs themselves (the start of the
+  marker's most recent block, or the oldest certificate) and admit one portion
+  ending there per refresh cycle for the whole fleet, never while a renewal
+  pass runs. Publish an order or question portion as a retained proof without
+  touching the marker's live interval, so the sweeps never re-read it. Size it
+  to the 240-second job deadline at a quarter of the pacer, align it to whole
+  hours, and let a deadline use an attempt so a failed portion is halved.
+  DEVOLUCIONES goes back one 10-day window with what the tail and intraday
+  cuts leave, and certificate renewal takes several 20-certificate batches.
+  Leave a seller with a legacy history plan (the paused pilot) alone.
+- failed path: Reusing the question recovery's live union would make every
+  15-minute sweep re-read the whole year. An exhausted local quota defers a
+  range without an attempt, so a portion too large for the deadline restarts
+  from scratch indefinitely (a 90-day order range of a pilot-sized seller,
+  about 1,700 details, cannot finish in 240 s). One renewal batch of 20 per
+  cycle lets about 37 yearly certificates expire between renewals. A fixed
+  target in tests fails across UTC midnight: the year target moves a day.
+- verification/source: `tests/integration/test_year_history_new_sellers.py`
+  (new seller served, pilot unchanged, restart and two workers, failed portion
+  halved while another seller continues, switch off),
+  `modules/sheets/tests/test_year_history.py`,
+  `modules/sheets/tests/test_devoluciones_year_history.py`,
+  `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
+  duration from code). Not yet observed in production.
 - status: active

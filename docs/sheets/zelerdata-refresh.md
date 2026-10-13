@@ -403,8 +403,10 @@ initial run, so every window keeps its own proof: a failure costs one window,
 not the whole range, and no single run has to outlive its expiry (a 9-window
 run expires 8,230 s after admission, and nine turns take longer than that).
 
-Initial coverage does not open the 12-month history and never runs with history
-on link on (the pilot owns its runs then, as for the tail).
+Initial coverage never runs with history on link on (the pilot owns its runs
+then, as for the tail). Once the seller is in certificate mode, its year of
+DEVOLUCIONES goes back from the initial window (see "Twelve months of
+history").
 `ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED=false` is the emergency switch;
 sellers already in certificate mode keep their tail.
 
@@ -580,6 +582,160 @@ for every refresh seller, which is what carries a settled proof across the
 30-minute lease. In certificate mode the same call renews due certificates
 instead of the legacy marker; renewal never extends coverage to new days.
 
+## Twelve months of history (2026-10-12)
+
+Until 2026-10-12 a new seller had what its bootstrap acquired at link time
+(orders and claims for 90 days) plus what refresh added from then on. Order
+and question ranges older than the refresh windows, and DEVOLUCIONES older
+than its initial 90 days, stayed `DATA_UNAVAILABLE`. The refresh loop now walks
+each source backwards from the start of its proven coverage until that coverage
+reaches a full year, with no operator step. It plans existing recovery work and
+DEVOLUCIONES windows; it never calls Mercado Libre itself.
+
+**Who.** Every eligible seller (`eligible_sellers`, checked for a numeric
+allowlist too) without a legacy history plan. A seller with a
+`sheets_history_backfill_plans` document, which is the paused history pilot
+(the pilot, 82453304), is left to that plan and logged once as
+`zelerdata.year_history_excluded`: no year-history job, no year-history run,
+no new call. That pilot is not resumed and its flags stay as they are.
+
+**When a seller has its year.** The target is UTC midnight 366 days back
+(`year_history_target`), so any "same day last year" range is inside, leap
+days included. A source is covered once its proven coverage reaches the
+target: for orders and questions, the most recent block of the freshness
+marker (its own interval and its retained proofs, merged where they touch)
+starts at or before it; for DEVOLUCIONES, the oldest certificate of the
+current epoch starts at or before it. The target moves forward a day at a time,
+so a covered seller stays covered and is logged once as
+`zelerdata.year_history_covered`. Progress is the proof itself: nothing else is
+stored, and a restart or a second worker computes the same next portion.
+
+### Orders and questions
+
+- **One portion per cycle for the whole fleet**, after the DEVOLUCIONES pass
+  (`YearHistoryPlanner`, `zelerdata.year_history_planned`). Sellers and the two
+  sources take turns, starting after the last pair served (in memory; after a
+  restart the turn starts again from the first seller).
+- **Priority.** Nothing is admitted while another year-history portion is
+  running or ready, or while any seller's renewal pass (or a whole-sheet buybox
+  or item pass) is pending or running. A portion runs in the `ranges` lane, at
+  least a quarter of the pacer while every lane is busy. Sweeps, renewal,
+  formula recovery and the fast order sweep keep their lanes and priority.
+- **The portion.** It ends at the start of the most recent proven block,
+  rounded up to the hour (order search has hour precision), and starts at most
+  `MAX_PORTION` earlier (30 days for orders, 90 for questions), never before
+  the target. Its span holds about 120 orders or 100 questions at the density
+  of the rows already stored around that edge, so it finishes inside the
+  240-second job deadline at 45 requests per minute (180 calls). A
+  `YearHistoryRecoveryRequest` has its own key (no coalescing with a formula
+  range or a sweep) and `year_history: true` on the job.
+- **Publication.** The worker acquires the portion like any range (search,
+  details, revalidation of stored identities) and adds it to the marker's
+  `retained_intervals` in the same transaction as the rows and the job
+  completion. The marker's own interval and lease (the live claim the sweeps
+  renew) do not change, and the question sweeps keep re-reading only their own
+  live union, never the year. Question sweeps now carry retained proofs over
+  like order sweeps; without retained proofs (the pilot) their marker is
+  written exactly as before.
+- **Failures.** A 429, 5xx or job deadline uses an attempt (retried after 30 s
+  and 60 s); unlike ordinary range work it is not deferred without an attempt,
+  because a portion too large for the deadline would restart forever. After
+  three attempts the portion fails and the next one at the same edge has half
+  the span (down to one hour; a one-hour portion that keeps failing is retried
+  every 6 hours). A portion that lost a race (`coverage changed`) is retried
+  whole after its 15-minute cooldown. A portion waiting for a retry holds no
+  other seller, and nothing already acquired is withdrawn.
+- **Shipments** are not acquired ahead: the readers serve a missing shipment
+  cost or address as `NA` and request it, as for any range (three calls per
+  shipment: `/shipments/{id}/orders`, `/shipments/{id}`, `/shipments/{id}/costs`).
+
+### DEVOLUCIONES
+
+Once certificate coverage is active (the initial window of L-053), the source
+pass gives the seller one 10-day window ending at its oldest certificate
+(`authorization_id=refresh-year-history:v1`), back to the target; the last one
+is shorter. It uses the tail's executor, tolerances and same-invocation
+finalize, and publishes an ordinary `quota_run` certificate that touches the
+existing coverage, so `select_covering_proofs` sees one contiguous run of
+certificates. Year windows take turns in their own rotation and get the
+cycle's window only when no seller had an operator run, a tail, an initial
+window or an intraday cut due: the cap stays one window per cycle for all
+sellers. The regular pass never picks up a year-history run. Like the tail,
+the admission day is in the run identity, so a failed or expired window is
+retried on the next UTC day. Logs: `zelerdata.devoluciones_year_history_admitted`
+per window, `zelerdata.devoluciones_year_history_failed` for an admission or
+lease failure, and the tail's `zelerdata.devoluciones_tail_failed` for a window
+failure.
+
+A year is about 37 certificates per seller (plus one or two intraday cuts),
+each valid for 30 minutes. One renewal batch handles at most 20 within 30
+seconds, so a full batch is now followed by another, up to three per seller and
+cycle (`RENEWAL_BATCHES_PER_CYCLE`, 60 certificates). The pilot's partial batch
+is unchanged. `renewal_capacity` in the coverage status counts the three
+batches.
+
+### Cost and duration, from the code
+
+For a pilot-sized new seller (about 6,600 orders, 300 questions and 50 claims
+a year, 2,000 shipments):
+
+| Source | What the walk acquires | Calls |
+| --- | --- | --- |
+| Orders | Up to 359 days before the daily sweep's 7 days (276 if the weekly 90-day sweep completed): about 6,500 orders in about 55 portions of about 120. Each order is one detail; each portion has 3 search pages; an order without a shipment ID adds one relation call | about 6,700 to 6,800 |
+| Questions | About 300 questions in 4 or 5 portions of up to 90 days. Each portion scans the seller's whole question list (50 per page; about 12 pages for 600 questions) plus one detail per question in range | about 350 |
+| DEVOLUCIONES | 28 windows (276 days in 10-day windows). Per window `2 × (2 × ⌈I/100⌉ + 2 × H + U)`: about 12 with the seller's 1.4 claims per window, at least 4 | about 330 |
+| Shipments | Not acquired ahead; on demand when a reader asks | up to about 6,000 if the whole year of ORDENES is read |
+
+That is about 7,400 calls up front, against about 33 calls per minute that the
+same seller's sweeps and renewal cost in steady state (about 47,500 a day).
+One portion every cycle averages about 7 calls per minute (4 % of the pacer)
+and none during renewal passes, so the pilot's renewal is not displaced: a
+portion that started just before a slot runs alongside it for at most 240
+seconds.
+
+Duration: about 60 portions at one per cycle (the 900-second interval plus a
+2 to 5 minute cycle) take 17 to 20 hours, plus the hours held by renewal passes
+(about 1.2 hours per seller and slot, two slots a day: about 5 hours a day with
+the pilot and the new seller), so **about a day**. DEVOLUCIONES runs in parallel
+in the source pass: after the initial window and the tail's catch-up (about 3
+hours), the cycles left by two sellers' intraday cuts give about one year
+window an hour, so 28 windows take **about a day**. K sellers walking at once
+share one portion per cycle and take about K times longer. Past about three
+certificate sellers, intraday cuts use every window and year windows wait
+(the same limit as the intraday capacity above); revisit
+`devoluciones_windows_per_cycle` then.
+
+### Switch and verification
+
+`ZELERDATA_YEAR_HISTORY_ENABLED` is on by default; `false` is the emergency
+switch: no portion is planned, no year window is admitted, and the recovery
+worker leaves queued portions unclaimed until it is turned back on. Like the
+tail it only runs with history on link off, and DEVOLUCIONES windows also need
+`ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=true`. `zelerdata.refresh_cycle_completed`
+reports `year_history_portions` (0 or 1).
+
+How to verify (read-only, inside `sheets-worker`):
+
+```bash
+.venv/bin/python -m infra.operations.zelerdata_read_model_status \
+  --seller-id <seller> --year-history --readiness --confirm-approved-runtime
+```
+
+It prints the target and, per source (`orders`, `questions`,
+`devoluciones`), where proven coverage starts (`edge`) and whether it reaches
+the target, plus the seller's year-history portions by state; no identities.
+`ready` means every source is covered, or the seller is `excluded` (the pilot).
+For a new seller, expect the `orders` and `questions` edges to move back about
+one portion per cycle and DEVOLUCIONES 10 days per year window, `portions`
+mostly `completed` with at most one `pending` or `running`, and `failed` only
+with a later retry at half the span. Also:
+
+- `zelerdata_read_model_status --devoluciones-coverage`: no `unacquired_gaps`,
+  and the capacity reads `sufficient` with a year of certificates.
+- In the worker log: `zelerdata.year_history_planned` at most once per cycle,
+  `zelerdata.year_history_covered` once per source when done, and for the pilot
+  only `zelerdata.year_history_excluded`.
+
 ## Precalculated heavy formulas
 
 A Sheets custom function cannot exceed the caller's 30 second budget, and the
@@ -623,6 +779,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | DEVOLUCIONES source work from this loop, one window per cycle for all sellers: advance an already-authorized run; with history on link off, also admit the ordinary daily tail and the initial window of a new seller. |
 | `ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED` | on | Initial window and certificate activation for an eligible seller without coverage. `false` is the emergency switch. |
 | `ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED` | on | Hourly cut of the day in progress for every certificate seller, only with windows the tail and initial coverage leave. `false` is the emergency switch. |
+| `ZELERDATA_YEAR_HISTORY_ENABLED` | on | Twelve months of orders, questions and DEVOLUCIONES for every eligible seller without a legacy history plan: one backward portion per cycle for the fleet, and one DEVOLUCIONES window only when nothing more recent wants it. Only with history on link off. `false` is the emergency switch and leaves queued portions unclaimed. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
 | `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
@@ -649,8 +806,9 @@ queries, which is the split agreed after a production write aborted with
 - DEVOLUCIONES stays inside an explicit authorization boundary: the loop only
   advances operator or pilot runs, plus, with history on link off, one bounded
   forward tail per day from existing certified coverage, one initial window
-  for an eligible seller without coverage, and one cut per hour of the day in
-  progress, at most one window per cycle in total. Certificate mode is
+  for an eligible seller without coverage, one cut per hour of the day in
+  progress, and one window back towards a year with what those leave, at most
+  one window per cycle in total. Certificate mode is
   activated only from a completed window's proof.
   The legacy systemd timer is superseded.
 - The DLQ archive stays evidence-based: a message is only removed when a
@@ -670,6 +828,9 @@ uv run pytest modules/sheets/tests/test_zelerdata_refresh.py \
   modules/sheets/tests/test_zelerdata_renewal_sweep.py \
   modules/sheets/tests/test_zelerdata_all_sellers_sweeps.py \
   modules/sheets/tests/test_zelerdata_recovery_pacing.py \
+  modules/sheets/tests/test_year_history.py \
+  modules/sheets/tests/test_devoluciones_year_history.py \
+  tests/integration/test_year_history_new_sellers.py \
   tests/test_gce_compose_contract.py
 ```
 
@@ -724,7 +885,7 @@ as before.
 
 ### What `all` does not open
 
-- **The 12-month history pilot.** The legacy backfill
+- **The paused 12-month history pilot.** The legacy backfill
   (`build_pilot_history_backfill`) creates a `sheets_history_backfill_plans`
   document and up to twelve months of orders and questions for every seller it
   sees, so `all` mode does not wire it. `ZELERDATA_ORDER_HISTORY_PROTOCOL_ENABLED`,
@@ -732,15 +893,15 @@ as before.
   `ZELERDATA_ORDER_MODIFICATION_SCAN_ENABLED` require an explicit numeric
   `ZELERDATA_FORMULA_RECOVERY_SELLERS`. With `all`, the worker fails at startup
   and names the flag. History on link (`ZELERDATA_HISTORY_ON_LINK_*`) keeps its
-  own allowlist and is not affected. A new seller therefore has the history its
-  bootstrap job acquired at link time (orders and claims for 90 days) plus what
-  refresh adds from then on (the weekly 90-day order and question window);
-  ranges older than that stay unavailable.
-- **DEVOLUCIONES beyond 90 days.** Since 2026-10-12 `all` does give every
-  eligible seller DEVOLUCIONES without an operator: an initial window 90 days
-  back, certificate activation from its proof, and the daily tail (see
-  "Initial coverage for a new seller"). Nothing older than those 90 days is
-  acquired for a new seller.
+  own allowlist and is not affected. A seller with such a plan, the pilot, is
+  also left out of the new year history and keeps exactly what it has.
+- **Anything older than a year.** Since 2026-10-12 every eligible seller
+  without a legacy plan gets twelve months of orders, questions and
+  DEVOLUCIONES on its own: the bootstrap's 90 days, the initial DEVOLUCIONES
+  window and the daily tail, then one backward portion or window at a time
+  (see "Twelve months of history"). Ranges that start more than 366 days back
+  stay unavailable. Shipments are acquired when a reader asks for them, and
+  RETIROS starts at its first observed notification by design.
 - **Refresh without recovery.** `ZELERDATA_REFRESH_SELLERS=all` requires
   `ZELERDATA_FORMULA_RECOVERY_SELLERS=all`, otherwise startup fails. Refresh
   would otherwise queue jobs that the recovery worker never claims.
@@ -785,6 +946,10 @@ work in `all` mode exactly as for the pilot, for every eligible seller:
   first (see "Several sellers take turns").
 - `ZELERDATA_SCHEDULED_BULK_REFRESH_ENABLED` stays off: it re-plans every
   model every cycle (L-021).
+- **Year history.** One backward portion per cycle for the whole fleet, in the
+  `ranges` lane, none while a renewal pass is in flight (see "Twelve months
+  of history"). It adds about 7 calls per minute on average while a seller
+  walks back, nothing in steady state.
 
 #### Capacity for N sellers of the pilot's size
 
@@ -839,7 +1004,7 @@ delays it. The period of a seller's refresh is `cycle duration + interval`.
 | Step | Cost | Scales with |
 | --- | --- | --- |
 | Planning (orders and questions ranges), observed markers, freshness alarms | A few Mongo reads and two enqueues, each capped at 2 s | N, in milliseconds |
-| DEVOLUCIONES renewal | A few Mongo reads per seller; certificate sellers renew at most 20 due certificates within 30 s | N, in milliseconds |
+| DEVOLUCIONES renewal | A few Mongo reads per seller; certificate sellers renew up to three batches of 20 due certificates, each within 30 s (a year is about 40) | N, in milliseconds |
 | DEVOLUCIONES source pass | At most one window per cycle for all sellers together (up to about 3 minutes), plus a few Mongo reads for each seller offered the turn before it | Constant: one window, whatever N is |
 | Precalculated formulas | 10 dispatcher runs (5 formulas × 2 header variants), reading the seller's local catalog. It dominates the roughly 130 s cycle of the pilot | Catalog size of each seller |
 
@@ -895,7 +1060,11 @@ needed a limit:
   sellers in steady state need N windows a day out of about 80 cycles, and K
   sellers catching up at once (9 windows each) share the slot, about K times
   slower each. Intraday cuts use the cycles left over: 23 a day per seller,
-  so about three sellers get every hourly cut. Revisit the cap (`devoluciones_windows_per_cycle` on the
+  so about three sellers get every hourly cut. Year windows use what intraday
+  leaves, so they progress only while fewer than about three certificate
+  sellers need a cut each hour. Certificate renewal takes up to three batches
+  of 20 per seller and cycle (a year is about 40 certificates), a few seconds
+  of local reads at most. Revisit the cap (`devoluciones_windows_per_cycle` on the
   supervisor) only if `D` stays far under the interval and many sellers wait.
 
 Revisit capacity when:
@@ -992,8 +1161,15 @@ seller exists: today the dry run finds one eligible seller, the pilot.
    `devoluciones_windows` in `zelerdata.refresh_cycle_completed` stays at 0 or
    1, and `elapsed_seconds` grows by at most one window.
 
-The new seller gets DEVOLUCIONES for the 90 days its bootstrap covered and from
-then on, but no older history; see "What `all` does not open".
+8. **Twelve months for the new seller** (no operator step). From the cycle
+   after the switch, `zelerdata.year_history_planned` appears at most once per
+   cycle, for the new seller only; the pilot logs
+   `zelerdata.year_history_excluded` once. Once the tail has caught up,
+   `zelerdata.devoluciones_year_history_admitted` appears about once an hour.
+   Check progress with `zelerdata_read_model_status --year-history` (see
+   "Twelve months of history"): about a day for a pilot-sized seller.
+   `ZELERDATA_YEAR_HISTORY_ENABLED=false` on `sheets-worker` is the emergency
+   switch.
 
 **Back to the pilot.** Reverse the order and restore the value on each
 service, then restart only that service:
@@ -1014,6 +1190,7 @@ uv run pytest modules/sheets/tests/test_zelerdata_all_sellers.py \
   modules/sheets/tests/test_zelerdata_all_sellers_sweeps.py \
   modules/sheets/tests/test_devoluciones_initial_coverage.py \
   tests/integration/test_devoluciones_new_sellers.py \
+  tests/integration/test_year_history_new_sellers.py \
   tests/operations/test_zelerdata_all_sellers_dry_run.py
 uv run pytest modules/sheets/tests/test_formula_recovery.py -k "all_mode or numeric_allowlist_claim"
 ```

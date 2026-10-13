@@ -189,7 +189,7 @@ class FormulaRecoveryWorker:
                     else:
                         raise ValueError("recovery source not implemented")
         except LocalQuotaTimeoutError:
-            await self.queue.defer_quota(job)
+            await self._defer_or_retry(job)
         except httpx.HTTPStatusError as exc:
             transient = exc.response.status_code == 429 or exc.response.status_code >= 500
             await self.queue.finish(
@@ -207,7 +207,7 @@ class FormulaRecoveryWorker:
             # A quota-expired child can still be joining a sibling when the
             # outer deadline cancels the wave. Preserve the known local cause.
             if isinstance(exc, TimeoutError) and quota.expired:
-                await self.queue.defer_quota(job)
+                await self._defer_or_retry(job)
             else:
                 await self.queue.finish(
                     job,
@@ -227,6 +227,23 @@ class FormulaRecoveryWorker:
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
+
+    async def _defer_or_retry(self, job: dict[str, Any]) -> None:
+        """Defer a job the local budget ran out for, without using an attempt.
+
+        A year-history portion restarts from scratch, so one too large for the
+        job deadline would be deferred forever. It uses an attempt instead and,
+        after the last one, fails, and the planner halves the next portion.
+        """
+        if job.get("year_history") is True:
+            await self.queue.finish(
+                job,
+                succeeded=False,
+                retryable=True,
+                failure_reason="source_temporarily_unavailable",
+            )
+        else:
+            await self.queue.defer_quota(job)
 
     async def _catalog_products(self, job: dict[str, Any]) -> None:
         requested = CatalogProductIdsRecoveryRequest(
@@ -931,6 +948,9 @@ class FormulaRecoveryWorker:
             marker_before is not None
             and job["read_model"] != "orders"
             and not job.get("policy_authority")
+            # A year-history portion is an older retained proof; it never
+            # reacquires the live coverage.
+            and not job.get("year_history")
         ):
             prior_start = marker_before.get("date_from")
             prior_end = marker_before.get("reconciled_until")
@@ -1380,12 +1400,12 @@ class FormulaRecoveryWorker:
             end=end,
             now=self.queue.now(),
         )
-        if (
-            (
-                read_model == "orders"
-                or read_model == "questions"
-                and bool(job.get("policy_authority"))
-            )
+        if job.get("year_history") is True:
+            marker = _year_history_marker(marker_before, start=start, end=end, valid=marker)
+        elif (
+            # Questions reacquire the live union and keep older retained
+            # proofs, such as year-history portions, like orders.
+            (read_model == "orders" or read_model == "questions")
             and marker_before is not None
             and marker_before.get("state") == "reconciled"
         ):
@@ -1405,7 +1425,9 @@ class FormulaRecoveryWorker:
                     date_to=proof.get("reconciled_until"),
                 )
             ]
-            marker["retained_intervals"] = merge_interval_proofs(candidates)
+            retained = merge_interval_proofs(candidates)
+            if read_model == "orders" or retained:
+                marker["retained_intervals"] = retained
         # Source acquisition happens outside Mongo transactions. Publish all
         # normalized rows, coverage and completion atomically for the live owner.
         async with (
@@ -1505,6 +1527,47 @@ class FormulaRecoveryWorker:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _year_history_marker(
+    marker_before: dict[str, Any] | None,
+    *,
+    start: datetime,
+    end: datetime,
+    valid: dict[str, Any],
+) -> dict[str, Any]:
+    """Add one year-history portion to the marker's retained proofs.
+
+    The live claim (the marker's own interval and lease) belongs to the refresh
+    sweeps and is left as it is. The portion ends where proven coverage starts,
+    so the readers see one contiguous union.
+    """
+    if marker_before is None or marker_before.get("state") != "reconciled":
+        raise ValueError("year history extends a reconciled marker only")
+    proofs = [
+        {
+            **proof,
+            **{
+                field: _utc(proof[field])
+                for field in ("date_from", "reconciled_until", "valid_until")
+                if isinstance(proof.get(field), datetime)
+            },
+        }
+        for proof in marker_before.get("retained_intervals", [])
+        if isinstance(proof, dict)
+    ]
+    portion = {
+        "state": "reconciled",
+        "date_from": start,
+        "reconciled_until": end,
+        "valid_until": valid["valid_until"],
+    }
+    retained = merge_interval_proofs([*proofs, portion])
+    if not any(
+        proof["date_from"] <= start and end <= proof["reconciled_until"] for proof in retained
+    ):
+        raise ValueError("retained proof capacity reached")
+    return {**marker_before, "retained_intervals": retained}
 
 
 def _date(value: Any) -> datetime:

@@ -167,6 +167,8 @@ While history on link is off, the refresh loop extends coverage once per day up
 to the last UTC midnight; see [ZelerData refresh](zelerdata-refresh.md#ordinary-tail-while-history-on-link-is-off-2026-10-07).
 A new seller is covered from 90 days before its first turn, one 10-day window
 per turn; see [Initial coverage for a new seller](zelerdata-refresh.md#initial-coverage-for-a-new-seller-2026-10-12).
+Coverage then goes back to a full year, one window at a time; see
+[Twelve months of history](zelerdata-refresh.md#twelve-months-of-history-2026-10-12).
 
 Since 2026-10-12 the day in progress is certified up to an hourly cut (the last
 whole hour at least 30 minutes old). A range that ends at most at tomorrow
@@ -203,6 +205,36 @@ The 52-formula probe of 2026-10-07 left three range results that are not defects
   into a numeric cell arrives without them and cannot match.
 
 `ID Carrito` is an order-formula-only column in `ZELERDATA_ORDENES` and `ZELERDATA_ORDENESPORSKU`. Values are never derived from order id, shipment id, message pack fallbacks, buyer data, fees, shipping costs, promo price, or status history. Missing official MercadoLibre `orders.pack_id` values display as `NA`. Historical May rows can still show `NA` if persisted read models do not have `meli_pack_id`; any refresh/backfill for those rows requires separate operational authorization and is not part of this hotfix.
+
+## Twelve months of history (12 October 2026)
+
+Every eligible seller without a legacy history plan gets a full year (366
+days back from UTC midnight) of orders, questions and DEVOLUCIONES without an
+operator, one backward portion per refresh cycle; see
+[Twelve months of history](zelerdata-refresh.md#twelve-months-of-history-2026-10-12).
+The readers are unchanged: a range is served once its proofs cover it without
+a gap, and a range that starts before the acquired coverage stays
+`DATA_UNAVAILABLE`, never an empty table.
+
+- **Gain the year** (range-gated by the `orders` marker): `ORDENES`,
+  `ORDENESPORSKU`, `VENTASTOTALES`, `UNIDADESVENDIDAS`, `TOPVENTASUNIDADES`,
+  `TOPVENTASDINERO`, and `PRODUCTOSINVENTA` and `VENTAPORDIAS` with up to 365
+  days. By the `questions` marker: `PREGUNTAS` and `PREGUNTASKPI`. By the
+  DEVOLUCIONES certificates: `DEVOLUCIONES`.
+- **Become more complete** (read every stored order): `DIASDESDEULTIMAVENTA`
+  finds sales older than 90 days, `COSTOENVIOVENDEDOR` finds a pair whose last
+  sale is older (its cost is acquired when read), and `COMPRADORES` resolves
+  older order IDs.
+- **Unchanged.** Shipment costs and addresses in order rows are acquired when a
+  reader asks (`NA` with recovery until then). `VENTASYSTOCK`,
+  `ENVIOSMERCADOENVIOS` and the 7 to 90-day sales windows of `DASHBOARD` and
+  `CATALOGO` were already inside 90 days. Observed histories
+  (`CATALOGOTIEMPO`, `TIEMPOSTOCKACTIVO`, `SEMANASCONSTOCK`,
+  `PRECIOHISTORICO`, `TIEMPOACTIVA`) have no source to go back to, and
+  `RETIROS` starts at its first observed notification by design. No formula
+  reads messages.
+- **The pilot** keeps its paused history plan and exactly its current
+  coverage.
 
 ## Partial results and worker memory (8 October 2026)
 

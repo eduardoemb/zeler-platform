@@ -91,6 +91,36 @@ class RecoveryRequest:
         return hashlib.sha256("\0".join(parts).encode()).hexdigest()
 
 
+YEAR_HISTORY_MODELS = frozenset({"orders", "questions"})
+
+
+@dataclass(frozen=True)
+class YearHistoryRecoveryRequest(RecoveryRequest):
+    """One backward portion of a seller's twelve-month history.
+
+    Its key differs from an ordinary range, so a formula read or a refresh
+    sweep never coalesces with it, and the job carries ``year_history`` so the
+    worker publishes it as an older retained proof instead of moving the live
+    edge of the marker.
+    """
+
+    def __post_init__(self) -> None:
+        if self.read_model not in YEAR_HISTORY_MODELS:
+            raise ValueError("year history covers orders and questions")
+        super().__post_init__()
+
+    @property
+    def key(self) -> str:
+        parts = (
+            self.seller_id,
+            self.read_model,
+            "year_history",
+            self.date_from.astimezone(UTC).isoformat(),
+            self.date_to.astimezone(UTC).isoformat(),
+        )
+        return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class QuestionScanRecoveryRequest:
     """One fixed twelve-calendar-month acquisition identity, not twelve searches."""
@@ -431,6 +461,7 @@ class FormulaRecoveryQueue:
         max_active_jobs_per_seller: int = 20,
         reserved_inventory_slots: int = 0,
         policy_authority: str | None = None,
+        year_history_enabled: bool = True,
     ) -> None:
         if type(max_active_jobs_per_seller) is not int or max_active_jobs_per_seller < 1:
             raise ValueError("recovery capacity must be a positive integer")
@@ -448,6 +479,9 @@ class FormulaRecoveryQueue:
         self.allowed_sellers = allowed_sellers
         # `all` mode: no allowlist, so admission checks the seller is eligible.
         self.seller_gate = seller_gate
+        # The emergency switch also leaves already queued year-history portions
+        # unclaimed, so nothing new is acquired until it is turned back on.
+        self.year_history_enabled = year_history_enabled
 
     async def ensure_indexes(self) -> None:
         await self.collection.create_index(
@@ -573,6 +607,8 @@ class FormulaRecoveryQueue:
             initial["inventory_scope"] = True
         else:
             initial.update(date_from=request.date_from, date_to=request.date_to)
+            if isinstance(request, YearHistoryRecoveryRequest):
+                initial["year_history"] = True
         # One guard per seller (identity/revision only) serializes admission
         # across API processes. Seed outside the transaction to handle first use.
         with suppress(DuplicateKeyError):
@@ -890,6 +926,67 @@ class FormulaRecoveryQueue:
         taken = await self.collection.find_one({"_id": slot_key}, {"_id": 1})
         return False, taken is not None
 
+    async def renewal_in_flight(self) -> bool:
+        """Whether any seller's catalog-sized buybox or item pass is pending or running.
+
+        Renewal passes, and whole-sheet passes a formula read admitted, fill
+        the shared pacer for about an hour; year history waits for them.
+        """
+        return (
+            await self.collection.find_one(
+                {
+                    "state": {"$in": ["pending", "running"]},
+                    "read_model": {"$in": sorted(RENEWAL_READ_MODELS)},
+                    "catalog_offset": {"$exists": True},
+                    "inventory_scope": {"$ne": True},
+                },
+                {"_id": 1},
+            )
+            is not None
+        )
+
+    async def year_history_in_flight(self) -> bool:
+        """Whether any seller's year-history portion is running or ready to run.
+
+        A portion waiting out its retry backoff holds nothing, so another
+        seller's portion may go meanwhile.
+        """
+        return (
+            await self.collection.find_one(
+                {
+                    "year_history": True,
+                    "$or": [
+                        {"state": "running"},
+                        {"state": "pending", "available_at": {"$lte": self.now()}},
+                    ],
+                },
+                {"_id": 1},
+            )
+            is not None
+        )
+
+    async def latest_year_history(
+        self, *, seller_id: str, read_model: str
+    ) -> dict[str, Any] | None:
+        """The seller's most recently updated year-history portion of ``read_model``."""
+        rows = (
+            await self.collection.find(
+                {"seller_id": seller_id, "read_model": read_model, "year_history": True},
+                {
+                    "state": 1,
+                    "date_from": 1,
+                    "date_to": 1,
+                    "updated_at": 1,
+                    "available_at": 1,
+                    "failure_reason": 1,
+                },
+            )
+            .sort([("updated_at", -1), ("_id", 1)])
+            .limit(1)
+            .to_list(length=1)
+        )
+        return dict(rows[0]) if rows else None
+
     async def renewal_passes(self, slot_keys: tuple[str, ...]) -> dict[str, str]:
         """The state of each renewal pass that exists, by slot key.
 
@@ -989,6 +1086,7 @@ class FormulaRecoveryQueue:
             else {"$exists": False},
             **recovery_lane_filter(lane),
             "history_protocol_version": 1 if history else {"$exists": False},
+            **({} if self.year_history_enabled else {"year_history": {"$ne": True}}),
         }
         now = self.now()
         seller_filter = (

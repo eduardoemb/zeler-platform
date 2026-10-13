@@ -853,6 +853,7 @@ class ZelerDataRefreshSupervisor:
         devoluciones_runner: Callable[[str], Awaitable[bool]] | None = None,
         devoluciones_advancer: Callable[[str], Awaitable[bool]] | None = None,
         devoluciones_intraday_advancer: Callable[[str], Awaitable[bool]] | None = None,
+        devoluciones_year_history_advancer: Callable[[str], Awaitable[bool]] | None = None,
         devoluciones_windows_per_cycle: int = 1,
         precalculated_warmer: Callable[[str], Awaitable[int]] | None = None,
         dlq_archiver: Callable[[], Awaitable[Any]] | None = None,
@@ -861,6 +862,7 @@ class ZelerDataRefreshSupervisor:
         inventory_refresher: Callable[[str], Awaitable[bool]] | None = None,
         renewal_planner: RenewalPlanner | None = None,
         history_backfill: Callable[[str], Awaitable[bool]] | None = None,
+        year_history_planner: Callable[[tuple[str, ...]], Awaitable[bool]] | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         inventory_interval_seconds: float = DEFAULT_INVENTORY_INTERVAL_SECONDS,
         warm_budget_seconds: float | None = None,
@@ -894,6 +896,10 @@ class ZelerDataRefreshSupervisor:
         # window no tail, initial window or operator run wanted this cycle.
         self._devoluciones_intraday_advancer = devoluciones_intraday_advancer
         self._devoluciones_intraday_last_served: str | None = None
+        # A year of DEVOLUCIONES goes back one window at a time, only with a
+        # window that neither the regular pass nor an intraday cut used.
+        self._devoluciones_year_history_advancer = devoluciones_year_history_advancer
+        self._devoluciones_year_history_last_served: str | None = None
         self._precalculated_warmer = precalculated_warmer
         self._dlq_archiver = dlq_archiver
         self._freshness_alarm_reporter = freshness_alarm_reporter
@@ -902,6 +908,8 @@ class ZelerDataRefreshSupervisor:
         self._inventory_refresher = inventory_refresher
         self._renewal_planner = renewal_planner
         self._history_backfill = history_backfill
+        # One backward portion of orders or questions per cycle for the fleet.
+        self._year_history_planner = year_history_planner
         self._inventory_interval = inventory_interval_seconds
         # Markers last two intervals and a cycle is followed by one interval of
         # rest, so a cycle must stay under one interval. Warming is the only
@@ -1095,6 +1103,15 @@ class ZelerDataRefreshSupervisor:
                     logger.warning("zelerdata.freshness_alarm_failed", seller_id=seller_id)
         devoluciones_windows = await self._advance_devoluciones(discovered)
         admitted = admitted or devoluciones_windows > 0
+        year_history_portions = 0
+        if self._year_history_planner is not None:
+            try:
+                # After the DEVOLUCIONES pass, so an order portion never waits
+                # for the lease of this cycle's window.
+                year_history_portions = int(await self._year_history_planner(tuple(discovered)))
+            except Exception:  # noqa: BLE001 - history must not stop the cycle
+                logger.warning("zelerdata.year_history_failed")
+            admitted = admitted or year_history_portions > 0
         if DAILY_MODE in modes:
             self._last_daily_date = now.date()
             if self._dlq_archiver is not None:
@@ -1117,6 +1134,7 @@ class ZelerDataRefreshSupervisor:
             sellers=len(sellers),
             warm_deferred=warm_deferred,
             devoluciones_windows=devoluciones_windows,
+            year_history_portions=year_history_portions,
             elapsed_seconds=round(self._monotonic() - started, 3),
         )
         self.health_status = "ok"
@@ -1133,7 +1151,8 @@ class ZelerDataRefreshSupervisor:
         window: it may already have spent its source calls.
 
         Intraday passes take turns separately and only for windows the regular
-        pass left, so they never delay a tail or an initial window.
+        pass left, so they never delay a tail or an initial window. Year-history
+        windows come last, with what both left.
         """
         if not sellers:
             return 0
@@ -1160,6 +1179,22 @@ class ZelerDataRefreshSupervisor:
                 failure_event="zelerdata.devoluciones_intraday_failed",
             )
             windows += intraday
+        if (
+            self._devoluciones_year_history_advancer is not None
+            and windows < self._devoluciones_windows
+        ):
+            # Lowest priority: only a window nothing more recent wanted.
+            (
+                year_history,
+                self._devoluciones_year_history_last_served,
+            ) = await self._devoluciones_turns(
+                sellers,
+                self._devoluciones_year_history_advancer,
+                last_served=self._devoluciones_year_history_last_served,
+                limit=self._devoluciones_windows - windows,
+                failure_event="zelerdata.devoluciones_year_history_failed",
+            )
+            windows += year_history
         return windows
 
     async def _devoluciones_turns(

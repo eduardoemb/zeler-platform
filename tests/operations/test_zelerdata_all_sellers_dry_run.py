@@ -192,6 +192,8 @@ async def test_configuration_reports_scope_kind_and_flags_not_values() -> None:
     assert configuration["flags"]["ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED"] is True
     # Also on unless explicitly false: ranges ending today are covered up to a cut.
     assert configuration["flags"]["ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED"] is True
+    # And twelve months of history for every eligible seller without a legacy plan.
+    assert configuration["flags"]["ZELERDATA_YEAR_HISTORY_ENABLED"] is True
     assert "82453304" not in json.dumps(report)
 
 
@@ -200,6 +202,7 @@ async def test_configuration_reports_initial_devoluciones_coverage_switched_off(
     environ = {
         "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED": "false",
         "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED": "false",
+        "ZELERDATA_YEAR_HISTORY_ENABLED": "false",
     }
 
     report = await dry_run.build_report(_db(), now=NOW, environ=environ)
@@ -207,6 +210,7 @@ async def test_configuration_reports_initial_devoluciones_coverage_switched_off(
     flags = report["configuration"]["flags"]
     assert flags["ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED"] is False
     assert flags["ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED"] is False
+    assert flags["ZELERDATA_YEAR_HISTORY_ENABLED"] is False
 
 
 def test_main_requires_the_database_environment(

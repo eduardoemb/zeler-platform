@@ -41,6 +41,7 @@ from zeler_sheets.devoluciones_runner import (
     INTRADAY_AUTHORIZATION,
     ONBOARDING_PLANS_COLLECTION,
     ORDINARY_TAIL_AUTHORIZATION,
+    YEAR_HISTORY_AUTHORIZATION,
     advance_onboarding_devoluciones,
     intraday_bounds,
 )
@@ -366,12 +367,14 @@ async def test_a_new_eligible_seller_gets_devoluciones_without_an_operator(
     assert served[0] == (f"{PILOT}:{ORDINARY_TAIL_AUTHORIZATION}",)
     assert served[1] == (f"{NEW_SELLER}:{INITIAL_COVERAGE_AUTHORIZATION}",)
     assert all(run == (f"{NEW_SELLER}:{ORDINARY_TAIL_AUTHORIZATION}",) for run in served[2:10])
-    # Once covered up to the settled midnight, only the day in progress is
-    # left: one intraday cut per seller, in turns (none before the first cut).
+    # Once covered up to the settled midnight, the day in progress comes
+    # first: one intraday cut per seller, in turns. Before the first cut of
+    # the day the window goes back towards the new seller's year; the pilot
+    # keeps its paused plan and gets none.
     expected = (
         [(f"{PILOT}:{INTRADAY_AUTHORIZATION}",), (f"{NEW_SELLER}:{INTRADAY_AUTHORIZATION}",)]
         if intraday_bounds(now=datetime.now(UTC)) is not None
-        else [(), ()]
+        else [(f"{NEW_SELLER}:{YEAR_HISTORY_AUTHORIZATION}",)] * 2
     )
     assert served[10:] == expected
 
