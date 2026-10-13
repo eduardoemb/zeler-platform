@@ -301,10 +301,23 @@ async def _fail(db: Any, reason: str, *, updated: datetime = NOW) -> dict[str, A
 
 
 @pytest.mark.asyncio
-async def test_a_portion_that_ran_out_of_time_is_retried_at_half_its_span(year_db: Any) -> None:
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "source_temporarily_unavailable",
+        # Production, 2026-10-13: the pilot's last question portion failed this
+        # way 53 times, reopened whole after every cooldown and never halved.
+        "source_incomplete",
+        "attempts_exhausted",
+        "storage_unavailable",
+        "recovery_failed",
+    ],
+)
+async def test_a_failed_portion_is_retried_at_half_its_span(year_db: Any, reason: str) -> None:
+    """A portion fails only after its three attempts; whatever the reason, the next is halved."""
     await _seed_marker(year_db, SELLER, "orders", NOW - timedelta(days=7))
     assert await _planner(year_db, models=("orders",)).plan((SELLER,))
-    failed = await _fail(year_db, "source_temporarily_unavailable")
+    failed = await _fail(year_db, reason)
 
     # Not before its cooldown.
     assert not await _planner(year_db, models=("orders",)).plan((SELLER,))
@@ -316,12 +329,34 @@ async def test_a_portion_that_ran_out_of_time_is_retried_at_half_its_span(year_d
 
 
 @pytest.mark.asyncio
-async def test_a_minimal_portion_that_keeps_failing_waits_hours(year_db: Any) -> None:
+async def test_once_the_newer_half_is_proven_only_the_rest_of_the_failed_portion_is_tried(
+    year_db: Any,
+) -> None:
+    """What the source refused lies in the rest: a whole span would fail again."""
+    await _seed_marker(year_db, SELLER, "orders", NOW - timedelta(days=7))
+    assert await _planner(year_db, models=("orders",)).plan((SELLER,))
+    failed = await _fail(year_db, "source_incomplete")
+    later = NOW + timedelta(minutes=20)
+    assert await _planner(year_db, models=("orders",), now=later).plan((SELLER,))
+    half = (await _year_jobs(year_db))[-1]
+    # As the worker does: the newer half is proven and moves the edge.
+    await year_db[JOBS].update_one({"_id": half["_id"]}, {"$set": {"state": "completed"}})
+    await year_db[FRESHNESS].update_one(
+        {"_id": f"{SELLER}:orders"}, {"$set": {"date_from": half["date_from"]}}
+    )
+    assert await _planner(year_db, models=("orders",), now=later).plan((SELLER,))
+    rest = (await _year_jobs(year_db))[-1]
+    assert (rest["date_from"], rest["date_to"]) == (failed["date_from"], half["date_from"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["source_temporarily_unavailable", "source_incomplete"])
+async def test_a_minimal_portion_that_keeps_failing_waits_hours(year_db: Any, reason: str) -> None:
     edge = (NOW - timedelta(days=7)).replace(minute=0)
     await _seed_marker(year_db, SELLER, "orders", edge)
     request = YearHistoryRecoveryRequest(SELLER, "orders", edge - MIN_PORTION, edge)
     await FormulaRecoveryQueue(year_db, now=lambda: NOW).enqueue(request)
-    await _fail(year_db, "source_temporarily_unavailable")
+    await _fail(year_db, reason)
 
     assert not await _planner(year_db, models=("orders",), now=NOW + timedelta(hours=1)).plan(
         (SELLER,)
@@ -332,12 +367,13 @@ async def test_a_minimal_portion_that_keeps_failing_waits_hours(year_db: Any) ->
 
 
 @pytest.mark.asyncio
-async def test_a_portion_that_lost_a_race_is_retried_whole_after_its_cooldown(
+async def test_a_portion_closed_for_an_ineligible_seller_is_retried_whole(
     year_db: Any,
 ) -> None:
+    """Closing it at claim says nothing about the portion: it is reopened whole."""
     await _seed_marker(year_db, SELLER, "orders", NOW - timedelta(days=7))
     assert await _planner(year_db, models=("orders",)).plan((SELLER,))
-    failed = await _fail(year_db, "source_incomplete")
+    failed = await _fail(year_db, "seller_not_eligible")
     assert await _planner(year_db, models=("orders",), now=NOW + timedelta(minutes=16)).plan(
         (SELLER,)
     )
@@ -502,6 +538,69 @@ async def test_an_ordinary_question_sweep_without_retained_proofs_is_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_a_year_portion_the_source_cannot_complete_uses_its_three_attempts(
+    year_db: Any,
+) -> None:
+    """``source_incomplete`` used to fail a portion at its first attempt.
+
+    The planner then reopened it with its attempts back at zero, so it never
+    reached the halving. A year portion now uses its attempts like a 429, and
+    the worker names the check that refused it, without identities or text.
+    """
+    from zeler_sheets.formulas.recovery_worker import FormulaRecoveryWorker
+
+    clock = {"now": NOW}
+    live_start = NOW - timedelta(days=7)
+    await _seed_marker(year_db, SELLER, "questions", live_start)
+    marker = await year_db[FRESHNESS].find_one({"_id": f"{SELLER}:questions"})
+    gateway = _QuestionGateway([NOW - timedelta(days=60)])
+    # Answered, but the source no longer returns the answer.
+    gateway.rows[0]["status"] = "ANSWERED"
+    queue = FormulaRecoveryQueue(year_db, now=lambda: clock["now"])
+    worker = FormulaRecoveryWorker(db=year_db, queue=queue, gateway=gateway, lane="ranges")
+    portion = YearHistoryRecoveryRequest(SELLER, "questions", NOW - timedelta(days=97), live_start)
+    await queue.enqueue(portion)
+
+    with capture_logs() as logs:
+        for attempt, backoff in ((1, 30), (2, 60), (3, None)):
+            assert await worker.process_one()
+            job = await year_db[JOBS].find_one({"_id": portion.key})
+            assert (job["attempts"], job["failure_reason"]) == (attempt, "source_incomplete")
+            if backoff is None:
+                assert job["state"] == "failed"
+            else:
+                assert job["state"] == "pending"
+                assert job["available_at"] == clock["now"] + timedelta(seconds=backoff)
+                clock["now"] = job["available_at"]
+    incomplete = [
+        log for log in logs if log["event"] == "zelerdata.year_history_portion_incomplete"
+    ]
+    assert [log["attempt"] for log in incomplete] == [1, 2, 3]
+    assert {log["check"] for log in incomplete} == {"recovery_worker._questions"}
+    assert all(isinstance(log["line"], int) for log in incomplete)
+    assert set(incomplete[0]) == {
+        "event",
+        "log_level",
+        "seller_id",
+        "read_model",
+        "date_from",
+        "date_to",
+        "attempt",
+        "check",
+        "line",
+    }
+    # Nothing was published.
+    assert await year_db[FRESHNESS].find_one({"_id": f"{SELLER}:questions"}) == marker
+
+    # Ordinary range work keeps failing closed at once, as before.
+    ordinary = RecoveryRequest(SELLER, "questions", NOW - timedelta(days=97), live_start)
+    await queue.enqueue(ordinary)
+    assert await worker.process_one()
+    job = await year_db[JOBS].find_one({"_id": ordinary.key})
+    assert (job["state"], job["attempts"]) == ("failed", 1)
+
+
+@pytest.mark.asyncio
 async def test_status_reports_each_source_without_identities(year_db: Any) -> None:
     from zeler_sheets.formulas.year_history import year_history_status
 
@@ -539,3 +638,23 @@ async def test_status_reports_each_source_without_identities(year_db: Any) -> No
     # A legacy history plan (the paused pilot) changes nothing: sources speak for themselves.
     await year_db.sheets_history_backfill_plans.insert_one({"_id": SELLER, "seller_id": SELLER})
     assert await year_history_status(year_db, SELLER, NOW) == status
+
+    # A portion that failed at the edge says what holds the source there,
+    # without presenting the edge as covered.
+    await year_db[JOBS].update_one(
+        {"_id": request.key},
+        {"$set": {"state": "failed", "attempts": 3, "failure_reason": "source_incomplete"}},
+    )
+    failed = await year_history_status(year_db, SELLER, NOW)
+    assert failed["sources"]["questions"] == {
+        "edge": (NOW - timedelta(days=7)).isoformat(),
+        "covered": False,
+        "retrying": {
+            "date_from": request.date_from.isoformat(),
+            "date_to": request.date_to.isoformat(),
+            "state": "failed",
+            "failure_reason": "source_incomplete",
+            "attempts": 3,
+        },
+    }
+    assert failed["portions"] == {"failed": 1}

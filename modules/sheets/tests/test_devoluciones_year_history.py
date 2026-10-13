@@ -48,6 +48,11 @@ def test_the_window_ends_at_the_oldest_certificate_and_stops_at_the_year() -> No
     )
     assert first.run_id == again.run_id != tomorrow.run_id
     assert first.authorization_id == YEAR_HISTORY_AUTHORIZATION
+    # A replacement of a failed window is another run of the same window.
+    second = year_history_binding(SELLER, TARGET, near, admitted_on=NOW.date(), attempt=2)
+    assert second.run_id != first.run_id
+    assert (second.start, second.end) == (first.start, first.end)
+    assert year_history_binding(SELLER, TARGET, near, admitted_on=NOW.date(), attempt=1) == first
 
 
 @pytest_asyncio.fixture
@@ -101,6 +106,40 @@ class _Admission:
 
     async def admit(self, db: Any, binding: Any, *, kind: str, current: datetime) -> None:
         self.created.append((binding, kind))
+
+
+async def _year_run(
+    db: Any,
+    start: datetime,
+    end: datetime,
+    *,
+    attempt: int,
+    state: str,
+    at: datetime,
+    expires_at: datetime | None = None,
+) -> str:
+    """A year run of one window as the runner leaves it, last written ``at``."""
+    binding = year_history_binding(SELLER, start, end, admitted_on=at.date(), attempt=attempt)
+    await db.sheets_devoluciones_runs.insert_one(
+        {
+            "_id": binding.run_id,
+            "authorization_id": YEAR_HISTORY_AUTHORIZATION,
+            "seller_id": SELLER,
+            "scope": "devoluciones",
+            "start": start,
+            "end": end,
+            "window_count": 1,
+            "next_window_index": 0,
+            "state": state,
+            "created_at": at,
+            "updated_at": at,
+            "expires_at": expires_at or at + timedelta(seconds=1070),
+        }
+    )
+    await db.sheets_devoluciones_run_windows.insert_one(
+        {"run_id": binding.run_id, "index": 0, "start": start, "end": end, "state": "prepared"}
+    )
+    return binding.run_id
 
 
 async def _eligible(seller_id: str) -> bool:
@@ -166,11 +205,14 @@ async def test_no_window_for_a_legacy_seller_or_a_covered_one(
         devoluciones_db, oldest, **({"coverage_mode": "legacy"} if case == "legacy_mode" else {})
     )
     if case == "failed":
-        binding = year_history_binding(
-            SELLER, oldest - timedelta(days=10), oldest, admitted_on=NOW.date()
-        )
-        await devoluciones_db.sheets_devoluciones_runs.insert_one(
-            {"_id": binding.run_id, "seller_id": SELLER, "state": "failed"}
+        # Failed a minute ago: its replacement waits for the retry delay.
+        await _year_run(
+            devoluciones_db,
+            oldest - timedelta(days=10),
+            oldest,
+            attempt=1,
+            state="failed",
+            at=NOW - timedelta(minutes=1),
         )
     admission = _Admission(monkeypatch)
 
@@ -185,6 +227,103 @@ async def test_no_window_for_a_legacy_seller_or_a_covered_one(
         advance=advance,
     )
     assert admission.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("abandoned", ["failed", "expired"])
+async def test_an_abandoned_window_is_replaced_soon_then_every_six_hours(
+    devoluciones_db: Any, monkeypatch: pytest.MonkeyPatch, abandoned: str
+) -> None:
+    """Production, 2026-10-13: one failed window held the year for the rest of the UTC day.
+
+    A window whose run failed, or stayed active past its deadline with its
+    window prepared after a restart, is acquired again by a new run of the same
+    window in a later free cycle: after 15 minutes, then 1 hour, then every
+    6 hours, so a window the source keeps refusing costs at most four attempts
+    a day. The abandoned run is never resumed or edited.
+    """
+    oldest = datetime(2026, 7, 14, tzinfo=UTC)
+    start, end = oldest - timedelta(days=10), oldest
+    await _certificate_seller(devoluciones_db, oldest)
+    ended = NOW - timedelta(minutes=2)
+    if abandoned == "failed":
+        first = await _year_run(devoluciones_db, start, end, attempt=1, state="failed", at=ended)
+    else:
+        first = await _year_run(
+            devoluciones_db,
+            start,
+            end,
+            attempt=1,
+            state="active",
+            at=ended - timedelta(seconds=1070),
+            expires_at=ended,
+        )
+    before = await devoluciones_db.sheets_devoluciones_runs.find_one({"_id": first})
+    admission = _Admission(monkeypatch)
+    advanced: list[str] = []
+
+    async def advance(db: Any, run_id: str, *, now: Any = None) -> dict[str, int]:
+        advanced.append(run_id)
+        return {"advanced": 0, "finalized": 0}
+
+    async def cycle(at: datetime) -> bool:
+        return await advance_year_history_devoluciones(
+            devoluciones_db, SELLER, eligible=_eligible, now=lambda: at, advance=advance
+        )
+
+    last, attempt = ended, 1
+    # The schedule crosses UTC midnight: the count of runs, not the day, decides.
+    for delay in (
+        timedelta(minutes=15),
+        timedelta(hours=1),
+        timedelta(hours=6),
+        timedelta(hours=6),
+    ):
+        # Not before its delay: the cycle's window stays free, no source work.
+        assert not await cycle(last + delay - timedelta(minutes=1))
+        assert admission.created == [] and advanced == []
+        at = last + delay
+        assert await cycle(at)
+        attempt += 1
+        ((binding, kind),) = admission.created
+        assert kind == "year_history"
+        assert binding == year_history_binding(
+            SELLER, start, end, admitted_on=at.date(), attempt=attempt
+        )
+        assert advanced == [binding.run_id] != [first]
+        # As the runner leaves it when the source refuses the window again.
+        admission.created.clear()
+        advanced.clear()
+        await _year_run(devoluciones_db, start, end, attempt=attempt, state="failed", at=at)
+        last = at
+    assert await devoluciones_db.sheets_devoluciones_runs.find_one({"_id": first}) == before
+
+
+@pytest.mark.asyncio
+async def test_a_window_still_in_time_is_resumed_across_midnight_not_replaced(
+    devoluciones_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restart mid-window resumes the same run while it is in time, even the next UTC day."""
+    oldest = datetime(2026, 7, 14, tzinfo=UTC)
+    start, end = oldest - timedelta(days=10), oldest
+    await _certificate_seller(devoluciones_db, oldest)
+    admitted = datetime(2026, 10, 12, 23, 58, tzinfo=UTC)
+    run_id = await _year_run(devoluciones_db, start, end, attempt=1, state="active", at=admitted)
+    admission = _Admission(monkeypatch)
+    advanced: list[str] = []
+
+    async def advance(db: Any, run_id: str, *, now: Any = None) -> dict[str, int]:
+        advanced.append(run_id)
+        return {"advanced": 1, "finalized": 1}
+
+    assert await advance_year_history_devoluciones(
+        devoluciones_db,
+        SELLER,
+        eligible=_eligible,
+        now=lambda: admitted + timedelta(minutes=5),
+        advance=advance,
+    )
+    assert admission.created == [] and advanced == [run_id]
 
 
 @pytest.mark.asyncio

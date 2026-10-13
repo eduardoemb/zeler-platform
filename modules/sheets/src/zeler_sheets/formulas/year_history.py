@@ -44,8 +44,13 @@ MAX_PORTION: Mapping[str, timedelta] = {
     "questions": timedelta(days=90),
 }
 MIN_PORTION = timedelta(hours=1)
-# A portion that ran out of time, or met 429/5xx, is retried at half its span.
-SIZE_FAILURES = frozenset({"source_temporarily_unavailable"})
+# A portion fails only after its three attempts (a deadline, a 429 or 5xx, or a
+# source answer that cannot be proven whole), and the next one at the same edge
+# has half its span, so the walk narrows down to the hour the source refuses.
+# Until 2026-10-13 ``source_incomplete`` failed at the first attempt and the
+# same portion was reopened whole after every cooldown, without end. Only a
+# portion closed because the seller was not eligible is retried whole.
+RETRY_WHOLE = frozenset({"seller_not_eligible"})
 # A minimal portion that keeps failing is retried at most this often.
 RETRY_AT_MINIMUM = timedelta(hours=6)
 FRESHNESS = "sheets_read_model_freshness"
@@ -104,8 +109,11 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
     """Where each source's proven coverage starts, against the year target.
 
     Read-only and sanitized: dates, flags and counts for the requested seller.
+    A source held at its edge by a failed portion or window says so in
+    ``retrying``; its edge stays where the proofs end, never covered.
     """
     from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
+    from zeler_sheets.devoluciones_runner import year_history_retrying
 
     target = year_history_target(now)
     sources: dict[str, dict[str, Any]] = {}
@@ -117,6 +125,10 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
             "edge": edge.isoformat() if edge else None,
             "covered": edge is not None and edge <= target,
         }
+        if edge is not None and edge > target:
+            retrying = await _portion_retrying(db, seller_id, model, edge)
+            if retrying is not None:
+                sources[model]["retrying"] = retrying
     control = await coverage_control(db, seller_id)
     oldest = None
     if control.get("coverage_mode") == "active":
@@ -130,6 +142,9 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
         "edge": oldest.isoformat() if oldest else None,
         "covered": oldest is not None and oldest <= target,
     }
+    window = await year_history_retrying(db, seller_id, oldest, now=now)
+    if window is not None:
+        sources["devoluciones"]["retrying"] = window
     portions: dict[str, int] = {}
     async for job in db["sheets_formula_recovery_jobs"].find(
         {"seller_id": seller_id, "year_history": True}, {"state": 1}
@@ -141,6 +156,41 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
         "covered": all(source["covered"] for source in sources.values()),
         "sources": sources,
         "portions": portions,
+    }
+
+
+async def _portion_retrying(
+    db: Any, seller_id: str, model: str, edge: datetime
+) -> dict[str, Any] | None:
+    """The latest portion at ``edge`` when it failed or waits for a retry."""
+    rows = (
+        await db["sheets_formula_recovery_jobs"]
+        .find(
+            {"seller_id": seller_id, "read_model": model, "year_history": True},
+            {"state": 1, "date_from": 1, "date_to": 1, "failure_reason": 1, "attempts": 1},
+        )
+        .sort([("updated_at", -1), ("_id", 1)])
+        .limit(1)
+        .to_list(length=1)
+    )
+    if not rows:
+        return None
+    job = rows[0]
+    start, end = _utc(job.get("date_from")), _utc(job.get("date_to"))
+    if (
+        job.get("state") not in {"pending", "failed"}
+        or not job.get("failure_reason")
+        or start is None
+        or end is None
+        or not start < edge <= end
+    ):
+        return None
+    return {
+        "date_from": start.isoformat(),
+        "date_to": end.isoformat(),
+        "state": str(job["state"]),
+        "failure_reason": str(job["failure_reason"]),
+        "attempts": int(job.get("attempts", 0)),
     }
 
 
@@ -276,17 +326,23 @@ class YearHistoryPlanner:
             if available is not None and now < available:
                 return None
             previous = _utc(latest["date_to"]) - _utc(latest["date_from"])  # type: ignore[operator]
-            if latest.get("failure_reason") in SIZE_FAILURES:
+            if latest.get("failure_reason") in RETRY_WHOLE:
+                span = min(span, previous)
+            else:
                 updated = _utc(latest.get("updated_at"))
                 if previous <= MIN_PORTION and (
                     updated is None or now < updated + RETRY_AT_MINIMUM
                 ):
                     return None
                 span = min(span, max(MIN_PORTION, _whole_hours(previous / 2)))
-            else:
-                # The same portion again after its cooldown.
-                span = min(span, previous)
-        start = max(target, end - span, floor or target)
+        # Once the newer half of a failed portion is proven, only the rest of
+        # that portion is tried next: what the source refused is in there, so
+        # the walk narrows down to it instead of failing a whole span again.
+        failed = await self._queue.failed_year_history_across(
+            seller_id=seller_id, read_model=model, edge=edge
+        )
+        narrowed = _utc(failed.get("date_from")) if failed is not None else None
+        start = max(target, end - span, floor or target, narrowed or target)
         if start >= end:
             return None
         return YearHistoryRecoveryRequest(seller_id, model, start, end)

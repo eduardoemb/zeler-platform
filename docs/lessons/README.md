@@ -983,9 +983,13 @@ repeat failures, and promote stable knowledge to its proper operational form.
   pass runs. Publish an order or question portion as a retained proof without
   touching the marker's live interval, so the sweeps never re-read it. Size it
   to the 240-second job deadline at a quarter of the pacer, align it to whole
-  hours, and let a deadline use an attempt so a failed portion is halved.
-  DEVOLUCIONES goes back one 10-day window with what the tail and intraday
-  cuts leave, and certificate renewal takes several 20-certificate batches.
+  hours, and let a deadline or a `source_incomplete` answer use an attempt so
+  a failed portion is halved; once its newer half is proven, try only the rest
+  of it, so the walk narrows to the refused hour and retries it every 6 hours
+  with the edge honestly above it. DEVOLUCIONES goes back one 10-day window
+  with what the tail and intraday cuts leave; a failed or abandoned window gets
+  a new run (`attempt` in the identity) after 15 minutes, 1 hour, then every
+  6 hours. Certificate renewal takes several 20-certificate batches.
   Judge each source by its own proofs, not the seller: the paused pilot
   (included 2026-10-13) walks questions and DEVOLUCIONES only, since its
   orders are already proven, and a portion never starts before the end of an
@@ -1000,13 +1004,23 @@ repeat failures, and promote stable knowledge to its proper operational form.
   Excluding a whole seller for a legacy plan left the pilot's questions and
   DEVOLUCIONES short of a year although its orders were done; and walking 30
   days back from a live block that a one-hour gap separated from an older
-  proof re-read a month already proven.
+  proof re-read a month already proven. In production on 2026-10-13 two
+  shortcuts stalled the pilot: `source_incomplete` failed a question portion
+  at its first attempt and reopening it reset attempts to 0, so it was planned
+  53 times in a day and never halved; and with only the admission day in a
+  year run's identity, one window that failed at 03:06 held DEVOLUCIONES for
+  the rest of the UTC day. Halving back to a whole span after a proven half
+  failed about twice as many portions as narrowing to the rest.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
   (new seller served beside the walking pilot, the pilot with production
-  edges walked once across a restart into two workers with its plan untouched,
-  failed portion halved while another seller continues, switch off for both),
+  edges walked once across a restart into two workers with its plan and
+  pending legacy scan untouched, failed portion halved while another seller
+  continues, a failed window left prepared replaced once with no duplicate
+  certificate, a question hour the source refuses narrowed to and retried at
+  most four times a day, switch off for both),
   `modules/sheets/tests/test_year_history.py`,
   `modules/sheets/tests/test_devoluciones_year_history.py`,
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
-  duration from code). Not yet observed in production.
+  duration from code, "What a failure costs"). Walk observed in production on
+  2026-10-13 up to both stalls; the fix is not yet observed there.
 - status: active

@@ -987,6 +987,28 @@ class FormulaRecoveryQueue:
         )
         return dict(rows[0]) if rows else None
 
+    async def failed_year_history_across(
+        self, *, seller_id: str, read_model: str, edge: datetime
+    ) -> dict[str, Any] | None:
+        """The narrowest failed year-history portion that ``edge`` lies strictly inside."""
+        rows = (
+            await self.collection.find(
+                {
+                    "seller_id": seller_id,
+                    "read_model": read_model,
+                    "year_history": True,
+                    "state": "failed",
+                    "date_from": {"$lt": edge},
+                    "date_to": {"$gt": edge},
+                },
+                {"date_from": 1, "date_to": 1},
+            )
+            .sort([("date_from", -1), ("_id", 1)])
+            .limit(1)
+            .to_list(length=1)
+        )
+        return dict(rows[0]) if rows else None
+
     async def renewal_passes(self, slot_keys: tuple[str, ...]) -> dict[str, str]:
         """The state of each renewal pass that exists, by slot key.
 

@@ -639,14 +639,29 @@ stored, and a restart or a second worker computes the same next portion.
   live union, never the year. Question sweeps now carry retained proofs over
   like order sweeps; without retained proofs (the pilot) their marker is
   written exactly as before.
-- **Failures.** A 429, 5xx or job deadline uses an attempt (retried after 30 s
-  and 60 s); unlike ordinary range work it is not deferred without an attempt,
-  because a portion too large for the deadline would restart forever. After
+- **Failures.** A 429, 5xx, job deadline or a source answer that cannot be
+  proven whole (`source_incomplete`: a row whose detail fails a check, a list
+  that changed during the scan, a lost race) uses an attempt (retried after
+  30 s and 60 s). Unlike ordinary range work it is neither deferred without an
+  attempt nor failed at once, because a portion too large for the deadline, or
+  holding a row the source never gives whole, would restart forever. After
   three attempts the portion fails and the next one at the same edge has half
-  the span (down to one hour; a one-hour portion that keeps failing is retried
-  every 6 hours). A portion that lost a race (`coverage changed`) is retried
-  whole after its 15-minute cooldown. A portion waiting for a retry holds no
-  other seller, and nothing already acquired is withdrawn.
+  the span; once its newer half is proven, the next portion is the rest of the
+  failed one, so the walk narrows down to the hour the source refuses (one
+  failed portion per halving: about 8 for a week, 12 for 90 days) instead of
+  failing whole spans again. A one-hour portion that keeps failing is retried
+  every 6 hours (three attempts each time): the edge stays right above it,
+  not covered, and `--year-history` names it under `retrying`. Only a portion
+  closed because the seller was not eligible is retried whole. The worker logs
+  each refused attempt as `zelerdata.year_history_portion_incomplete` with the
+  check that refused it (`check` as `module.function`, and `line`; no
+  identities or source text). A portion waiting for a retry holds no other
+  seller, and nothing already acquired is withdrawn.
+- **Fixed on 2026-10-13.** `source_incomplete` used to fail a portion at its
+  first attempt, and the planner reopened the same portion whole after every
+  15-minute cooldown with its attempts back at zero: the pilot's last question
+  portion (2025-10-12 to 10-18 23:00) was planned 53 times in a day, a scan of
+  the seller's questions each time, and never halved.
 - **Shipments** are not acquired ahead: the readers serve a missing shipment
   cost or address as `NA` and request it, as for any range (three calls per
   shipment: `/shipments/{id}/orders`, `/shipments/{id}`, `/shipments/{id}/costs`).
@@ -662,12 +677,24 @@ existing coverage, so `select_covering_proofs` sees one contiguous run of
 certificates. Year windows take turns in their own rotation and get the
 cycle's window only when no seller had an operator run, a tail, an initial
 window or an intraday cut due: the cap stays one window per cycle for all
-sellers. The regular pass never picks up a year-history run. Like the tail,
-the admission day is in the run identity, so a failed or expired window is
-retried on the next UTC day. Logs: `zelerdata.devoluciones_year_history_admitted`
-per window, `zelerdata.devoluciones_year_history_failed` for an admission or
-lease failure, and the tail's `zelerdata.devoluciones_tail_failed` for a window
-failure.
+sellers. The regular pass never picks up a year-history run. Logs:
+`zelerdata.devoluciones_year_history_admitted` per window,
+`zelerdata.devoluciones_year_history_failed` for an admission or lease failure,
+and the tail's `zelerdata.devoluciones_tail_failed` for a window failure.
+
+**A failed or abandoned window** (its run `failed`, or still `active` past its
+deadline with its window `prepared` after a restart) gets a new run of the same
+window in a later free cycle: 15 minutes after the last run ended, then 1 hour,
+then every 6 hours (`YEAR_HISTORY_RETRY_AFTER`; the run's `attempt` is in its
+identity, counted over every run of the window that ends at that certificate).
+A window the source keeps refusing costs at most four windows a day, and waiting
+leaves the cycle's window to nothing. A run still in time is resumed, after a
+restart too. Only a completed run publishes a certificate, so a replacement
+never duplicates one; the abandoned run and its prepared window are left as
+they are. `--year-history` names the window under `retrying` (with `runs`).
+Until 2026-10-13 only the admission day was in the identity, so the pilot's
+window of 2026-05-12 to 05-22, failed at 03:06, matched the day's run and held
+its year for the rest of the UTC day (no admission in 16 hours).
 
 A year is about 37 certificates per seller (plus one or two intraday cuts),
 each valid for 30 minutes. One renewal batch handles at most 20 within 30
@@ -706,6 +733,29 @@ share one portion per cycle and take about K times longer. Past about three
 certificate sellers, intraday cuts use every window and year windows wait
 (the same limit as the intraday capacity above); revisit
 `devoluciones_windows_per_cycle` then.
+
+**What a failure costs (2026-10-13).** The per-cycle caps are unchanged: at
+most one portion admitted and one DEVOLUCIONES window run per cycle for the
+fleet. What changed is how many cycles a failure takes, so the worst case per
+cycle is:
+
+- **A portion that keeps failing:** at most three attempts in a cycle (the
+  second and third 30 and 60 seconds after the first), each bounded by the
+  240-second job deadline at the ranges lane's pace and sized to about 130
+  calls (120 orders or 100 questions plus search pages; at most about 300 at a
+  quarter of a 300-per-minute pacer). So about 390 calls in a cycle, at most
+  about 900 if every attempt runs to its deadline, as for a 429 before.
+  Narrowing to the refused hour takes one failed portion per halving (about 8
+  for a week, 12 for 90 days) plus as many proven halves.
+  The stuck hour then costs three attempts every 6 hours; for the pilot each
+  attempt is a scan of its questions (`⌈T/50⌉`, 6 to 12 pages) plus a detail
+  or two, so about 85 to 160 calls a day, against about 1,000 to 1,450 a day
+  that reopening the week-long portion every cycle cost.
+- **A DEVOLUCIONES window that keeps failing:** the cycle's one window, only
+  when nothing more recent wants it, at most 4 times a day after the first
+  hours. Per attempt `2 × (2 × ⌈I/100⌉ + 2 × H + U)`: 4 to 46 for the pilot, at
+  most 208 (the tail's limit), so at most about 830 calls a day and usually
+  under 200. Before, one attempt a day and no year window in between.
 
 ### The pilot (2026-10-13)
 
@@ -756,7 +806,26 @@ admitted while a renewal pass runs.
 (`test_the_paused_pilot_walks_questions_and_devoluciones_once_across_a_restart`)
 reproduces these edges and asserts the counts above: one scan page per portion
 plus one detail per question in range, four search pages per window plus six
-reads for the one old return.
+reads for the one old return. It also keeps the old pilot's pending question
+scan (`policy_authority` history-on-link-v1) in the queue and asserts it is
+left exactly as it was: the walk reads only `year_history` jobs, the ordinary
+queue never claims another authority's job, and a portion's key never
+coalesces with it.
+
+**Two stalls seen on 2026-10-13 (read-only, 19:30 UTC), fixed the same day.**
+Questions walked three portions to 2025-10-18 23:00 and then the last one
+(2025-10-12 to 10-18 23:00) failed `source_incomplete` at every attempt, reopened
+whole after each cooldown. DEVOLUCIONES walked one window to 2026-05-22 and then
+the window of 2026-05-12 to 05-22 failed at 03:06 with its window `prepared`; no
+year window was admitted for 16 hours. Neither needs an operator step after the
+fix: the failed question portion is the latest at its edge, so the planner
+halves it and narrows down to the refused hour, and the failed run is
+replaced in the next free cycle (its 15-minute delay has long passed).
+`tests/integration/test_year_history_new_sellers.py` reproduces both
+(`test_a_failed_year_window_left_prepared_is_replaced_and_the_walk_goes_on`,
+`test_a_question_portion_the_source_cannot_complete_stops_at_an_honest_edge`).
+The questions source counts as covered once the target passes its edge, at
+the latest on 2026-10-20 for the 2025-10-18 23:00 edge.
 
 ### Switch and verification
 
@@ -778,10 +847,17 @@ It prints the target and, per source (`orders`, `questions`,
 `devoluciones`), where proven coverage starts (`edge`) and whether it reaches
 the target, plus the seller's year-history portions by state; no identities.
 `ready` means every source is covered; the pilot is no longer `excluded`.
-For a new seller, expect the `orders` and `questions` edges to move back about
-one portion per cycle and DEVOLUCIONES 10 days per year window, `portions`
-mostly `completed` with at most one `pending` or `running`, and `failed` only
-with a later retry at half the span. Also:
+A source held at its edge also shows `retrying`: for orders and questions the
+failed (or waiting) portion at the edge with its `failure_reason` and
+`attempts`, for DEVOLUCIONES the next window with the `state` of its latest run
+(`failed`, or `expired` when abandoned) and how many `runs` it has had. For a
+new seller, expect the `orders` and `questions` edges to move back about one
+portion per cycle and DEVOLUCIONES 10 days per year window, `portions` mostly
+`completed` with at most one `pending` or `running`, and `failed` only with a
+later, narrower retry. A `retrying` that stays on a one-hour portion, or on one
+window with several `runs`, is a row the source does not give whole: the
+worker log names the check (`zelerdata.year_history_portion_incomplete`, or
+`zelerdata.devoluciones_tail_failed` with its `source_stage`). Also:
 
 - `zelerdata_read_model_status --devoluciones-coverage`: no `unacquired_gaps`,
   and the capacity reads `sufficient` with a year of certificates.

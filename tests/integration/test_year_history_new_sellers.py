@@ -376,6 +376,24 @@ async def _paused_pilot(
                 }
             ]
         await db[FRESHNESS].insert_one(marker)
+    # The old pilot's twelve-month question scan, pending since 2026-10-06
+    # under its own authority: only its owning workers could run it.
+    await db[JOBS].insert_one(
+        {
+            "_id": "legacy-question-scan",
+            "seller_id": PILOT,
+            "read_model": "questions",
+            "state": "pending",
+            "attempts": 0,
+            "policy_authority": "history-on-link-v1",
+            "history_protocol_version": 1,
+            "date_from": year_history_target(now) - timedelta(days=18),
+            "date_to": now - timedelta(days=19),
+            "created_at": now - timedelta(days=7),
+            "updated_at": now - timedelta(days=7),
+            "available_at": now - timedelta(days=7),
+        }
+    )
 
 
 def _enable_all_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -684,6 +702,7 @@ async def test_the_paused_pilot_walks_questions_and_devoluciones_once_across_a_r
     await _link(db, PILOT)
     legacy_plan = await db[PLANS].find_one({"_id": PILOT})
     legacy_runs = await db[RUNS].find({"seller_id": PILOT}).to_list(None)
+    legacy_scan = await db[JOBS].find_one({"_id": "legacy-question-scan"})
     oldest_before = (
         await db[CERTIFICATES].find_one({"seller_id": PILOT}, sort=[("date_from", 1)])
     )["date_from"]
@@ -772,10 +791,110 @@ async def test_the_paused_pilot_walks_questions_and_devoluciones_once_across_a_r
     ]
     assert len(claim_reads) == 6
 
-    # The legacy plan and its runs are left exactly as they were.
+    # The legacy plan, its runs and its pending question scan are left exactly
+    # as they were: the walk neither runs, coalesces with nor counts that scan.
     assert await db[PLANS].find_one({"_id": PILOT}) == legacy_plan
     for run in legacy_runs:
         assert await db[RUNS].find_one({"_id": run["_id"]}) == run
+    assert await db[JOBS].find_one({"_id": "legacy-question-scan"}) == legacy_scan
+
+
+@pytest.mark.asyncio
+async def test_a_failed_year_window_left_prepared_is_replaced_and_the_walk_goes_on(
+    year_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production, 2026-10-13: a year window failed at 03:06 with its window prepared.
+
+    The next window ends at the same oldest certificate, so it was the same
+    run of the day: no year window was admitted for 16 hours. Now the next free
+    cycle replaces it with one new run of that window, and the walk continues
+    from its certificate without a duplicate.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+    from zeler_sheets.devoluciones_runner import (
+        YEAR_HISTORY_AUTHORIZATION,
+        _settled_midnight,
+        advance_year_history_devoluciones,
+    )
+    from zeler_sheets.formulas.seller_scope import EligibleSellerGate
+    from zeler_sheets.formulas.year_history import year_history_status, year_history_target
+
+    db = year_db
+    now = datetime.now(UTC).replace(microsecond=datetime.now(UTC).microsecond // 1000 * 1000)
+    gateway = YearGateway(
+        now=now, sellers=(PILOT,), first=year_history_target(now) - timedelta(days=40)
+    )
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+    await _paused_pilot(db, gateway, now)
+    await _link(db, PILOT)
+    _enable_all_mode(monkeypatch)
+    oldest = (await db[CERTIFICATES].find_one({"seller_id": PILOT}, sort=[("date_from", 1)]))[
+        "date_from"
+    ]
+    year = {"seller_id": PILOT, "authorization_id": YEAR_HISTORY_AUTHORIZATION}
+
+    # The first year window fails at the source: the run fails, its window stays prepared.
+    gateway.fail(PILOT, "/post-purchase/v1/claims/search?", 1)
+    assert await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
+    (failed,) = await db[RUNS].find(year).to_list(None)
+    assert failed["state"] == "failed" and failed["end"] == oldest
+    window = await db.sheets_devoluciones_run_windows.find_one({"run_id": failed["_id"]})
+    assert window["state"] == "prepared"
+    # Sixteen hours later, as in production.
+    await db[RUNS].update_one(
+        {"_id": failed["_id"]},
+        {
+            "$set": {
+                field: failed[field] - timedelta(hours=16)
+                for field in ("created_at", "updated_at", "expires_at")
+            }
+        },
+    )
+    failed = await db[RUNS].find_one({"_id": failed["_id"]})
+    status = await year_history_status(db, PILOT, datetime.now(UTC))
+    assert status["sources"]["devoluciones"]["edge"] == oldest.isoformat()
+    assert status["sources"]["devoluciones"]["retrying"] == {
+        "date_from": failed["start"].isoformat(),
+        "date_to": oldest.isoformat(),
+        "state": "failed",
+        "runs": 1,
+    }
+
+    supervisor = await build_zelerdata_refresh_supervisor(db=db)
+    for _ in range(12):
+        await supervisor.run_cycle()
+        if await db[RUNS].count_documents({**year, "state": "completed"}) >= 2:
+            break
+    else:
+        raise AssertionError("the year walk stayed behind the failed window")
+
+    # One replacement of the failed window, then the next window back from it.
+    completed = await db[RUNS].find({**year, "state": "completed"}).sort("start", -1).to_list(None)
+    assert [(run["start"], run["end"]) for run in completed] == [
+        (failed["start"], oldest),
+        (completed[1]["start"], failed["start"]),
+    ]
+    assert await db[RUNS].count_documents({**year, "start": failed["start"]}) == 2
+    # The abandoned run and its prepared window are left as they were.
+    assert await db[RUNS].find_one({"_id": failed["_id"]}) == failed
+    assert await db.sheets_devoluciones_run_windows.find_one({"run_id": failed["_id"]}) == window
+    # Each range is certified once, and the certificates join without a gap.
+    certificates = await db[CERTIFICATES].find({"seller_id": PILOT}).to_list(None)
+    ranges = [(row["date_from"], row["date_to"]) for row in certificates]
+    assert len(ranges) == len(set(ranges))
+    current = datetime.now(UTC)
+    await select_covering_proofs(
+        db, PILOT, completed[1]["start"], _settled_midnight(current), current
+    )
+    status = await year_history_status(db, PILOT, current)
+    assert status["sources"]["devoluciones"]["edge"] == completed[1]["start"].isoformat()
+    assert "retrying" not in status["sources"]["devoluciones"]
 
 
 async def _live_markers(db: Any, seller_id: str, now: datetime) -> None:
@@ -911,6 +1030,116 @@ async def test_restart_two_workers_and_a_failed_portion_leave_no_gap_and_no_dupl
             for row in gateway.orders[seller_id]
             if reached <= _parse(row["date_created"]) < max(job["date_to"] for job in walked)
         }
+
+
+@pytest.mark.asyncio
+async def test_a_question_portion_the_source_cannot_complete_stops_at_an_honest_edge(
+    year_db: Any,
+) -> None:
+    """Production, 2026-10-13: the pilot's last question portion failed 53 times.
+
+    It failed ``source_incomplete`` at its first attempt and was reopened whole
+    after every 15-minute cooldown with its attempts back at zero, so it was
+    never halved and scanned the seller's questions every cycle. Now it uses
+    its three attempts, is halved down to the hour that holds the question the
+    source cannot give whole, and that hour is retried every 6 hours. The edge
+    stops right above it: what is newer is proven, the hour and what is older
+    are not, and the status says so.
+    """
+    from zeler_sheets.formulas.recovery import FormulaRecoveryQueue
+    from zeler_sheets.formulas.seller_scope import EligibleSellerGate
+    from zeler_sheets.formulas.year_history import (
+        YearHistoryPlanner,
+        _proven_blocks,
+        year_history_status,
+        year_history_target,
+    )
+
+    db = year_db
+    start = datetime.now(UTC).replace(microsecond=0)
+    clock = {"now": start}
+
+    def now() -> datetime:
+        return clock["now"]
+
+    target = year_history_target(start)
+    gateway = YearGateway(now=start, sellers=(NEW_SELLER,), first=target - timedelta(days=40))
+    await _link(db, NEW_SELLER)
+    await _live_markers(db, NEW_SELLER, start)
+    # An answered question well inside the year whose answer the source no
+    # longer returns: every acquisition of its hour fails closed.
+    bad = next(
+        row
+        for row in gateway.questions[NEW_SELLER]
+        if _parse(row["date_created"]) > target + timedelta(days=20)
+    )
+    del bad["answer"]
+    hour = _parse(bad["date_created"]).replace(minute=0, second=0)
+    planner = YearHistoryPlanner(
+        db=db,
+        queue=FormulaRecoveryQueue(db, now=now),
+        eligible=EligibleSellerGate(db),
+        now=now,
+        models=("questions",),
+    )
+    worker = _ranges_worker(db, gateway, now=now)
+
+    def scans() -> int:
+        return sum(path.startswith("/questions/search?") for _, path in gateway.calls)
+
+    # Three days of 20-minute cycles.
+    cycles = 3 * 72
+    scanned: list[int] = []
+    for _ in range(cycles):
+        await planner.plan((NEW_SELLER,))
+        await _drain(worker)
+        scanned.append(scans())
+        clock["now"] += timedelta(minutes=20)
+
+    # The edge stops right above the hour, and everything newer is proven.
+    marker = await db[FRESHNESS].find_one({"_id": f"{NEW_SELLER}:questions"})
+    blocks = _proven_blocks(marker)
+    assert blocks[-1][0] == hour + timedelta(hours=1)
+    assert not any(block_start <= hour < block_end for block_start, block_end in blocks)
+    stored = {row["_id"] async for row in db.questions.find({"seller_id": NEW_SELLER})}
+    assert str(bad["id"]) not in stored
+    assert {
+        str(row["id"])
+        for row in gateway.questions[NEW_SELLER]
+        if hour + timedelta(hours=1) <= _parse(row["date_created"]) < start - timedelta(days=7)
+    } <= stored
+
+    # The hour used its three attempts and waits; it is not reopened every cycle.
+    jobs = await _year_jobs(db, NEW_SELLER)
+    (stuck,) = [
+        job
+        for job in jobs
+        if (job["date_from"], job["date_to"]) == (hour, hour + timedelta(hours=1))
+    ]
+    assert (stuck["state"], stuck["attempts"], stuck["failure_reason"]) == (
+        "failed",
+        3,
+        "source_incomplete",
+    )
+    # A binary search: one failed portion per halving of the first one that
+    # failed, each portion acquired once. Then at most four retries of three
+    # attempts a day, one scan each.
+    first_failed = min(
+        (job for job in jobs if job["state"] == "failed"), key=lambda job: job["created_at"]
+    )
+    halvings = (first_failed["date_to"] - first_failed["date_from"]) // timedelta(hours=1)
+    assert sum(job["state"] == "failed" for job in jobs) <= halvings.bit_length()
+    acquired = [(job["date_from"], job["date_to"]) for job in jobs if job["state"] == "completed"]
+    assert len(acquired) == len(set(acquired))
+    assert scanned[-1] - scanned[-73] <= 12
+
+    # Honest: not covered, with the hour that holds it back.
+    status = await year_history_status(db, NEW_SELLER, now())
+    questions = status["sources"]["questions"]
+    assert questions["covered"] is False
+    assert questions["edge"] == (hour + timedelta(hours=1)).isoformat()
+    assert questions["retrying"]["date_from"] == hour.isoformat()
+    assert questions["retrying"]["failure_reason"] == "source_incomplete"
 
 
 @pytest.mark.asyncio

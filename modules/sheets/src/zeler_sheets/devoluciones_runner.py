@@ -74,6 +74,9 @@ __all__ = [
     "renew_devoluciones_marker_if_proven",
     "year_history_binding",
     "year_history_bounds",
+    "year_history_retry_at",
+    "year_history_retrying",
+    "year_history_window_runs",
 ]
 
 FRESHNESS_COLLECTION = "sheets_read_model_freshness"
@@ -1204,6 +1207,16 @@ INTRADAY_STEP = timedelta(hours=1)
 # (2026-10-13): its windows end at its oldest certificate like anyone's.
 YEAR_HISTORY_AUTHORIZATION = "refresh-year-history:v1"
 YEAR_HISTORY_COHORT = "zelerdata-refresh-year-history-v1"
+# A window whose run failed, or was abandoned past its deadline by a restart,
+# gets a new run of the same window in a later free cycle: after 15 minutes,
+# then 1 hour, then every 6 hours, so a window the source keeps refusing costs
+# at most four attempts a day. Until 2026-10-13 the admission day alone was in
+# the identity, so one failure held the pilot's year for the rest of the day.
+YEAR_HISTORY_RETRY_AFTER: tuple[timedelta, ...] = (
+    timedelta(minutes=15),
+    timedelta(hours=1),
+    timedelta(hours=6),
+)
 AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
     {
         ORDINARY_TAIL_AUTHORIZATION,
@@ -1591,9 +1604,18 @@ def year_history_bounds(
 
 
 def year_history_binding(
-    seller_id: str, start: datetime, end: datetime, *, admitted_on: date
+    seller_id: str, start: datetime, end: datetime, *, admitted_on: date, attempt: int = 1
 ) -> RunBinding:
-    # Like the tail: a failed or expired window is retried the next UTC day.
+    """The run of one year window; a replacement of a failed one names its attempt.
+
+    The first run keeps the identity of 2026-10-12, so a run admitted before
+    this change is still recognized as the window's first.
+    """
+    if attempt < 1:
+        raise ValueError("a year window attempt starts at 1")
+    fingerprints = {"admitted_on": admitted_on.isoformat()}
+    if attempt > 1:
+        fingerprints["attempt"] = str(attempt)
     return RunBinding(
         authorization_id=YEAR_HISTORY_AUTHORIZATION,
         cohort_id=YEAR_HISTORY_COHORT,
@@ -1602,8 +1624,78 @@ def year_history_binding(
         start=start,
         end=end,
         partition_version="v1",
-        release_fingerprints={"admitted_on": admitted_on.isoformat()},
+        release_fingerprints=fingerprints,
     )
+
+
+async def year_history_window_runs(db: Any, seller_id: str, end: datetime) -> list[dict[str, Any]]:
+    """Every year run of the window that ends at ``end``, most recent first.
+
+    By its end, not its start: near the target the start moves a day at a time.
+    """
+    runs: list[dict[str, Any]] = (
+        await db[RUNS_COLLECTION]
+        .find(
+            {"seller_id": seller_id, "authorization_id": YEAR_HISTORY_AUTHORIZATION, "end": end},
+            {
+                "start": 1,
+                "end": 1,
+                "state": 1,
+                "created_at": 1,
+                "updated_at": 1,
+                "expires_at": 1,
+                "not_before": 1,
+            },
+        )
+        .sort([("created_at", -1), ("_id", 1)])
+        .to_list(length=None)
+    )
+    return runs
+
+
+def _year_run_in_time(run: Mapping[str, Any], current: datetime) -> bool:
+    expires = run.get("expires_at")
+    return (
+        run.get("state") in ADVANCEABLE_RUN_STATES
+        and isinstance(expires, datetime)
+        and _onboarding_utc(expires) > current
+    )
+
+
+def year_history_retry_at(runs: list[dict[str, Any]]) -> datetime:
+    """When the next run of a window may be admitted, after its latest run ended."""
+    latest = runs[0]
+    stamps = [latest.get("created_at"), latest.get("updated_at")]
+    if latest.get("state") in ADVANCEABLE_RUN_STATES:
+        # Abandoned in time, it ended at its deadline.
+        stamps.append(latest.get("expires_at"))
+    ended = max(
+        (_onboarding_utc(stamp) for stamp in stamps if isinstance(stamp, datetime)),
+        default=datetime.min.replace(tzinfo=UTC),
+    )
+    return ended + YEAR_HISTORY_RETRY_AFTER[min(len(runs), len(YEAR_HISTORY_RETRY_AFTER)) - 1]
+
+
+async def year_history_retrying(
+    db: Any, seller_id: str, oldest: datetime | None, *, now: datetime
+) -> dict[str, Any] | None:
+    """The next year window when its latest run failed or was abandoned, for the status."""
+    current = _onboarding_utc(now)
+    bounds = year_history_bounds(oldest, now=current)
+    if bounds is None:
+        return None
+    runs = await year_history_window_runs(db, seller_id, bounds[1])
+    if not runs or _year_run_in_time(runs[0], current):
+        return None
+    latest = runs[0]
+    state = str(latest.get("state"))
+    return {
+        "date_from": _onboarding_utc(latest["start"]).isoformat(),
+        "date_to": _onboarding_utc(latest["end"]).isoformat(),
+        # Still active past its deadline: abandoned, as by a restart.
+        "state": "expired" if state in ADVANCEABLE_RUN_STATES else state,
+        "runs": len(runs),
+    }
 
 
 async def advance_year_history_devoluciones(
@@ -1618,7 +1710,10 @@ async def advance_year_history_devoluciones(
 
     Returns ``True`` only when a run was handed to the executor, which is the
     cycle's one window. Every eligible certificate seller is served, the paused
-    pilot included, until its certificates reach a full year back.
+    pilot included, until its certificates reach a full year back. A window
+    whose run failed or was abandoned gets a new run on the schedule of
+    ``YEAR_HISTORY_RETRY_AFTER``; only a completed window publishes a
+    certificate, so a replacement never duplicates one.
     """
     from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
 
@@ -1639,18 +1734,31 @@ async def advance_year_history_devoluciones(
     )
     if bounds is None:
         return False
-    binding = year_history_binding(seller_id, *bounds, admitted_on=current.date())
-    run = await db[RUNS_COLLECTION].find_one({"_id": binding.run_id})
-    if run is None:
-        await _admit_automatic_run(db, binding, kind="year_history", current=current)
-    elif not (
-        run.get("state") in ADVANCEABLE_RUN_STATES
-        and _onboarding_utc(run["expires_at"]) > current
-        and (run.get("not_before") is None or _onboarding_utc(run["not_before"]) <= current)
-    ):
-        # Failed or expired today: the next UTC day admits it again.
+    start, end = bounds
+    runs = await year_history_window_runs(db, seller_id, end)
+    if runs and _year_run_in_time(runs[0], current):
+        # Still in time, after a restart too: the same run goes on.
+        run: Mapping[str, Any] | None = runs[0]
+        run_id = str(runs[0]["_id"])
+    else:
+        if runs and current < year_history_retry_at(runs):
+            # Failed or abandoned: its replacement waits, and the cycle's
+            # window stays free for nothing.
+            return False
+        binding = year_history_binding(
+            seller_id, start, end, admitted_on=current.date(), attempt=len(runs) + 1
+        )
+        run_id = binding.run_id
+        run = await db[RUNS_COLLECTION].find_one({"_id": run_id})
+        if run is None:
+            await _admit_automatic_run(db, binding, kind="year_history", current=current)
+        elif not _year_run_in_time(run, current):
+            # Another worker admitted and spent it a moment ago.
+            return False
+    not_before = run.get("not_before") if run is not None else None
+    if isinstance(not_before, datetime) and _onboarding_utc(not_before) > current:
         return False
-    await (advance or advance_ordinary_devoluciones_tail)(db, binding.run_id, now=clock)
+    await (advance or advance_ordinary_devoluciones_tail)(db, run_id, now=clock)
     return True
 
 

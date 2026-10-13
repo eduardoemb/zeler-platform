@@ -233,6 +233,10 @@ a gap, and a range that starts before the acquired coverage stays
   `PRECIOHISTORICO`, `TIEMPOACTIVA`) have no source to go back to, and
   `RETIROS` starts at its first observed notification by design. No formula
   reads messages.
+- **An hour the source cannot give whole** (13 October 2026): the walk stops
+  right above it and retries it every 6 hours, so a range that reaches that
+  hour stays `DATA_UNAVAILABLE` while newer ranges are served; the same holds
+  for a DEVOLUCIONES window the source keeps refusing.
 - **The pilot** keeps its paused history plan and exactly its current
   coverage.
 

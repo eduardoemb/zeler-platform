@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import traceback
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
@@ -13,6 +14,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+import structlog
 from bson import BSON
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from pymongo.read_concern import ReadConcern
@@ -69,6 +71,26 @@ from zeler_sheets.sheetseller_backfill import (
     run_item_detail_enrichment,
     run_sheetseller_backfill,
 )
+
+logger = structlog.get_logger(__name__)
+
+
+def _raised_at(exc: BaseException) -> tuple[str, int]:
+    """The innermost ZelerData frame that raised: ``module.function`` and its line.
+
+    A sanitized pointer to the check that refused the source answer, never its
+    message, which can carry source values.
+    """
+    frames = [
+        frame
+        for frame in traceback.extract_tb(exc.__traceback__)
+        if "zeler_sheets" in frame.filename or "zeler_platform_core" in frame.filename
+    ]
+    if not frames:
+        return "unknown", 0
+    frame = frames[-1]
+    module = frame.filename.rsplit("/", 1)[-1].removesuffix(".py")
+    return f"{module}.{frame.name}", int(frame.lineno or 0)
 
 
 def _catalog_offer_count(resource: Any, *, item_id: str, seller_id: str) -> tuple[int, bool]:
@@ -222,8 +244,29 @@ class FormulaRecoveryWorker:
                 retryable=True,
                 failure_reason="storage_unavailable",
             )
-        except ValueError:
-            await self.queue.finish(job, succeeded=False, failure_reason="source_incomplete")
+        except ValueError as exc:
+            # A year-history portion uses its attempts like a 429, so one the
+            # source can never give whole is halved by the planner instead of
+            # being reopened whole after every cooldown (2026-10-13).
+            year_history = job.get("year_history") is True
+            if year_history:
+                check, line = _raised_at(exc)
+                logger.warning(
+                    "zelerdata.year_history_portion_incomplete",
+                    seller_id=job["seller_id"],
+                    read_model=job["read_model"],
+                    date_from=_utc(job["date_from"]).isoformat(),
+                    date_to=_utc(job["date_to"]).isoformat(),
+                    attempt=job["attempts"],
+                    check=check,
+                    line=line,
+                )
+            await self.queue.finish(
+                job,
+                succeeded=False,
+                retryable=year_history,
+                failure_reason="source_incomplete",
+            )
         except Exception:  # noqa: BLE001 - never log upstream payloads or credentials.
             await self.queue.finish(job, succeeded=False)
         return True
