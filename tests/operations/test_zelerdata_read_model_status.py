@@ -849,16 +849,17 @@ def test_certificate_status_cli_uses_explicit_interval_report(
     assert report["blocking"] == ([] if ready else ["devoluciones"])
 
 
-@pytest.mark.parametrize("covered,excluded", [(True, False), (False, True), (False, False)])
+@pytest.mark.parametrize("covered", [True, False])
 def test_year_history_status_cli_reports_progress(
-    monkeypatch: pytest.MonkeyPatch, covered: bool, excluded: bool
+    monkeypatch: pytest.MonkeyPatch, covered: bool
 ) -> None:
     from infra.operations import zelerdata_read_model_status as status_module
 
     from zeler_sheets.formulas import year_history
 
     async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
-        return {"covered": covered, "excluded": excluded, "sources": {}, "portions": {}}
+        # A legacy history plan no longer excuses a seller: readiness is coverage.
+        return {"covered": covered, "excluded": True, "sources": {}, "portions": {}}
 
     monkeypatch.setattr(year_history, "year_history_status", year_history_status)
     report = json.loads(
@@ -874,6 +875,5 @@ def test_year_history_status_cli_reports_progress(
         )
     )
     assert report["year_history"]["covered"] is covered
-    ready = covered or excluded
-    assert report["status"] == ("ready" if ready else "degraded")
-    assert report["blocking"] == ([] if ready else ["year_history"])
+    assert report["status"] == ("ready" if covered else "degraded")
+    assert report["blocking"] == ([] if covered else ["year_history"])

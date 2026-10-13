@@ -208,7 +208,7 @@ The 52-formula probe of 2026-10-07 left three range results that are not defects
 
 ## Twelve months of history (12 October 2026)
 
-Every eligible seller without a legacy history plan gets a full year (366
+Every eligible seller, the paused pilot included since 13 October, gets a full year (366
 days back from UTC midnight) of orders, questions and DEVOLUCIONES without an
 operator, one backward portion per refresh cycle; see
 [Twelve months of history](zelerdata-refresh.md#twelve-months-of-history-2026-10-12).

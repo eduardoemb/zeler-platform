@@ -6,8 +6,9 @@ about 90 days stayed ``DATA_UNAVAILABLE`` for orders, questions and
 DEVOLUCIONES. The refresh loop now walks each source backwards, one portion per
 cycle for the whole fleet, until the proven coverage reaches a full year.
 
-The pilot keeps its paused history plan and must not change: no year-history
-job, no year-history DEVOLUCIONES run.
+The pilot keeps its paused history plan, which is neither edited nor resumed,
+and since 2026-10-13 walks the sources still short of a year like any other
+seller: questions and DEVOLUCIONES, not its already proven orders.
 """
 
 from __future__ import annotations
@@ -298,12 +299,21 @@ async def _bootstrap_claims_stage(db: Any, seller_id: str) -> None:
     await finish_devoluciones_operation(db=db, operation=operation, succeeded=True)
 
 
-async def _paused_pilot(db: Any, gateway: YearGateway, now: datetime) -> None:
-    """The pilot: certificate mode from its paused history plan, 30 days of orders and questions."""
+async def _paused_pilot(
+    db: Any, gateway: YearGateway, now: datetime, *, devoluciones_days_back: int = 12
+) -> None:
+    """The pilot as in production on 2026-10-13, with its paused history plan.
+
+    Certificate mode from one window of that plan ``devoluciones_days_back``
+    days ago (production: 2026-06-01); orders proven past the year target by
+    the old pilot's retained proofs (production: 2025-09-24); questions proven
+    for the last 90 days only (production: 2026-07-14).
+    """
     from zeler_sheets.devoluciones_runner import advance_onboarding_devoluciones
+    from zeler_sheets.formulas.year_history import year_history_target
 
     settled = datetime.combine((now - timedelta(hours=1)).date(), time.min, tzinfo=UTC)
-    start = settled - timedelta(days=12)
+    start = settled - timedelta(days=devoluciones_days_back)
     cutoff = now.replace(microsecond=now.microsecond // 1000 * 1000)
     plan = {
         "_id": PILOT,
@@ -337,22 +347,35 @@ async def _paused_pilot(db: Any, gateway: YearGateway, now: datetime) -> None:
     await db[PLANS].update_one({"_id": PILOT}, {"$set": {"state": "paused"}})
     control = await db.sheets_devoluciones_operations.find_one({"seller_id": PILOT})
     assert control["coverage_mode"] == "active"
-    for read_model in ("orders", "questions"):
-        await db[FRESHNESS].insert_one(
-            {
-                "_id": f"{PILOT}:{read_model}",
-                "seller_id": PILOT,
-                "read_model": read_model,
-                "state": "reconciled",
-                "date_from": now - timedelta(days=30),
-                "reconciled_until": now - timedelta(hours=2),
-                "fresh_until": now - timedelta(hours=2),
-                "updated_at": now - timedelta(hours=2),
-                "valid_until": now - timedelta(hours=1),
-                "source": "zelerdata_read_model_reconcile",
-                "schema_version": 1,
-            }
-        )
+    old_orders = year_history_target(now) - timedelta(days=18)
+    for read_model, live_from in (
+        ("orders", now - timedelta(days=30)),
+        ("questions", now - timedelta(days=90)),
+    ):
+        marker: dict[str, Any] = {
+            "_id": f"{PILOT}:{read_model}",
+            "seller_id": PILOT,
+            "read_model": read_model,
+            "state": "reconciled",
+            "date_from": live_from,
+            # Kept current by the sweeps, as in production.
+            "reconciled_until": now - timedelta(minutes=5),
+            "fresh_until": now - timedelta(minutes=5),
+            "updated_at": now - timedelta(minutes=5),
+            "valid_until": now + timedelta(minutes=25),
+            "source": "zelerdata_read_model_reconcile",
+            "schema_version": 1,
+        }
+        if read_model == "orders":
+            marker["retained_intervals"] = [
+                {
+                    "state": "reconciled",
+                    "date_from": old_orders,
+                    "reconciled_until": live_from,
+                    "valid_until": now + timedelta(minutes=25),
+                }
+            ]
+        await db[FRESHNESS].insert_one(marker)
 
 
 def _enable_all_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -511,7 +534,7 @@ async def _covered(db: Any, seller_id: str) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_a_new_seller_gets_twelve_months_and_the_pilot_does_not_change(
+async def test_a_new_seller_gets_twelve_months_beside_the_walking_pilot(
     year_db: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from infra.operations import zelerdata_read_model_reconcile as reconcile
@@ -549,11 +572,11 @@ async def test_a_new_seller_gets_twelve_months_and_the_pilot_does_not_change(
         await _sales(db, NEW_SELLER, old_first, old_last)
 
     admitted_per_cycle: list[int] = []
-    for _ in range(90):
-        before = len(await _year_jobs(db, NEW_SELLER))
+    for _ in range(120):
+        before = await db[JOBS].count_documents({"year_history": True})
         runs_before = await db[RUNS].count_documents({})
         await supervisor.run_cycle()
-        admitted_per_cycle.append(len(await _year_jobs(db, NEW_SELLER)) - before)
+        admitted_per_cycle.append(await db[JOBS].count_documents({"year_history": True}) - before)
         # At most one window of DEVOLUCIONES source work per cycle, for the fleet.
         assert await db[RUNS].count_documents({}) - runs_before <= 1
         await _drain(worker)
@@ -607,11 +630,12 @@ async def test_a_new_seller_gets_twelve_months_and_the_pilot_does_not_change(
     assert len(await _year_jobs(db, NEW_SELLER)) == settled_jobs
     assert await _year_runs(db, NEW_SELLER) == settled_runs
 
-    # The pilot: no year-history work. Its only order requests are the
-    # ordinary sweeps (at most the weekly 90 days), and its proofs reach no
-    # further back than those sweeps.
-    assert await _year_jobs(db, PILOT) == []
-    assert await _year_runs(db, PILOT) == 0
+    # The pilot walked beside it, sharing the one portion and the one window
+    # per cycle: questions and DEVOLUCIONES only. Its orders were already
+    # proven past the target, so it asked for no order portion and no order
+    # search older than the ordinary sweeps (at most the weekly 90 days).
+    assert {job["read_model"] for job in await _year_jobs(db, PILOT)} == {"questions"}
+    assert await _year_runs(db, PILOT) > 0
     ordinary_reach = now - timedelta(days=91)
     assert not any(
         "order.date_created.from" in path
@@ -619,13 +643,139 @@ async def test_a_new_seller_gets_twelve_months_and_the_pilot_does_not_change(
         for seller_id, path in gateway.calls
         if seller_id == PILOT
     )
-    for read_model, before_marker in pilot_markers.items():
-        after = await db[FRESHNESS].find_one({"_id": f"{PILOT}:{read_model}"})
-        starts = [
-            after["date_from"],
-            *(row["date_from"] for row in after.get("retained_intervals", [])),
-        ]
-        assert min(starts) >= min(before_marker["date_from"], ordinary_reach)
+    orders_after = await db[FRESHNESS].find_one({"_id": f"{PILOT}:orders"})
+    assert (
+        orders_after["retained_intervals"][0]["date_from"]
+        == (pilot_markers["orders"]["retained_intervals"][0]["date_from"])
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_paused_pilot_walks_questions_and_devoluciones_once_across_a_restart(
+    year_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production edges of 2026-10-13: orders covered, questions and DEVOLUCIONES short.
+
+    The walk extends the existing proofs without overlapping them, survives a
+    restart into two workers without a duplicate, leaves the legacy plan and
+    its runs untouched, and costs what the code says.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    from zeler_platform_core.devoluciones_runs import WINDOW_DAYS
+    from zeler_sheets.consumer import build_zelerdata_refresh_supervisor
+    from zeler_sheets.devoluciones_runner import _settled_midnight
+    from zeler_sheets.formulas.year_history import proven_edge, year_history_target
+
+    db = year_db
+    # Milliseconds, as BSON stores them.
+    now = datetime.now(UTC).replace(microsecond=datetime.now(UTC).microsecond // 1000 * 1000)
+    gateway = YearGateway(
+        now=now, sellers=(PILOT,), first=year_history_target(now) - timedelta(days=40)
+    )
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+    # Production: the oldest certificate on 2026-06-01, 134 days back.
+    await _paused_pilot(db, gateway, now, devoluciones_days_back=134)
+    gateway.calls.clear()
+    await _link(db, PILOT)
+    legacy_plan = await db[PLANS].find_one({"_id": PILOT})
+    legacy_runs = await db[RUNS].find({"seller_id": PILOT}).to_list(None)
+    oldest_before = (
+        await db[CERTIFICATES].find_one({"seller_id": PILOT}, sort=[("date_from", 1)])
+    )["date_from"]
+    question_edge = proven_edge(await db[FRESHNESS].find_one({"_id": f"{PILOT}:questions"}))
+    assert question_edge == now - timedelta(days=90)
+    _enable_all_mode(monkeypatch)
+
+    supervisors = [await build_zelerdata_refresh_supervisor(db=db)]
+    workers = [_ranges_worker(db, gateway)]
+    for cycle in range(80):
+        if cycle == 5:
+            # A restart: new processes, and from now on two of them.
+            supervisors = [await build_zelerdata_refresh_supervisor(db=db) for _ in range(2)]
+            workers = [_ranges_worker(db, gateway), _ranges_worker(db, gateway)]
+        await asyncio.gather(*(each.run_cycle() for each in supervisors))
+        await _drain(*workers)
+        if await _covered(db, PILOT):
+            break
+    else:
+        raise AssertionError("the pilot's year was not acquired")
+    target = year_history_target(datetime.now(UTC))
+    pilot_calls = [path for seller_id, path in gateway.calls if seller_id == PILOT]
+
+    # Orders: already a year, so no portion and no search older than the sweeps.
+    jobs = await _year_jobs(db, PILOT)
+    assert {job["read_model"] for job in jobs} == {"questions"}
+    assert not any(
+        "order.date_created.from" in path
+        and _parse(parse_qs(urlsplit(path).query)["order.date_created.from"][0])
+        < now - timedelta(days=91)
+        for path in pilot_calls
+    )
+
+    # Questions: completed portions tile the gap from the July edge back to the
+    # target, without a gap, an overlap or a repeated detail read.
+    assert {job["state"] for job in jobs} == {"completed"}
+    portions = sorted((job["date_from"], job["date_to"]) for job in jobs)
+    assert portions[0][0] <= target
+    assert portions[-1][1] == question_edge.replace(minute=0, second=0, microsecond=0) + timedelta(
+        hours=1
+    )
+    assert all(left[1] == right[0] for left, right in zip(portions, portions[1:], strict=False))
+    walked = [
+        str(row["id"])
+        for row in gateway.questions[PILOT]
+        if portions[0][0] <= _parse(row["date_created"]) < question_edge
+    ]
+    stored = {row["_id"] async for row in db.questions.find({"seller_id": PILOT}, {"_id": 1})}
+    assert set(walked) <= stored
+    details = [path.rsplit("/", 1)[-1] for path in pilot_calls if path.startswith("/questions/7")]
+    # Cost from the code: each portion scans the seller's list (one page of 50
+    # here) and reads one detail per question in its range, once.
+    assert sorted(identity for identity in details if identity in walked) == sorted(walked)
+
+    # DEVOLUCIONES: 10-day windows from the June certificate back to the target,
+    # each acquired once, joined to the existing certificates without overlap.
+    from zeler_sheets.devoluciones_runner import YEAR_HISTORY_AUTHORIZATION
+
+    year_runs = (
+        await db[RUNS]
+        .find({"seller_id": PILOT, "authorization_id": YEAR_HISTORY_AUTHORIZATION})
+        .to_list(None)
+    )
+    windows = sorted((run["start"], run["end"]) for run in year_runs)
+    assert {run["state"] for run in year_runs} == {"completed"}
+    assert len(windows) == len(set(windows))
+    assert windows[-1][1] == oldest_before and windows[0][0] <= target
+    assert all(left[1] == right[0] for left, right in zip(windows, windows[1:], strict=False))
+    assert len(windows) == -(-(oldest_before - windows[0][0]) // timedelta(days=WINDOW_DAYS))
+    await select_covering_proofs(
+        db, PILOT, target, _settled_midnight(datetime.now(UTC)), datetime.now(UTC)
+    )
+    old_searches = [
+        path
+        for path in pilot_calls
+        if path.startswith("/post-purchase/v1/claims/search?")
+        and _parse(parse_qs(urlsplit(path).query)["date_created"][0]) < oldest_before
+    ]
+    # 2 x (2 x ceil(I/100) + 2 x H + U): four search pages per window, and the
+    # one old return (claim, return and order, twice) in its window.
+    assert len(old_searches) == 4 * len(windows)
+    claim_reads = [
+        path
+        for path in pilot_calls
+        if path.startswith(("/post-purchase/v1/claims/5", "/post-purchase/v2/", "/orders/20"))
+    ]
+    assert len(claim_reads) == 6
+
+    # The legacy plan and its runs are left exactly as they were.
+    assert await db[PLANS].find_one({"_id": PILOT}) == legacy_plan
+    for run in legacy_runs:
+        assert await db[RUNS].find_one({"_id": run["_id"]}) == run
 
 
 async def _live_markers(db: Any, seller_id: str, now: datetime) -> None:
@@ -772,8 +922,12 @@ async def test_switched_off_acquires_nothing_new(
 
     db = year_db
     now = datetime.now(UTC)
-    gateway = YearGateway(now=now, sellers=(NEW_SELLER,), first=now - timedelta(days=400))
-    await _link(db, NEW_SELLER)
+    gateway = YearGateway(now=now, sellers=(PILOT, NEW_SELLER), first=now - timedelta(days=400))
+    # The paused pilot, short of a year in questions and DEVOLUCIONES, stops too.
+    await _paused_pilot(db, gateway, now, devoluciones_days_back=134)
+    gateway.calls.clear()
+    for seller_id in (PILOT, NEW_SELLER):
+        await _link(db, seller_id)
     await _live_markers(db, NEW_SELLER, now)
     # A portion queued before the switch was turned off.
     queued = YearHistoryRecoveryRequest(
@@ -794,6 +948,13 @@ async def test_switched_off_acquires_nothing_new(
     assert job["state"] == "pending" and job["attempts"] == 0
     assert await db[JOBS].count_documents({"year_history": True}) == 1
     assert await _year_runs(db, NEW_SELLER) == 0
+    assert await _year_runs(db, PILOT) == 0
+    old_questions = {
+        f"/questions/{row['id']}"
+        for row in gateway.questions[PILOT]
+        if _parse(row["date_created"]) < now - timedelta(days=90)
+    }
+    assert not {path for seller_id, path in gateway.calls if seller_id == PILOT} & old_questions
     assert not any(
         "order.date_created.from" in path
         and _parse(parse_qs(urlsplit(path).query)["order.date_created.from"][0])

@@ -1200,7 +1200,8 @@ INTRADAY_STEP = timedelta(hours=1)
 # Twelve months for an eligible seller (2026-10-12). Once certificate coverage
 # is active, the loop acquires one 10-day window ending at the seller's oldest
 # certificate, back to a full year, only with windows the tail, an initial
-# window and the intraday cuts leave. The paused pilot keeps its own plan.
+# window and the intraday cuts leave. The paused pilot is included too
+# (2026-10-13): its windows end at its oldest certificate like anyone's.
 YEAR_HISTORY_AUTHORIZATION = "refresh-year-history:v1"
 YEAR_HISTORY_COHORT = "zelerdata-refresh-year-history-v1"
 AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
@@ -1616,19 +1617,15 @@ async def advance_year_history_devoluciones(
     """Acquire one window of the seller's year, backwards from its oldest certificate.
 
     Returns ``True`` only when a run was handed to the executor, which is the
-    cycle's one window. Only an eligible certificate seller without a legacy
-    history plan is served, until its certificates reach a full year back.
+    cycle's one window. Every eligible certificate seller is served, the paused
+    pilot included, until its certificates reach a full year back.
     """
     from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
-    from zeler_sheets.formulas.year_history import has_legacy_history_plan
 
     clock = now or (lambda: datetime.now(UTC))
     current = _onboarding_utc(clock())
     control = await coverage_control(db, seller_id)
     if not _certificate_mode(control):
-        return False
-    if await has_legacy_history_plan(db, seller_id):
-        # The paused history pilot keeps its own plan; nothing is resumed.
         return False
     if not await eligible(seller_id):
         return False

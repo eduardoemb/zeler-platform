@@ -13,7 +13,9 @@ full year. It plans existing recovery work; the recovery worker acquires it.
   starts and is kept as a retained interval of the marker. A restart or a
   second worker computes the same portion from the same marker, and its key
   coalesces in the queue.
-- A seller with a legacy history plan (the paused pilot) is left to that plan.
+- Each source is judged on its own proofs. A seller with a legacy history
+  plan (the paused pilot, included on 2026-10-13) walks the sources short of a
+  year like any other; its plan is neither read nor resumed.
 """
 
 from __future__ import annotations
@@ -46,7 +48,6 @@ MIN_PORTION = timedelta(hours=1)
 SIZE_FAILURES = frozenset({"source_temporarily_unavailable"})
 # A minimal portion that keeps failing is retried at most this often.
 RETRY_AT_MINIMUM = timedelta(hours=6)
-LEGACY_HISTORY_PLANS = "sheets_history_backfill_plans"
 FRESHNESS = "sheets_read_model_freshness"
 
 
@@ -69,8 +70,14 @@ def proven_edge(marker: Mapping[str, Any] | None) -> datetime | None:
     touch; the block that ends last is the one the sweeps keep current. A
     gap below it is filled by walking back from its start.
     """
+    blocks = _proven_blocks(marker)
+    return blocks[-1][0] if blocks else None
+
+
+def _proven_blocks(marker: Mapping[str, Any] | None) -> list[list[datetime]]:
+    """The marker's proven intervals merged where they touch, oldest first."""
     if not isinstance(marker, Mapping) or marker.get("state") != "reconciled":
-        return None
+        return []
     proofs: list[Any] = [marker]
     retained = marker.get("retained_intervals")
     if isinstance(retained, list):
@@ -83,8 +90,6 @@ def proven_edge(marker: Mapping[str, Any] | None) -> datetime | None:
         end = _utc(proof.get("reconciled_until"))
         if start is not None and end is not None and start < end:
             intervals.append((start, end))
-    if not intervals:
-        return None
     intervals.sort()
     blocks: list[list[datetime]] = []
     for start, end in intervals:
@@ -92,17 +97,7 @@ def proven_edge(marker: Mapping[str, Any] | None) -> datetime | None:
             blocks[-1][1] = max(blocks[-1][1], end)
         else:
             blocks.append([start, end])
-    return max(blocks, key=lambda block: block[1])[0]
-
-
-async def has_legacy_history_plan(db: Any, seller_id: str) -> bool:
-    """Whether the seller belongs to the paused history pilot's plan."""
-    return (
-        await db[LEGACY_HISTORY_PLANS].find_one(
-            {"$or": [{"_id": seller_id}, {"seller_id": seller_id}]}, {"_id": 1}
-        )
-        is not None
-    )
+    return blocks
 
 
 async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[str, Any]:
@@ -143,15 +138,18 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
         portions[state] = portions.get(state, 0) + 1
     return {
         "target": target.isoformat(),
-        "excluded": await has_legacy_history_plan(db, seller_id),
         "covered": all(source["covered"] for source in sources.values()),
         "sources": sources,
         "portions": portions,
     }
 
 
+def _floor_hour(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
 def _ceil_hour(value: datetime) -> datetime:
-    floor = value.replace(minute=0, second=0, microsecond=0)
+    floor = _floor_hour(value)
     return floor if floor == value else floor + timedelta(hours=1)
 
 
@@ -245,10 +243,6 @@ class YearHistoryPlanner:
         logger.info(f"zelerdata.year_history_{outcome}", seller_id=seller_id, read_model=model)
 
     async def _next_portion(self, seller_id: str, model: str) -> YearHistoryRecoveryRequest | None:
-        if await has_legacy_history_plan(self._db, seller_id):
-            # The paused history pilot keeps its own plan; nothing is resumed.
-            self._report_once(seller_id, model, "excluded")
-            return None
         if not await self._eligible(seller_id):
             return None
         now = self._now().astimezone(UTC)
@@ -256,10 +250,14 @@ class YearHistoryPlanner:
         marker = await self._db[FRESHNESS].find_one(
             {"_id": f"{seller_id}:{model}", "seller_id": seller_id}
         )
-        edge = proven_edge(marker)
-        if edge is None:
+        blocks = _proven_blocks(marker)
+        if not blocks:
             # The refresh sweeps establish the live coverage first.
             return None
+        edge = blocks[-1][0]
+        # An older proof below a gap (the pilot's retained history, say) is
+        # not read again: the portion only fills the gap down to its end.
+        floor = _floor_hour(blocks[-2][1]) if len(blocks) > 1 else None
         if edge <= target:
             self._report_once(seller_id, model, "covered")
             return None
@@ -288,7 +286,7 @@ class YearHistoryPlanner:
             else:
                 # The same portion again after its cooldown.
                 span = min(span, previous)
-        start = max(target, end - span)
+        start = max(target, end - span, floor or target)
         if start >= end:
             return None
         return YearHistoryRecoveryRequest(seller_id, model, start, end)

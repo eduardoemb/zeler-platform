@@ -1903,7 +1903,7 @@ async def build_zelerdata_refresh_supervisor(*, db: Any) -> ZelerDataRefreshSupe
 
         intraday_advancer = advance_intraday
     # Twelve months of orders, questions and DEVOLUCIONES for every eligible
-    # seller without a legacy history plan, one backward portion per cycle for
+    # seller, the paused pilot included, one backward portion per cycle for
     # the fleet and one DEVOLUCIONES window only when nothing more recent wants
     # it. Like the tail, only with history on link off. On by default; `false`
     # is the emergency switch.

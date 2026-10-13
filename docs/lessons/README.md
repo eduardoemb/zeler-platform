@@ -976,7 +976,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 - status: active
 
 ### L-056 — Walk a new seller's year back from its proofs, one bounded portion per cycle for the fleet
-- area: ZelerData twelve-month history (`all` mode, new sellers)
+- area: ZelerData twelve-month history (`all` mode, every eligible seller)
 - proven path: Take the edge from the proofs themselves (the start of the
   marker's most recent block, or the oldest certificate) and admit one portion
   ending there per refresh cycle for the whole fleet, never while a renewal
@@ -986,7 +986,10 @@ repeat failures, and promote stable knowledge to its proper operational form.
   hours, and let a deadline use an attempt so a failed portion is halved.
   DEVOLUCIONES goes back one 10-day window with what the tail and intraday
   cuts leave, and certificate renewal takes several 20-certificate batches.
-  Leave a seller with a legacy history plan (the paused pilot) alone.
+  Judge each source by its own proofs, not the seller: the paused pilot
+  (included 2026-10-13) walks questions and DEVOLUCIONES only, since its
+  orders are already proven, and a portion never starts before the end of an
+  older proof below a gap, so old proofs are joined, not read again.
 - failed path: Reusing the question recovery's live union would make every
   15-minute sweep re-read the whole year. An exhausted local quota defers a
   range without an attempt, so a portion too large for the deadline restarts
@@ -994,9 +997,14 @@ repeat failures, and promote stable knowledge to its proper operational form.
   about 1,700 details, cannot finish in 240 s). One renewal batch of 20 per
   cycle lets about 37 yearly certificates expire between renewals. A fixed
   target in tests fails across UTC midnight: the year target moves a day.
+  Excluding a whole seller for a legacy plan left the pilot's questions and
+  DEVOLUCIONES short of a year although its orders were done; and walking 30
+  days back from a live block that a one-hour gap separated from an older
+  proof re-read a month already proven.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
-  (new seller served, pilot unchanged, restart and two workers, failed portion
-  halved while another seller continues, switch off),
+  (new seller served beside the walking pilot, the pilot with production
+  edges walked once across a restart into two workers with its plan untouched,
+  failed portion halved while another seller continues, switch off for both),
   `modules/sheets/tests/test_year_history.py`,
   `modules/sheets/tests/test_devoluciones_year_history.py`,
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and

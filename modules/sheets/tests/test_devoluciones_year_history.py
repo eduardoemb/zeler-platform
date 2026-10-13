@@ -134,18 +134,37 @@ async def test_a_certificate_seller_gets_one_window_back_from_its_oldest_certifi
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["legacy_plan", "legacy_mode", "ineligible", "covered", "failed"])
-async def test_no_window_for_the_pilot_a_legacy_seller_or_a_covered_one(
+async def test_the_paused_pilot_gets_its_window_and_its_plan_is_left_alone(
+    devoluciones_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decision of 2026-10-13: a legacy history plan no longer excludes the seller."""
+    oldest = datetime(2026, 6, 1, tzinfo=UTC)
+    await _certificate_seller(devoluciones_db, oldest)
+    plan = {"_id": SELLER, "seller_id": SELLER, "state": "paused"}
+    await devoluciones_db.sheets_history_backfill_plans.insert_one(plan)
+    admission = _Admission(monkeypatch)
+
+    async def advance(db: Any, run_id: str, *, now: Any = None) -> dict[str, int]:
+        return {"advanced": 1, "finalized": 1}
+
+    assert await advance_year_history_devoluciones(
+        devoluciones_db, SELLER, eligible=_eligible, now=lambda: NOW, advance=advance
+    )
+    ((binding, kind),) = admission.created
+    assert kind == "year_history"
+    assert (binding.start, binding.end) == (oldest - timedelta(days=10), oldest)
+    assert await devoluciones_db.sheets_history_backfill_plans.find_one({"_id": SELLER}) == plan
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["legacy_mode", "ineligible", "covered", "failed"])
+async def test_no_window_for_a_legacy_seller_or_a_covered_one(
     devoluciones_db: Any, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     oldest = TARGET if case == "covered" else datetime(2026, 7, 14, tzinfo=UTC)
     await _certificate_seller(
         devoluciones_db, oldest, **({"coverage_mode": "legacy"} if case == "legacy_mode" else {})
     )
-    if case == "legacy_plan":
-        await devoluciones_db.sheets_history_backfill_plans.insert_one(
-            {"_id": SELLER, "seller_id": SELLER, "state": "paused"}
-        )
     if case == "failed":
         binding = year_history_binding(
             SELLER, oldest - timedelta(days=10), oldest, admitted_on=NOW.date()

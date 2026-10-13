@@ -593,11 +593,11 @@ reaches a full year, with no operator step. It plans existing recovery work and
 DEVOLUCIONES windows; it never calls Mercado Libre itself.
 
 **Who.** Every eligible seller (`eligible_sellers`, checked for a numeric
-allowlist too) without a legacy history plan. A seller with a
-`sheets_history_backfill_plans` document, which is the paused history pilot
-(the pilot, 82453304), is left to that plan and logged once as
-`zelerdata.year_history_excluded`: no year-history job, no year-history run,
-no new call. That pilot is not resumed and its flags stay as they are.
+allowlist too), each source judged on its own proofs. Until 2026-10-13 a seller
+with a `sheets_history_backfill_plans` document (the paused history pilot,
+82453304) was excluded whole; by the user's decision of 2026-10-13 it walks
+like any other seller (see "The pilot" below). Its legacy plan, runs and flags
+are never read, edited or resumed by the walk.
 
 **When a seller has its year.** The target is UTC midnight 366 days back
 (`year_history_target`), so any "same day last year" range is inside, leap
@@ -624,7 +624,9 @@ stored, and a restart or a second worker computes the same next portion.
 - **The portion.** It ends at the start of the most recent proven block,
   rounded up to the hour (order search has hour precision), and starts at most
   `MAX_PORTION` earlier (30 days for orders, 90 for questions), never before
-  the target. Its span holds about 120 orders or 100 questions at the density
+  the target, and never before the hour in which an older proven block below
+  a gap ends: an older proof (the pilot's retained history, say) is joined,
+  not read again. Its span holds about 120 orders or 100 questions at the density
   of the rows already stored around that edge, so it finishes inside the
   240-second job deadline at 45 requests per minute (180 calls). A
   `YearHistoryRecoveryRequest` has its own key (no coalescing with a formula
@@ -705,6 +707,57 @@ certificate sellers, intraday cuts use every window and year windows wait
 (the same limit as the intraday capacity above); revisit
 `devoluciones_windows_per_cycle` then.
 
+### The pilot (2026-10-13)
+
+Production on 2026-10-13 (read-only, `--year-history`): orders covered (edge
+2025-09-24, from the old pilot's retained proofs), questions from 2026-07-14
+and DEVOLUCIONES from 2026-06-01 (the oldest certificate of its current
+epoch). So the walk asks the pilot for **no order portion**, question portions
+from the July edge back to the target, and DEVOLUCIONES windows from the June
+certificate back. How it fits the old pilot's proofs:
+
+- **Orders.** The completed interval proofs of L-022 are already retained
+  intervals of the marker, so the planner reads the pilot as covered. If a
+  sweep ever left a gap under its live block, the portion would fill only the
+  gap, down to the end of the older proof.
+- **Questions.** The old pilot's twelve-month question scan never published a
+  proof (its edge stayed in July); the portions add retained intervals like
+  any seller's. If that scan were ever resumed, its publication withdraws and
+  re-merges its own interval with the marker's retained proofs, so nothing
+  contradicts; it would only read again.
+- **DEVOLUCIONES.** Each window ends exactly at the oldest certificate and
+  publishes an ordinary `quota_run` certificate, so `select_covering_proofs`
+  sees one run without overlap or gap. The plan's certificates and runs are not
+  touched (asserted). Older claims stored locally since 2025-04-30 carry no
+  certificate and are reacquired in their windows with the tail's tolerances.
+
+Cost, from the code, with the pilot's stored density (273 questions since
+2025-09-26, 56 claims since 2025-04-30), from a 2026-10-13 deployment (target
+2025-10-12):
+
+| Source | What the walk acquires | Calls |
+| --- | --- | --- |
+| Orders | Nothing: covered | 0 |
+| Questions | 275 days in 4 portions (90-day cap: about 150 questions per 180 days around the edge). Each portion scans the whole list, `⌈T/50⌉` pages for the seller's `T` listed questions (6 to 12 for 300 to 600), plus one detail per question in range (about 200) | about 225 to 250 |
+| DEVOLUCIONES | 232 days in 24 windows (23 of 10 days, one of 2). Per window `2 × (2 × ⌈I/100⌉ + 2 × H + U)`: 4 without claims, 10 with one return. With one listed claim per window (stored density) about 10; with one a day (the intraday estimate) about 46 | about 240 to 1,100 (at most 4,992 under the tail's 208-per-window limit) |
+
+That is about 500 to 1,350 calls in all, against about 12,800 gateway calls a
+day in production. Duration: the 4 question portions take 4 turns of the
+fleet's one portion per cycle (about 1 to 2 hours plus renewal passes, longer
+if other sellers are walking). The 24 DEVOLUCIONES windows get the cycle's
+window only when no tail, initial window or intraday cut wants it, about one
+an hour, so **about a day**, longer when several sellers walk at once. A year
+of certificates adds 24 to the pilot's; check that
+`--devoluciones-coverage` still reads `sufficient` (three renewal batches of 20
+per cycle). Renewal keeps its priority as for any seller: no portion is
+admitted while a renewal pass runs.
+
+`tests/integration/test_year_history_new_sellers.py`
+(`test_the_paused_pilot_walks_questions_and_devoluciones_once_across_a_restart`)
+reproduces these edges and asserts the counts above: one scan page per portion
+plus one detail per question in range, four search pages per window plus six
+reads for the one old return.
+
 ### Switch and verification
 
 `ZELERDATA_YEAR_HISTORY_ENABLED` is on by default; `false` is the emergency
@@ -724,7 +777,7 @@ How to verify (read-only, inside `sheets-worker`):
 It prints the target and, per source (`orders`, `questions`,
 `devoluciones`), where proven coverage starts (`edge`) and whether it reaches
 the target, plus the seller's year-history portions by state; no identities.
-`ready` means every source is covered, or the seller is `excluded` (the pilot).
+`ready` means every source is covered; the pilot is no longer `excluded`.
 For a new seller, expect the `orders` and `questions` edges to move back about
 one portion per cycle and DEVOLUCIONES 10 days per year window, `portions`
 mostly `completed` with at most one `pending` or `running`, and `failed` only
@@ -733,8 +786,8 @@ with a later retry at half the span. Also:
 - `zelerdata_read_model_status --devoluciones-coverage`: no `unacquired_gaps`,
   and the capacity reads `sufficient` with a year of certificates.
 - In the worker log: `zelerdata.year_history_planned` at most once per cycle,
-  `zelerdata.year_history_covered` once per source when done, and for the pilot
-  only `zelerdata.year_history_excluded`.
+  `zelerdata.year_history_covered` once per source when done (for the pilot,
+  `orders` at once). `zelerdata.year_history_excluded` no longer appears.
 
 ## Precalculated heavy formulas
 
@@ -779,7 +832,7 @@ arrives disabled and must be enabled explicitly.
 | `ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED` | `false` | DEVOLUCIONES source work from this loop, one window per cycle for all sellers: advance an already-authorized run; with history on link off, also admit the ordinary daily tail and the initial window of a new seller. |
 | `ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED` | on | Initial window and certificate activation for an eligible seller without coverage. `false` is the emergency switch. |
 | `ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED` | on | Hourly cut of the day in progress for every certificate seller, only with windows the tail and initial coverage leave. `false` is the emergency switch. |
-| `ZELERDATA_YEAR_HISTORY_ENABLED` | on | Twelve months of orders, questions and DEVOLUCIONES for every eligible seller without a legacy history plan: one backward portion per cycle for the fleet, and one DEVOLUCIONES window only when nothing more recent wants it. Only with history on link off. `false` is the emergency switch and leaves queued portions unclaimed. |
+| `ZELERDATA_YEAR_HISTORY_ENABLED` | on | Twelve months of orders, questions and DEVOLUCIONES for every eligible seller, the paused pilot included since 2026-10-13: one backward portion per cycle for the fleet, and one DEVOLUCIONES window only when nothing more recent wants it. Only with history on link off. `false` is the emergency switch and leaves queued portions unclaimed. |
 | `ZELERDATA_PRECALCULATED_FORMULAS_ENABLED` | `false` | Precalculate the heavy aggregate formulas during the refresh cycle. |
 | `ZELERDATA_FRESHNESS_ALERTS_ENABLED` | `false` | Emit the operator freshness alarms from the `sheets_read_model_freshness` markers. |
 | `ZELERDATA_DLQ_ARCHIVE_ENABLED` | `false` | Run one bounded Sheets DLQ archive pass per refresh cycle. Requires `RABBITMQ_URL`. |
@@ -1163,8 +1216,8 @@ seller exists: today the dry run finds one eligible seller, the pilot.
 
 8. **Twelve months for the new seller** (no operator step). From the cycle
    after the switch, `zelerdata.year_history_planned` appears at most once per
-   cycle, for the new seller only; the pilot logs
-   `zelerdata.year_history_excluded` once. Once the tail has caught up,
+   cycle, for the new seller and, since 2026-10-13, the pilot's questions
+   (its orders are logged `zelerdata.year_history_covered`). Once the tail has caught up,
    `zelerdata.devoluciones_year_history_admitted` appears about once an hour.
    Check progress with `zelerdata_read_model_status --year-history` (see
    "Twelve months of history"): about a day for a pilot-sized seller.

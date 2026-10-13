@@ -214,13 +214,59 @@ async def test_nothing_is_planned_while_a_renewal_or_a_ready_portion_is_in_fligh
 
 
 @pytest.mark.asyncio
-async def test_a_legacy_plan_an_ineligible_seller_or_no_marker_get_nothing(year_db: Any) -> None:
-    await _seed_marker(year_db, SELLER, "orders", NOW - timedelta(days=30))
-    await year_db.sheets_history_backfill_plans.insert_one({"_id": SELLER, "seller_id": SELLER})
+async def test_a_legacy_plan_seller_walks_only_the_sources_short_of_a_year(year_db: Any) -> None:
+    """The paused pilot (decision of 2026-10-13): judged per source, its plan left alone."""
+    target = year_history_target(NOW)
+    # Like production: orders already proven past the target, questions from July.
+    await _seed_marker(year_db, SELLER, "orders", target - timedelta(days=18))
+    await _seed_marker(year_db, SELLER, "questions", NOW - timedelta(days=90))
+    plan = {"_id": SELLER, "seller_id": SELLER, "state": "paused", "flags": {"history": False}}
+    await year_db.sheets_history_backfill_plans.insert_one(plan)
+    planner = _planner(year_db)
     with capture_logs() as logs:
-        assert not await _planner(year_db, models=("orders",)).plan((SELLER,))
-    assert [log["event"] for log in logs] == ["zelerdata.year_history_excluded"]
+        assert await planner.plan((SELLER,))
+        # One portion per cycle; the next cycle asks nothing while it is pending.
+        assert not await planner.plan((SELLER,))
 
+    (job,) = await _year_jobs(year_db)
+    assert job["read_model"] == "questions"
+    assert job["date_to"] == NOW - timedelta(days=90) + timedelta(minutes=53)
+    events = [log["event"] for log in logs]
+    assert "zelerdata.year_history_excluded" not in events
+    assert events.count("zelerdata.year_history_covered") == 1
+    # The legacy plan is neither edited nor resumed.
+    assert await year_db.sheets_history_backfill_plans.find_one({"_id": SELLER}) == plan
+
+
+@pytest.mark.asyncio
+async def test_a_gap_under_the_live_block_is_filled_without_rereading_older_proofs(
+    year_db: Any,
+) -> None:
+    """The pilot's old proofs stop just short of a fresh sweep: read only the gap."""
+    target = year_history_target(NOW)
+    older_end = NOW - timedelta(hours=2, minutes=20)
+    await year_db[FRESHNESS].insert_one(
+        {
+            "_id": f"{SELLER}:orders",
+            "seller_id": SELLER,
+            "read_model": "orders",
+            **_marker(
+                NOW - timedelta(hours=1, minutes=10),
+                NOW,
+                retained=((target - timedelta(days=18), older_end),),
+            ),
+            "schema_version": 1,
+        }
+    )
+    assert await _planner(year_db, models=("orders",)).plan((SELLER,))
+    (job,) = await _year_jobs(year_db)
+    # From the hour of the older proof's end to the hour after the live edge.
+    assert job["date_from"] == older_end.replace(minute=0)
+    assert job["date_to"] == (NOW - timedelta(hours=1)).replace(minute=0)
+
+
+@pytest.mark.asyncio
+async def test_an_ineligible_seller_or_no_marker_get_nothing(year_db: Any) -> None:
     await _seed_marker(year_db, OTHER, "orders", NOW - timedelta(days=30))
     assert not await _planner(year_db, models=("orders",), eligible=False).plan((OTHER,))
     # Without a marker the sweeps establish coverage first.
@@ -482,7 +528,6 @@ async def test_status_reports_each_source_without_identities(year_db: Any) -> No
 
     assert status == {
         "target": target.isoformat(),
-        "excluded": False,
         "covered": False,
         "sources": {
             "orders": {"edge": (target - timedelta(days=1)).isoformat(), "covered": True},
@@ -491,5 +536,6 @@ async def test_status_reports_each_source_without_identities(year_db: Any) -> No
         },
         "portions": {"pending": 1},
     }
+    # A legacy history plan (the paused pilot) changes nothing: sources speak for themselves.
     await year_db.sheets_history_backfill_plans.insert_one({"_id": SELLER, "seller_id": SELLER})
-    assert (await year_history_status(year_db, SELLER, NOW))["excluded"] is True
+    assert await year_history_status(year_db, SELLER, NOW) == status

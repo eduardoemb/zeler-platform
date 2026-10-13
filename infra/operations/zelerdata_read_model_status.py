@@ -174,8 +174,8 @@ def main(argv: Sequence[str], db: Any) -> str:
         )
         report_year: dict[str, Any] = {"year_history": progress}
         if args.readiness:
-            # The paused pilot keeps its own plan; it is not waiting for a year.
-            ready = bool(progress["covered"] or progress["excluded"])
+            # Every seller, the paused pilot included, is ready once covered.
+            ready = bool(progress["covered"])
             report_year.update(
                 {
                     "status": "ready" if ready else "degraded",
