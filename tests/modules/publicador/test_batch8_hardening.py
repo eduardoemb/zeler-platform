@@ -66,25 +66,3 @@ def test_publicador_smoke_plan_is_sanitized_and_covers_parity_routes() -> None:
     assert "token" not in str(plan).lower()
     assert "secret" not in str(plan).lower()
     assert "mongodb://" not in str(plan).lower()
-
-
-def test_publicador_batch8_runbooks_forbid_local_prod_mongo_and_document_rollback() -> None:
-    docs = [
-        ROOT / "docs/runbooks/pilot-publicador.md",
-        ROOT / "docs/operations/pilot-runbooks/publicador.md",
-        ROOT / "docs/runbooks/publicador-batch8-deploy-smoke-rollback.md",
-    ]
-
-    for doc in docs:
-        text = doc.read_text(encoding="utf-8")
-        assert "82453304" in text
-        assert "sanitized" in text.lower()
-        assert "rollback" in text.lower()
-        assert "approved VM/VPC/runtime" in text
-        assert "previous image" in text.lower() or "previous revision" in text.lower()
-        assert "module-admin" in text
-        assert "MONGO_URI" not in text
-        assert "connection string" not in text.lower()
-        assert "db.publicador" not in text
-        assert "Authorization: Bearer" not in text
-        assert "curl -X" not in text

@@ -296,51 +296,6 @@ def test_preflight_reports_missing_repo_files_with_remediation(tmp_path: Path) -
     assert "Restore the missing repository files before deploy." in markdown
 
 
-def test_live_readiness_report_documents_deployment_preflight_command() -> None:
-    report = (ROOT / "docs" / "live-readiness-report.md").read_text(encoding="utf-8")
-
-    assert "Deployment preflight" in report
-    assert "uv run python -m infra.deploy.preflight" in report
-    assert "prints only present/missing status" in report
-
-
-def test_bootstrap_runtime_wiring_documents_prod_secret_vpc_and_jwt_contracts() -> None:
-    runbook = (ROOT / "docs" / "bootstrap-runtime-wiring.md").read_text(encoding="utf-8")
-
-    assert "BOOTSTRAP_MONGO_URI" in runbook
-    assert "BOOTSTRAP_RABBITMQ_URL" in runbook
-    assert "--set-secrets" in runbook
-    assert "zeler-bootstrap-runtime" in runbook
-    assert "roles/cloudkms.signerVerifier" in runbook
-    assert "private-ranges-only" in runbook
-    assert "MeliGatewayAuth" in runbook
-    assert "BOOTSTRAP_GATEWAY_TOKEN" in runbook
-    assert "not accepted in production" in runbook
-
-
-def test_deploy_docs_describe_bootstrap_preflight_rollout_and_rollback() -> None:
-    deploy = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
-    report = (ROOT / "docs" / "live-readiness-report.md").read_text(encoding="utf-8")
-
-    assert "CLOUD_RUN_SECRET_BINDINGS_EXPORT" in deploy
-    assert "zeler-bootstrap" in deploy
-    assert "zeler-bootstrap-runtime" in deploy
-    assert "private-ranges-only" in deploy
-    assert "redeploy the previous bootstrap job image" in deploy
-    assert "jobs.zeler-bootstrap" in report
-    assert "roles/cloudkms.signerVerifier" in report
-
-
-def test_sheets_reconciliation_docs_explain_connected_repository_provenance() -> None:
-    guide = (ROOT / "docs" / "sheets" / "zelerdata-read-model-reconciliation.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "SHEETS_ROLLBACK_CONNECTED_REPOSITORY" in guide
-    assert "source.connectedRepository.repository" in guide
-    assert "source.connectedRepository.revision" in guide
-
-
 def _gcloud_provenance(
     image_ref: str,
     *,

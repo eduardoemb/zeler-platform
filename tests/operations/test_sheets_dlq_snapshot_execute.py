@@ -28,7 +28,6 @@ from infra.operations.sheets_dlq_snapshot_adapter import (
 )
 
 _WRAPPER_PATH = Path(__file__).resolve().parents[2] / "infra/gce/sheets-dlq-snapshot-execute.sh"
-_RUNBOOK_PATH = Path(__file__).resolve().parents[2] / "docs/ops/sheets-dlq-reconciliation.md"
 _WRAPPER_DOCKER_MARKER = "SHEETS_DLQ_SNAPSHOT_EXEC_DOCKER_BIN"
 _TOKEN_DIRECTORY = "/var/lib/zeler-platform/sheets-dlq-snapshot"  # noqa: S105
 
@@ -1050,15 +1049,11 @@ def test_archived_runtime_default_keeps_service_dns_health_url() -> None:
     assert runtime._health_url == archived_runtime.WORKER_HEALTH_URL
 
 
-def test_authority_runbook_and_source_keep_loopback_parity_without_changing_archived_default() -> (
-    None
-):
+def test_authority_source_keeps_loopback_parity_without_changing_archived_default() -> None:
     authority_source = Path(execute.__file__).read_text()
-    runbook = _RUNBOOK_PATH.read_text()
 
     assert execute.AUTHORITY_WORKER_HEALTH_URL == "http://127.0.0.1:8080/health"
     assert "HttpSheetsWorkerRuntime(health_url=AUTHORITY_WORKER_HEALTH_URL)" in authority_source
-    assert "GET http://127.0.0.1:8080/health" in runbook
     assert archived_runtime.WORKER_HEALTH_URL == "http://sheets-worker:8080/health"
 
 

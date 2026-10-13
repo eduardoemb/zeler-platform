@@ -38,19 +38,10 @@ SYSTEMD_DIR = ROOT / "infra" / "gce" / "systemd"
 RECONCILE_SERVICE = SYSTEMD_DIR / "zelerdata-devoluciones-reconcile.service"
 RECONCILE_TIMER = SYSTEMD_DIR / "zelerdata-devoluciones-reconcile.timer"
 RECONCILE_ALERT_SERVICE = SYSTEMD_DIR / "zelerdata-devoluciones-reconcile-alert.service"
-DEPLOY_DOC = ROOT / "docs" / "deploy.md"
-RECONCILIATION_DOC = ROOT / "docs" / "sheets" / "zelerdata-read-model-reconciliation.md"
-FORMULA_DOC = ROOT / "docs" / "sheets" / "zelerdata-formulas.md"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def _bash_blocks(markdown: str) -> tuple[str, ...]:
-    return tuple(
-        fenced.split("```", 1)[0] for fenced in markdown.split("```bash")[1:] if "```" in fenced
-    )
 
 
 def _write_executable(path: Path, content: str) -> Path:
@@ -317,20 +308,11 @@ def test_topology_privilege_boundary_keeps_persistent_worker_non_root() -> None:
     dockerfile = _read(SHEETS_WORKER_DOCKERFILE)
     compose = _read(COMPOSE_FILE)
     worker = compose.split("  sheets-worker:", 1)[1].split("  autoreply-worker:", 1)[0]
-    deploy = _read(DEPLOY_DOC)
-    section = deploy.split(
-        "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-        1,
-    )[1].split("---", 1)[0]
 
     assert "USER appuser" in dockerfile
     assert "user:" not in worker
     assert "privileged:" not in worker
     assert "/var/run/docker.sock" not in worker
-    assert "ephemeral topology one-shot" in section
-    assert "`--user 0:0`" in section
-    assert "`appuser` (UID 1001)" in section
-    assert "persistent worker never mounts the Docker socket" in section
 
 
 def test_legacy_reconcile_wrapper_renews_the_enclosing_closed_range_with_frozen_python() -> None:
@@ -769,13 +751,11 @@ def test_legacy_reconcile_wrapper_rejects_environment_seller_override() -> None:
     assert "SELLER_ID=$APPROVED_SELLER_ID" in wrapper
 
 
-def test_refresh_loop_absorbing_devoluciones_is_documented_and_gated() -> None:
+def test_refresh_loop_absorbing_devoluciones_is_gated() -> None:
     """Q2-b/Q7-a: the refresh loop owns DEVOLUCIONES, gated by its own flag."""
-    refresh_doc = _read(ROOT / "docs" / "sheets" / "zelerdata-refresh.md")
     consumer = _read(ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "consumer.py")
     template = _read(ROOT / "infra" / "gce" / "env-templates" / "sheets-worker.env.template")
 
-    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in refresh_doc
     assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in consumer
     assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=" in template
     # The shipped default must keep the absorbed trigger off until the operator
@@ -786,79 +766,15 @@ def test_refresh_loop_absorbing_devoluciones_is_documented_and_gated() -> None:
         if line.startswith("ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED=")
     )
     assert default_line.endswith("false")
-    # The loop advances what an operator authorized and never widens it. The
-    # only runs it creates are bounded automatic windows (the daily tail and a
-    # new seller's initial window), one per cycle for all sellers, and it
-    # activates certificate mode only from a completed window's proof.
-    assert "already-authorized" in refresh_doc
-    assert "never re-authorizes or widens an operator run" in refresh_doc
-    assert "one window per cycle for all sellers together" in refresh_doc
-    assert "activated only from a completed window's proof" in refresh_doc
-    assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in refresh_doc
     assert "ZELERDATA_DEVOLUCIONES_INITIAL_COVERAGE_ENABLED" in consumer
-    # The day in progress is acquired up to an hourly cut, only with windows
-    # the tail and initial coverage leave; on by default with its own switch.
-    assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED" in refresh_doc
+    # The day in progress is acquired up to an hourly cut; on by default with
+    # its own switch.
     assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED" in consumer
     assert "ZELERDATA_DEVOLUCIONES_INTRADAY_ENABLED=true" in template
-    assert "only with windows the tail and initial coverage leave" in refresh_doc
-    # Twelve months back for every eligible seller without a legacy plan, one
-    # portion or window at a time, on by default with its own switch.
-    assert "ZELERDATA_YEAR_HISTORY_ENABLED" in refresh_doc
+    # Twelve months back for every eligible seller without a legacy plan, on by
+    # default with its own switch.
     assert "ZELERDATA_YEAR_HISTORY_ENABLED" in consumer
     assert "ZELERDATA_YEAR_HISTORY_ENABLED=true" in template
-
-
-def test_deploy_runbook_states_devoluciones_trigger_moved_to_refresh_loop() -> None:
-    deploy = _read(DEPLOY_DOC)
-    section = deploy.split(
-        "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-        1,
-    )[1].split("---", 1)[0]
-
-    assert "ZELERDATA_DEVOLUCIONES_ADVANCE_ENABLED" in section
-    assert "zelerdata-devoluciones-reconcile.timer" in section
-    assert "superseded" in section.lower() or "legacy" in section.lower()
-
-
-def test_deploy_runbook_orders_topology_acceptance_and_timer_activation() -> None:
-    deploy = _read(DEPLOY_DOC)
-    section = deploy.split(
-        "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-        1,
-    )[1].split("---", 1)[0]
-
-    required = (
-        "/app/.venv/bin/python",
-        "motor",
-        "GET /post-purchase/v1/claims/search",
-        "GET /post-purchase/v1/claims/*",
-        "GET /post-purchase/v2/claims/*/returns",
-        "GET /orders/*",
-        "30-minute marker lease",
-        "2026-06-01 through the previous closed UTC day",
-        "every 10 minutes",
-        "single scheduled attempt",
-        "OnFailure",
-        (
-            "`expected/persisted/complete/missing` must equal the authoritative "
-            "productive snapshot count"
-        ),
-        "OPERATOR_EVIDENCE_PENDING",
-        "journalctl -u zelerdata-devoluciones-reconcile.service",
-        "failure-conditional rollback",
-        "zelerdata-devoluciones-enable-timer.sh",
-    )
-    for snippet in required:
-        assert snippet in section
-    assert section.index("plan") < section.index("prestart --execute")
-    assert section.index("prestart --execute") < section.index("bind-claims --execute")
-    assert section.index("Acceptance gate") < section.rindex(
-        "zelerdata-devoluciones-enable-timer.sh"
-    )
-    assert "pip install" not in section
-    assert "uv run" not in section
-    assert "MONGO_URI=" not in section
 
 
 def test_exact_merged_wu8_dry_run_reproduces_runtime_confirmation_rejection() -> None:
@@ -877,62 +793,7 @@ def test_exact_merged_wu8_dry_run_reproduces_runtime_confirmation_rejection() ->
         build_reconciliation_request(args)
 
 
-def test_deploy_runbook_dry_run_and_write_commands_confirm_runtime_exactly_once() -> None:
-    deploy_section = (
-        _read(DEPLOY_DOC)
-        .split(
-            "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-            1,
-        )[1]
-        .split("---", 1)[0]
-    )
-    reconciliation_commands = tuple(
-        block
-        for block in _bash_blocks(deploy_section)
-        if "infra.operations.zelerdata_read_model_reconcile" in block
-    )
-
-    assert len(reconciliation_commands) == 2
-    dry_run, authorized_write = reconciliation_commands
-    assert "--dry-run" in dry_run
-    assert "--write" not in dry_run
-    assert dry_run.count("--confirm-approved-runtime") == 1
-    assert dry_run.count("--read-model devoluciones") == 1
-    assert "--write" in authorized_write
-    assert "--confirm-production-write" in authorized_write
-    assert authorized_write.count("--confirm-approved-runtime") == 1
-    assert authorized_write.count("--read-model devoluciones") == 1
-
-
-def test_deploy_runbook_records_the_wu8_gate_corrections() -> None:
-    deploy_section = (
-        _read(DEPLOY_DOC)
-        .split(
-            "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-            1,
-        )[1]
-        .split("---", 1)[0]
-    )
-    normalized_section = " ".join(deploy_section.replace("> ", "").split())
-
-    assert "WU8 rollout-gate correction" in normalized_section
-    assert "rejected before reconciliation" in normalized_section
-    assert "exactly one `--confirm-approved-runtime`" in normalized_section
-    assert (
-        "derives the database name from the default database in `MONGO_URI`" in normalized_section
-    )
-    assert "does not require a new secret or a manual host edit" in normalized_section
-    assert "never prints the URI or derived database name" in normalized_section
-
-
-def test_every_reviewed_operator_command_confirms_runtime_exactly_once() -> None:
-    reconciliation_runbook = _read(RECONCILIATION_DOC)
-    documented_commands = tuple(
-        block
-        for path in (DEPLOY_DOC, RECONCILIATION_DOC)
-        for block in _bash_blocks(_read(path))
-        if "infra.operations.zelerdata_read_model_reconcile" in block
-    )
+def test_reconcile_wrapper_confirms_runtime_exactly_once() -> None:
     wrapper_invocation = (
         _read(LEGACY_RECONCILE_WRAPPER)
         .split(
@@ -942,77 +803,12 @@ def test_every_reviewed_operator_command_confirms_runtime_exactly_once() -> None
         .split('>"$OUTPUT_FILE"', 1)[0]
     )
 
-    assert len(documented_commands) == 4
-    assert all(command.count("--confirm-approved-runtime") == 1 for command in documented_commands)
     assert wrapper_invocation.count("--confirm-approved-runtime") == 1
     assert wrapper_invocation.count("--confirm-production-write") == 1
-    assert "`--write --confirm-production-write`" not in reconciliation_runbook
-    assert (
-        "`--repair-observed-pause-basis --dry-run --confirm-approved-runtime`"
-        in reconciliation_runbook
-    )
 
 
-def test_deploy_runbook_has_exact_non_activating_artifact_install_path() -> None:
-    deploy = _read(DEPLOY_DOC)
-    section = deploy.split(
-        "## 5d. ZELERDATA DEVOLUCIONES ordered rollout and scheduled reconciliation",
-        1,
-    )[1].split("---", 1)[0]
-
-    assert "infra/gce/zelerdata-devoluciones-reconcile.sh" in section
-    assert "infra/gce/zelerdata-devoluciones-enable-timer.sh" in section
-    assert "infra/gce/sheets-rollback-execute.sh" in section
-    assert "infra/gce/systemd/zelerdata-devoluciones-reconcile.service" in section
-    assert "infra/gce/systemd/zelerdata-devoluciones-reconcile.timer" in section
-    assert "infra/gce/systemd/zelerdata-devoluciones-reconcile-alert.service" in section
-    assert "sudo install -m 0755" in section
-    assert "sudo install -m 0644" in section
-    install_boundary = section.split("### Acceptance gate", 1)[0]
-    assert "systemctl enable --now zelerdata-devoluciones-reconcile.timer" not in install_boundary
-
-
-def test_zelerdata_docs_explain_joint_marker_operator_evidence_and_safe_rollback() -> None:
-    reconciliation = _read(RECONCILIATION_DOC)
-    formulas = _read(FORMULA_DOC)
-
-    reconciliation_required = (
-        "/app/.venv/bin/python",
-        "30-minute marker lease",
-        "one exact non-unioned `devoluciones` marker",
-        "operator-authorized quota run",
-        "/etc/zeler-platform/zelerdata-devoluciones-quota-run.env",
-        "at most one 10-day window",
-        "0-119 seconds",
-        "no calendar catch-up",
-        "OnFailure",
-        "plan → prestart → worker health → bind-claims",
-        "OPERATOR_EVIDENCE_PENDING",
-        "failure-conditional rollback",
-        "infra.operations.devoluciones_quota_authorize",
-        "root root 600",
-        "failed or expired run is",
-    )
-    formula_required = (
-        "joint `devoluciones` marker",
-        "30-minute lease",
-        "requested half-open UTC range",
-        "operator evidence",
-        "request/correlation ID",
-        "DATA_UNAVAILABLE",
-        "authoritative productive snapshot count",
-    )
-    for snippet in reconciliation_required:
-        assert snippet in reconciliation
-    for snippet in formula_required:
-        assert snippet in formulas
-
-
-def test_devoluciones_affected_docs_and_operations_have_no_fixed_inventory_acceptance() -> None:
+def test_devoluciones_affected_operations_have_no_fixed_inventory_acceptance() -> None:
     affected_paths = (
-        DEPLOY_DOC,
-        RECONCILIATION_DOC,
-        FORMULA_DOC,
         ROOT / "infra" / "operations" / "zelerdata_read_model_reconcile.py",
         ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "claim_projection.py",
         ROOT / "modules" / "sheets" / "src" / "zeler_sheets" / "devoluciones_reconciliation.py",
@@ -1049,50 +845,3 @@ def test_public_evidence_excludes_sensitive_identifiers_and_keeps_only_counter()
     public_evidence = json.dumps(evidence, sort_keys=True)
     assert "raw_claim_id" not in public_evidence
     assert "82453304" not in public_evidence
-
-
-def test_reconciliation_runbook_documents_quota_authority_and_safe_api_rollback() -> None:
-    reconciliation = _read(RECONCILIATION_DOC)
-
-    required = (
-        "--read-model devoluciones",
-        "claims-first immutable snapshot",
-        "broad order-date, questions, items, shipments, and catalog hydration is prohibited",
-        "B = P + 3H",
-        "B ≤ 104",
-        "C ≤ 208",
-        "1.75-second minimum start-to-start interval",
-        "physical RETURNS attempts only",
-        "one pacer spans both snapshots",
-        "does not retry",
-        "at most 57.75 seconds per snapshot and 117.25 seconds per run",
-        "143.5-second projected run envelope",
-        "21.5 seconds of process-deadline margin",
-        "165-second process deadline",
-        "175-second shell stop",
-        "exact 11 scopes and 5 routing keys",
-        "retain the corrected candidate API",
-        "rollback-compatible API image",
-        "old 8/4 writer is prohibited",
-        "keep the Sheets API unavailable",
-        "SHEETS_ROLLBACK_PREFLIGHT=1",
-        "sanitized evidence",
-        "operator-authorized quota run",
-        "advances at most one 10-day window",
-        "cannot reset either snapshot or run accounting",
-        "cannot create or discover a",
-        "exact full-range readback",
-        "Cloud Build SLSA provenance",
-        "Repository JSON alone is not authority",
-        "unknown digest fails closed",
-        "registry fingerprint before healthy",
-        "startup-installed preflight is parity-bound",
-        "gcloud artifacts docker images describe",
-        "--show-provenance",
-        "gcloud builds describe",
-        "zeler_sheets.app:make_app --factory",
-        "sheets-rollback-execute.sh",
-        "RepoDigest",
-    )
-    for snippet in required:
-        assert snippet in reconciliation

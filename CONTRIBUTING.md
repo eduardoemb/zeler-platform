@@ -12,8 +12,12 @@
 uv sync
 uv run pytest
 uv run ruff check .
+uv run ruff format --check .
 uv run mypy .
 ```
+
+Run the focused tests of the area you changed plus ruff before opening a PR; CI
+runs the full suite and `mypy .`.
 
 ## Module-to-Meli boundary
 

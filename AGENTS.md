@@ -182,9 +182,11 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
   wait. Builds and deploys run from the main session, which does them on its
   own after the integration; other production changes keep their own
   authorization.
-  1. Run the focused checks and the four root gates in the worktree, plus the
-     CI extras when they apply. If a check fails and the session cannot fix it,
-     stop and report; do not integrate.
+  1. Run the checks listed under Stack summary (focused tests, ruff check,
+     ruff format check, direct-Meli lint, and the schema export check when
+     models or schemas change). The full suite and `mypy .` are CI's job after
+     the push. If a check fails and the session cannot fix it, stop and report;
+     do not integrate.
   2. Commit on the branch, naming only your own paths.
   3. Rebase onto `main` if it moved and rerun the affected checks. Then run
      `git -C <main checkout> merge --ff-only <branch>`. Git refuses if the main
@@ -192,7 +194,9 @@ used in `zeler-fabrica/trabajo-usa` and `../zeler-app`.
      tell the user. If it is not a fast-forward because `main` moved again,
      rebase and retry. If `.git/index.lock` exists, wait and retry; never
      delete it.
-  4. Push `main`. CI runs on the push.
+  4. Push `main`. CI runs on the push. If CI fails on `main` after an
+     integration, the session that integrated (or a new one) fixes it in a
+     worktree; it does not leave `main` red.
   5. If runtime code changed, say which services in the report: the main
      session builds and deploys them (the end-of-session image drift rule).
   6. Report to the user that the branch is integrated. The worktree session does
@@ -231,18 +235,22 @@ Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP.
   MongoDB deployment path; older Atlas mentions in historical notes may be
   superseded.
 - Secrets/crypto use GCP Secret Manager and KMS where applicable.
-- Root quality gates: `uv run pytest`, `uv run ruff check .`,
-  `uv run ruff format --check .`, and `uv run mypy .`.
-  Run focused checks during implementation and all four gates when code changes
-  are complete. Repeat checks when changes, failures, or invalidated evidence
-  justify it.
-  Documentation-only tasks require documentation validation, not the code suite.
-- CI also runs `uv run python -m infra.lint.check_direct_meli .` and
-  `uv run python -m zeler_platform_core.cli.export_schemas infra/mongo/schemas --check`.
-  Run these for gateway/Meli access changes and schema/model changes respectively.
-  CI's current mypy job covers selected files, so green CI does not establish
-  that full-repository mypy passed. Report pre-existing failures separately from
-  regressions; do not silently reduce the required checks.
+- Checks before integrating, run in the worktree: the focused tests of the
+  changed area, `uv run ruff check .`, `uv run ruff format --check .`, and
+  `uv run python -m infra.lint.check_direct_meli .`; add
+  `uv run python -m zeler_platform_core.cli.export_schemas infra/mongo/schemas --check`
+  when models or schemas change. Documentation-only tasks require documentation
+  validation, not the code suite.
+- CI is the full gate and runs after the push: `lint` (ruff check, ruff format
+  check, direct-Meli lint, and `uv run mypy .` over the whole repository) and
+  `test` (the full `uv run pytest` suite against disposable Mongo and RabbitMQ).
+  A session may run the full suite or `uv run mypy .` locally when the change
+  warrants it, but that is not required before integrating. Report pre-existing
+  failures separately from regressions.
+- Tests do not assert the wording or existence of Markdown documents (AGENTS.md,
+  runbooks, playbooks); documentation is validated by reading it, not by tests.
+  A test that reads a repository file must exercise behavior the runtime uses
+  (code, scripts, env or compose templates, schemas).
 - Tests that access Mongo must use a verified development/test target:
   `conftest.py` accepts the environment's `MONGO_URI`, so do not assume the full
   suite is isolated or uses disposable data. Never use production for local tests.
@@ -375,6 +383,8 @@ When adapting legacy products:
   Build with `options.requestedVerifyOption: VERIFIED`. Verify successful build,
   repository, source commit and immutable digest; record build ID, full commit
   and `repo@sha256:...`. Tags alone are not deployment authority.
+- The main session builds and deploys a commit only when CI `lint` and `test`
+  are green for that commit.
 - Before each deployment, write down its plan (services, target images,
   verification and compatible rollback) and report it with the result. Builds
   and deploys of `main` need no approval (user decision, Oct 12, 2026); bounded

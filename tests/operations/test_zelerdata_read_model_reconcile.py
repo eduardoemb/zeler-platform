@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import shlex
 import stat
 from contextlib import asynccontextmanager
@@ -6828,60 +6827,6 @@ def test_reconciliation_summary_is_aggregate_only_and_has_stop_criteria() -> Non
         assert forbidden not in sanitized_json
 
 
-def test_reconciliation_runbook_documents_flags_stop_criteria_and_runtime_boundary() -> None:
-    doc_path = Path("docs/sheets/zelerdata-read-model-reconciliation.md")
-
-    content = doc_path.read_text(encoding="utf-8")
-
-    for required in (
-        "--confirm-approved-runtime",
-        "--confirm-production-write",
-        "--dry-run",
-        "--write",
-        "--max-orders",
-        "--max-items",
-        "--max-shipments",
-        "--sleep-ms",
-        "--resume-after-order-id",
-        "ZELERDATA_ENRICHMENT_ENABLED",
-        "rollback-to-NA",
-        "approved VM/VPC/runtime",
-        "Do not query production Mongo locally",
-        "unsanitized output",
-        "unexpected count delta",
-        "index anomaly",
-        "no secrets, tokens, raw IDs, raw payloads, buyer/address PII, or raw env values",
-        "--read-model stock_time_metrics",
-        "item_history_projection",
-        "seller/account ownership",
-        "MLM",
-        "exact half-open UTC interval",
-        "dry-run-only",
-        "deterministic data-level rollback",
-        "does not call Mercado Libre",
-        "does not acquire the DEVOLUCIONES lease",
-    ):
-        assert required in content
-
-
-def test_reconciliation_runbook_documents_phase2_read_only_contract() -> None:
-    doc_path = Path("docs/sheets/zelerdata-read-model-reconciliation.md")
-
-    content = doc_path.read_text(encoding="utf-8")
-
-    for required in (
-        "Phase 2 read-only contract",
-        "--emit-phase2-contract",
-        "orders, shipments, items, sheets_item_formula_rows, "
-        "sheets_item_sku_index, and status models",
-        "expected, persisted, missing, complete, NA, 0, and >0 counts",
-        "private export IDs/counts",
-        "realized fees where implemented; otherwise keep NA",
-        "Live runtime execution is pending until an approved VM/VPC/runtime command is available",
-    ):
-        assert required in content
-
-
 def test_phase2_runtime_contract_lists_read_only_preflight_targets_and_counters() -> None:
     contract = build_phase2_runtime_contract(
         date_from="2026-06-01",
@@ -7340,7 +7285,6 @@ SNAPSHOT_RUNTIME_MODULE = "infra.operations.sheets_dlq_snapshot_runtime"
 SNAPSHOT_RUNTIME_SOURCE = Path("infra/operations/sheets_dlq_snapshot_runtime.py")
 SHEETS_WORKER_DOCKERFILE = Path("modules/sheets/Dockerfile.worker")
 SHEETS_PACKAGE_MANIFEST = Path("modules/sheets/pyproject.toml")
-SNAPSHOT_RUNTIME_RUNBOOK = Path("docs/ops/sheets-dlq-reconciliation.md")
 SNAPSHOT_EXECUTE_MODULE = "infra.operations.sheets_dlq_snapshot_execute"
 SNAPSHOT_EXECUTE_SOURCE = Path("infra/operations/sheets_dlq_snapshot_execute.py")
 SHEETS_API_DOCKERFILE = Path("modules/sheets/Dockerfile.api")
@@ -7366,26 +7310,6 @@ def test_snapshot_runtime_dependencies_available_in_sheets_context() -> None:
     assert "httpx" in sheets_manifest
 
 
-def test_snapshot_runtime_runbook_authorization_and_boundaries() -> None:
-    runbook = SNAPSHOT_RUNTIME_RUNBOOK.read_text(encoding="utf-8")
-
-    # Authorization marker (R11): explicit owner-only token + compare_digest.
-    assert "--authorization-token-file" in runbook
-    assert "SHEETS_DLQ_SNAPSHOT_AUTH_SHA256" in runbook
-    assert "owner-only" in runbook
-    assert "compare_digest" in runbook
-
-    # Canonical queue allowlist and deterministic exits.
-    assert "zeler.sheets.events.dlq" in runbook
-    assert "Deterministic exits" in runbook
-    assert "Blind-retry prohibition" in runbook
-
-    # Wave 2 and production execution are explicitly out of scope.
-    assert "Wave 2" in runbook
-    assert "production" in runbook
-    assert "no execution" in runbook.lower() or "no live execution" in runbook.lower()
-
-
 def test_sheets_worker_packages_the_execute_entrypoint_without_api_or_dependency_drift() -> None:
     worker = SHEETS_WORKER_DOCKERFILE.read_text(encoding="utf-8")
     api = SHEETS_API_DOCKERFILE.read_text(encoding="utf-8")
@@ -7398,28 +7322,3 @@ def test_sheets_worker_packages_the_execute_entrypoint_without_api_or_dependency
     assert "raise SystemExit(main())" in source
     assert SNAPSHOT_EXECUTE_MODULE not in api
     assert "pip install" not in worker.split("uv sync", 1)[1]
-
-
-def test_execute_runbook_covers_r14_without_granting_execution_consent() -> None:
-    runbook = SNAPSHOT_RUNTIME_RUNBOOK.read_text(encoding="utf-8")
-    required_headings = (
-        "Purpose|Required authorization|Approved runtime|Preflight|Canonical command|"
-        "Safe placeholders|Token and digest|Canonical lock|RabbitMQ binding|Limit|"
-        "Side effects|Exit codes|Sanitized report|Cleanup|Rollback|Stop conditions|"
-        "Retry prohibition|Remaining prohibitions|POINT_1_PASS checklist"
-    )
-    required_heading_list: list[str] = re.split(r"\|", required_headings)
-
-    assert all(f"## {heading}" in runbook for heading in required_heading_list)
-    required_strings = (
-        "/opt/zeler-platform/sheets-dlq-snapshot-execute.sh|platform-vm|sheets-worker|root|"
-        "zeler.sheets.events.dlq|24|RABBITMQ_URL|nack-requeue|75|Authorization rejected|"
-        "separate explicit consent|does not authorize"
-    )
-    required_string_list: list[str] = re.split(r"\|", required_strings)
-    for required in required_string_list:
-        assert required in runbook
-    assert "| 5 |" in runbook
-    forbidden_operations = "ack|publish|purge|delete|quarantine|direct Python invocation"
-    for forbidden in re.split(r"\|", forbidden_operations):
-        assert forbidden in runbook

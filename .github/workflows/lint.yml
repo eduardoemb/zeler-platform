@@ -24,14 +24,11 @@ jobs:
       - name: Ruff
         run: uv run ruff check .
 
+      - name: Ruff format
+        run: uv run ruff format --check .
+
       - name: Direct Meli URL lint
         run: uv run python -m infra.lint.check_direct_meli .
 
       - name: Mypy
-        # TODO: restore `uv run mypy .` after the current full-repo mypy baseline is clean.
-        run: >-
-          uv run mypy
-          gateway/src/zeler_gateway/internal/router.py
-          core/src/zeler_platform_core/models/operational.py
-          infra/mongo/readiness.py
-          infra/mongo/operations/ensure_zeler_app_admin_client.py
+        run: uv run mypy .

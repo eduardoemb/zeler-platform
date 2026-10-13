@@ -26,13 +26,6 @@ ACTIVE_FULLDOCK_REFERENCE_FILES = (
     ROOT / "tests/test_module_dockerfiles.py",
     ROOT / "tests/test_dockerfile_healthcheck.py",
     ROOT / "tests/operations/smoke_helpers.py",
-    ROOT / "README.md",
-    ROOT / "AGENTS.md",
-)
-ARCHIVED_FULLDOCK_DOCS = (
-    ROOT / "docs/operations/pilot-runbooks/fulldock.md",
-    ROOT / "docs/runbooks/pilot-fulldock.md",
-    ROOT / "docs/operations/fulldock-archive-policy.md",
 )
 
 
@@ -175,33 +168,6 @@ def test_gce_runtime_artifacts_have_no_active_fulldock_services_or_hosts() -> No
     assert 'respond "Fulldock is decommissioned" 410' in caddyfile
 
 
-def test_fulldock_docs_are_archived_not_active_runbooks() -> None:
-    active_docs = [
-        *ARCHIVED_FULLDOCK_DOCS,
-        ROOT / "docs/operations/alerts.md",
-        ROOT / "docs/ops/webhook-backlog-replay.md",
-    ]
-
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in active_docs)
-
-    assert "docker compose ps fulldock-worker" not in combined
-    assert "curl https://fulldock.zeler.ai/health" not in combined
-    assert "fulldock-health" not in combined
-    assert "active Fulldock consumer" not in combined
-    assert "Fulldock is decommissioned" in combined
-
-
-def test_fulldock_archive_docs_explain_code_deletion_rollback_boundary() -> None:
-    combined = "\n".join(path.read_text(encoding="utf-8") for path in ARCHIVED_FULLDOCK_DOCS)
-
-    assert "git history" in combined
-    assert "previously built image" in combined
-    assert "UI catalog/route" in combined
-    assert "admin:fulldock" in combined
-    assert "runtime services" in combined
-    assert "RabbitMQ" in combined
-
-
 def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> None:
     retained_paths = [
         ROOT / "infra/mongo/schemas/fulldock_inventory_rules.json",
@@ -213,16 +179,6 @@ def test_fulldock_historical_collections_are_retained_as_archive_contracts() -> 
     for retained_path in retained_paths:
         relative_path = retained_path.relative_to(ROOT)
         assert retained_path.exists(), f"{relative_path} should remain for archive/history"
-
-
-def test_fulldock_archive_policy_formalizes_read_only_retention() -> None:
-    policy = (ROOT / "docs/operations/fulldock-archive-policy.md").read_text(encoding="utf-8")
-
-    assert "read-only archive" in policy
-    assert "fulldock_inventory_rules" in policy
-    assert "fulldock_history" in policy
-    assert "Do not run delete, drop, rewrite, or migration operations" in policy
-    assert "separate approved SDD" in policy
 
 
 def test_fulldock_decommission_does_not_add_productive_data_deletion_scripts() -> None:
@@ -237,8 +193,6 @@ def test_fulldock_decommission_does_not_add_productive_data_deletion_scripts() -
     scanned_paths = [
         *ROOT.glob("infra/**/*.py"),
         *ROOT.glob("infra/**/*.sh"),
-        *ROOT.glob("infra/**/*.md"),
-        *ROOT.glob("docs/**/*.md"),
     ]
 
     offenders = _paths_containing(scanned_paths, destructive_tokens)

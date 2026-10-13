@@ -54,12 +54,11 @@ def test_env_templates_declare_no_zelerdata_smoke_variables() -> None:
     assert declared == []
 
 
-def test_sheets_worker_declares_zelerdata_freshness_flags_and_sanitized_vm_check() -> None:
+def test_sheets_worker_declares_zelerdata_freshness_flags() -> None:
     template = _read("sheets-worker.env.template")
     secrets_script = (ROOT / "infra" / "gce" / "zeler-platform-secrets.sh").read_text(
         encoding="utf-8"
     )
-    deploy_doc = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
     required_flags = {
         "ZELERDATA_ENRICHMENT_ENABLED=true",
         "ZELERDATA_SALE_PRICE_ENABLED=true",
@@ -68,9 +67,6 @@ def test_sheets_worker_declares_zelerdata_freshness_flags_and_sanitized_vm_check
 
     assert required_flags <= set(template.splitlines())
     assert all(flag in secrets_script for flag in required_flags)
-    assert all(flag in deploy_doc for flag in required_flags)
-    assert "VM-only sanitized ZELERDATA flag check" in deploy_doc
-    assert "Do not print secret values" in deploy_doc
 
 
 def _read(name: str) -> str:

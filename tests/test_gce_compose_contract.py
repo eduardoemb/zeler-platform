@@ -569,30 +569,6 @@ class TestEnvTemplateContract:
             in (ENV_TEMPLATES_DIR / "gateway.env.template").read_text()
         )
 
-    def test_deploy_runbook_documents_zeler_app_live_validation(self) -> None:
-        text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
-
-        required_snippets = [
-            "## 5c. zeler-app live integration runtime config + VM-only validation",
-            "ZELER_APP_BROKER_SECRET",
-            "zeler-app-broker-secret",
-            "OAUTH_SUCCESS_URL",
-            "https://app.zeler.ai/accounts/linked",
-            "https://gateway.zeler.ai",
-            "https://repricer.zeler.ai",
-            "https://sheets.zeler.ai",
-            "https://publicador.zeler.ai",
-            "https://autoreply.zeler.ai",
-            "platform-vm",
-            "us-central1-a",
-            "zeler-platform-dev",
-            "ensure_zeler_app_admin_client",
-            "Do not print MONGO_URI",
-            "seller `82453304`",
-        ]
-        for snippet in required_snippets:
-            assert snippet in text
-
     @pytest.mark.parametrize("path", WORKER_RUN_ENTRY_TESTS)
     def test_worker_run_entry_tests_do_not_set_gateway_token(self, path: Path) -> None:
         text = path.read_text()
@@ -705,17 +681,6 @@ class TestDockerRootDiskSafeguards:
         assert wrapper.strip() in startup
         assert "prestart --execute" not in startup
         assert "bind-claims --execute" not in startup
-
-    def test_deploy_runbook_runs_preflight_before_single_service_pull(self) -> None:
-        text = (PROJECT_ROOT / "docs" / "deploy.md").read_text()
-
-        deploy_section = text.split("## 5. Re-deploy a Single Service", 1)[1].split("---", 1)[0]
-        assert "/opt/zeler-platform/docker-deploy-preflight.sh" in deploy_section
-        assert deploy_section.index(
-            "/opt/zeler-platform/docker-deploy-preflight.sh"
-        ) < deploy_section.index('docker compose --file "$COMPOSE_FILE" pull "$SERVICE"')
-        assert "never prune volumes" in text.lower()
-        assert "/var/lib/zeler-mongo" in text
 
 
 # ===========================================================================

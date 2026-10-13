@@ -72,15 +72,3 @@ def test_decommission_cli_outputs_machine_readable_dry_run_json() -> None:
     assert payload["mode"] == "dry-run"
     assert payload["safe_to_execute"] is False
     assert payload["actions"][0]["task_id"] == "P7.1"
-
-
-def test_decommission_runbook_and_postmortem_are_planning_artifacts_only() -> None:
-    runbook = (ROOT / "docs" / "legacy-decommission-runbook.md").read_text(encoding="utf-8")
-    postmortem = (ROOT / "docs" / "migration-postmortem.md").read_text(encoding="utf-8")
-
-    assert "Non-destructive planning artifact" in runbook
-    assert "Do not archive GitHub repositories from automation" in runbook
-    assert "Do not stop/delete Cloud Run services or VMs from automation" in runbook
-    assert "Do not drop Mongo databases from automation" in runbook
-    assert "DRAFT — not a completion record" in postmortem
-    assert "P7.4 remains unchecked until the 30-day recovery window has elapsed" in postmortem

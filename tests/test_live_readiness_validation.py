@@ -483,24 +483,3 @@ def test_mongo_readiness_live_check_is_read_only_and_reports_missing_collections
     assert {call[0] for call in database.command_calls} == {"listCollections"}
     assert database.collections["users"].create_index_calls == 0
     assert client.closed is True
-
-
-def test_live_readiness_runbook_documents_sandbox_sequence_and_env_vars() -> None:
-    runbook = (ROOT / "docs" / "live-readiness-validation.md").read_text(encoding="utf-8")
-
-    assert "Non-destructive readiness validation" in runbook
-    assert "safe_to_execute" in runbook
-    assert "read_only" in runbook
-    assert "RabbitMQ_MANAGEMENT_EXPORT" in runbook
-    assert "RABBITMQ_READINESS_MODE=amqp-passive" in runbook
-    assert "infra.rabbitmq.apply_topology" in runbook
-    assert "MONGO_URI" in runbook
-    assert "MODULE_REGISTRY_EXPORT" in runbook
-    assert "python -m infra.rabbitmq.readiness" in runbook
-    assert "python -m infra.mongo.readiness" in runbook
-    assert "--module-registry-export" in runbook
-    assert "module_registry.admin_clients.json" in runbook
-    assert "readiness command is read-only" in runbook
-    assert "Do not run `infra/mongo/apply_validators.py`" in runbook
-    assert "Do not apply module_registry seeds" in runbook
-    assert "Do not import RabbitMQ definitions" in runbook
