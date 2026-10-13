@@ -308,7 +308,10 @@ async def test_real_shared_coordinator_acquires_and_renews_populated_certificate
     shared_capacity_db: Any,
 ) -> None:
     db = shared_capacity_db
-    initial = datetime.now(UTC).replace(microsecond=0)
+    # The incremental budget resets each UTC day and the controlled clock runs
+    # about an hour, so start at the day's beginning: never across midnight, and
+    # never ahead of the wall clock that certificate publication checks.
+    initial = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     originals = await _seed(db, initial)
     source_clock, pacing_clock = [initial], [initial]
     start = (await db[PLAN_COLLECTION].find_one({"_id": SELLERS[0]}))["date_from"]

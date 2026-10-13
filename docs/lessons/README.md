@@ -113,6 +113,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
 | L-054 | ZelerData | Cover the day in progress with replaceable hourly cuts, never ahead of the tail | active |
 | L-055 | ZelerData | Backfill an unclassified notification topic from `webhook_events` before its 45-day TTL | active |
 | L-056 | ZelerData | Walk a new seller's year back from its proofs, one bounded portion per cycle for the fleet | active |
+| L-057 | Local tests | Start a controlled-clock test at the UTC day's beginning when it spans an hour | active |
 
 ## Cloud Build and VM deployment
 
@@ -1023,4 +1024,20 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
   duration from code, "What a failure costs"). Walk observed in production on
   2026-10-13 up to both stalls; the fix is not yet observed there.
+- status: active
+
+### L-057 — Start a controlled-clock test at the UTC day's beginning when it spans an hour
+- area: Local tests and CI, ZelerData history budgets
+- proven path: A test that advances an injected clock across a daily counter
+  (`incremental_consumed` resets when the UTC day changes) starts at
+  `datetime.now(UTC)` with time 00:00:00. It never crosses midnight and is
+  never later than the wall clock, which seed paths such as
+  `publish_certificate` still check.
+- failed path: Starting at the wall clock let the shared-capacity test cross
+  midnight when CI ran after 23:00 UTC; the daily counter reset and the call
+  ledger came up short (46 + 1 == 54). Starting at a fixed hour later than
+  the wall clock fails instead with "inconsistent certificate evidence".
+- verification/source:
+  `modules/sheets/tests/test_history_onboarding_shared_capacity.py`; reproduced
+  with start times 23:00 and 23:10 (fail) and 22:50, 22:58, 00:05 and 06:00 (pass).
 - status: active
