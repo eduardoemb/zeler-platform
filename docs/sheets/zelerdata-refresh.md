@@ -384,6 +384,26 @@ return fields the proof requires (`id`, `status`, `last_updated`) and the
 claim's `claim_version` and `last_updated` stay required. A window that one
 of them blocks names it in `failure_reason`.
 
+##### A v2 returns 404 the exclusion does not accept (2026-10-14)
+
+The window of 2026-02-11 to 02-21 then failed three times with
+`safe_404_precondition_failure`: Mercado Libre answered 404 for one claim's v2
+returns, and the claim did not pass the checks that let a 404 exclude it as a
+closed mediation without a return. That failure class alone did not say which
+check, and production keeps no copy of a claim it does not count. The failure
+now names the first check that refused, as `failure_reason` and as
+`precondition_reason` in `zelerdata.devoluciones_tail_failed`, in this order:
+`safe_404_inventory_not_mediation`, `safe_404_inventory_not_closed`,
+`safe_404_claim_identity_differs`, `safe_404_claim_version_differs`
+(`last_updated` differs from the search), `safe_404_claim_not_mediation`,
+`safe_404_claim_not_closed`, `safe_404_order_identity_not_numeric`,
+`safe_404_order_identity_conflict`, `safe_404_item_identity_present`,
+`safe_404_related_return_present`, `safe_404_seller_respondent_unproven`,
+`safe_404_return_evidence_present`. The checks themselves are unchanged: a 404
+never excludes a claim that may hold a return DEVOLUCIONES must count, so the
+window keeps failing, and the edge stays above it, until the named check shows
+whether that claim can be excluded safely.
+
 #### Initial coverage for a new seller (2026-10-12)
 
 Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage

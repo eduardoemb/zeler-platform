@@ -1284,6 +1284,55 @@ async def test_authoritative_returns_404_fails_closed_on_contradictory_evidence(
     assert ("order", "1999") not in source.hydration_calls
 
 
+# Production, 2026-10-14: the pilot's 2026-02-11 window failed three times with
+# only ``safe_404_precondition_failure``; nothing said which check refused the
+# 404. The failure now names the first one, without identities or source text.
+@pytest.mark.parametrize(
+    ("claim_mutation", "inventory_status", "reason"),
+    [
+        ({}, "opened", "safe_404_inventory_not_closed"),
+        ({"last_updated": "2026-06-17T09:05:00.000Z"}, None, "safe_404_claim_version_differs"),
+        ({"type": "returns"}, None, "safe_404_claim_not_mediation"),
+        ({"status": "opened"}, None, "safe_404_claim_not_closed"),
+        ({"order_id": None, "resource_id": "P-1"}, None, "safe_404_order_identity_not_numeric"),
+        ({"resource_id": "2999"}, None, "safe_404_order_identity_conflict"),
+        ({"item_id": "MLA2"}, None, "safe_404_item_identity_present"),
+        ({"related_entities": [{"type": "return"}]}, None, "safe_404_related_return_present"),
+        ({"players": []}, None, "safe_404_seller_respondent_unproven"),
+        ({"returned_quantity": 1}, None, "safe_404_return_evidence_present"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_names_the_check_that_refused_it(
+    claim_mutation: dict[str, Any], inventory_status: str | None, reason: str
+) -> None:
+    source = GatewayReturns404Source()
+    if inventory_status is not None:
+        for response in source.responses:
+            response["data"][1]["status"] = inventory_status
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            **claim_mutation,
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
+    assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
+        "failure_class": "safe_404_precondition_failure",
+        "precondition_reason": reason,
+    }
+
+
 @pytest.mark.asyncio
 async def test_authoritative_404_rejects_inventory_status_contradiction() -> None:
     source = GatewayReturns404Source()

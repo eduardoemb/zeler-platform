@@ -152,11 +152,14 @@ class ClaimInventoryError(RuntimeError):
         message: str,
         *,
         private_failure: _FocusedDevolucionesFailure | None = None,
+        precondition_reason: str | None = None,
     ) -> None:
         super().__init__(message)
         self._focused_devoluciones_private_failure = (
             private_failure or _FocusedDevolucionesFailure.PARSER
         )
+        # The safe-404 check that refused the exclusion; a stable code only.
+        self.precondition_reason = precondition_reason
 
 
 class DevolucionesReadModelVerificationError(RuntimeError):
@@ -320,6 +323,11 @@ def _private_focused_devoluciones_diagnostic(exc: Exception) -> dict[str, str]:
             diagnostic["source_stage"] = stage.value
             diagnostic["source_family"] = family.value
         return diagnostic
+    if failure is _FocusedDevolucionesFailure.SAFE_404_PRECONDITION:
+        reason = getattr(exc, "precondition_reason", None)
+        if isinstance(reason, str):
+            diagnostic["precondition_reason"] = reason
+        return diagnostic
     if (
         failure is not _FocusedDevolucionesFailure.PARSER
         or type(exc).__name__ != "ClaimProjectionError"
@@ -345,6 +353,8 @@ def devoluciones_failure_reason(exc: Exception) -> str:
     diagnostic = _private_focused_devoluciones_diagnostic(exc)
     if "projection_reason" in diagnostic:
         return diagnostic["projection_reason"]
+    if "precondition_reason" in diagnostic:
+        return diagnostic["precondition_reason"]
     if "source_stage" in diagnostic:
         return f"{diagnostic['source_stage']}_{diagnostic['source_family']}"
     return diagnostic["failure_class"]
@@ -1031,11 +1041,12 @@ async def collect_devoluciones_snapshot(
             except SourceCallBudgetError:
                 raise
             except AuthoritativeReturnsNotFoundError:
-                if _is_authoritative_no_return_mediation(
+                refusal = _authoritative_no_return_mediation_refusal(
                     entry=entry,
                     claim=claim,
                     seller_id=seller_id,
-                ):
+                )
+                if refusal is None:
                     exclusions.append(
                         InventoryExclusionEvidence(
                             claim_id=entry.claim_id,
@@ -1048,6 +1059,7 @@ async def collect_devoluciones_snapshot(
                     raise ClaimInventoryError(
                         "v2 returns source_issue",
                         private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
+                        precondition_reason=refusal,
                     ) from None
                 break
             except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
@@ -2074,12 +2086,18 @@ def _is_authoritative_upstream_status(exc: Exception, status_code: int) -> bool:
     )
 
 
-def _is_authoritative_no_return_mediation(
+def _authoritative_no_return_mediation_refusal(
     *,
     entry: ClaimInventoryEntry,
     claim: Mapping[str, Any],
     seller_id: str,
-) -> bool:
+) -> str | None:
+    """The first check that keeps a v2 returns 404 from excluding this claim.
+
+    ``None`` means the claim is a closed mediation proven to have no return,
+    so the 404 excludes it. Otherwise a stable code safe to log and store:
+    never identities or source text.
+    """
     claim_id = str(claim.get("id") or claim.get("_id") or "").strip()
     last_updated = str(claim.get("last_updated") or "").strip()
     direct_order_id = str(claim.get("order_id") or "").strip()
@@ -2095,11 +2113,7 @@ def _is_authoritative_no_return_mediation(
         )
         if identity
     }
-    order_identity_agrees = len(order_identities) == 1 and all(
-        re.fullmatch(r"[0-9]+", identity) for identity in order_identities
-    )
     item_id = claim.get("item_id")
-    item_identity_absent = item_id is None or (isinstance(item_id, str) and not item_id.strip())
     related_entities = claim.get("related_entities")
     related_return_absent = related_entities is None or (
         isinstance(related_entities, list)
@@ -2121,33 +2135,44 @@ def _is_authoritative_no_return_mediation(
         if isinstance(players, list)
         else []
     )
-    seller_respondent_agrees = bool(
-        len(seller_respondents) == 1 and str(seller_respondents[0].get("user_id")) == str(seller_id)
+    checks = (
+        ("inventory_not_mediation", entry.trusted_type == "mediations"),
+        ("inventory_not_closed", entry.trusted_status in {"", "closed"}),
+        ("claim_identity_differs", claim_id == entry.claim_id),
+        ("claim_version_differs", last_updated == entry.last_updated),
+        ("claim_not_mediation", str(claim.get("type") or "").strip().lower() == "mediations"),
+        ("claim_not_closed", str(claim.get("status") or "").strip().lower() == "closed"),
+        (
+            "order_identity_not_numeric",
+            bool(order_id)
+            and all(re.fullmatch(r"[0-9]+", identity) for identity in order_identities),
+        ),
+        ("order_identity_conflict", len(order_identities) == 1),
+        (
+            "item_identity_present",
+            item_id is None or (isinstance(item_id, str) and not item_id.strip()),
+        ),
+        ("related_return_present", related_return_absent),
+        (
+            "seller_respondent_unproven",
+            len(seller_respondents) == 1
+            and str(seller_respondents[0].get("user_id")) == str(seller_id),
+        ),
+        (
+            "return_evidence_present",
+            all(
+                claim.get(field_name) in (None, "", [], {})
+                for field_name in (
+                    "return_id",
+                    "return_quantity",
+                    "returned_quantity",
+                    "return",
+                    "returns",
+                )
+            ),
+        ),
     )
-    contradictory_return_evidence = any(
-        claim.get(field_name) not in (None, "", [], {})
-        for field_name in (
-            "return_id",
-            "return_quantity",
-            "returned_quantity",
-            "return",
-            "returns",
-        )
-    )
-    return bool(
-        entry.trusted_type == "mediations"
-        and entry.trusted_status in {"", "closed"}
-        and claim_id == entry.claim_id
-        and last_updated == entry.last_updated
-        and str(claim.get("type") or "").strip().lower() == "mediations"
-        and str(claim.get("status") or "").strip().lower() == "closed"
-        and re.fullmatch(r"[0-9]+", order_id)
-        and order_identity_agrees
-        and item_identity_absent
-        and related_return_absent
-        and seller_respondent_agrees
-        and not contradictory_return_evidence
-    )
+    return next((f"safe_404_{code}" for code, holds in checks if not holds), None)
 
 
 def _validated_utc_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:
