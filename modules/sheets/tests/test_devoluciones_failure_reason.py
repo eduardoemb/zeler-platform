@@ -157,7 +157,7 @@ def test_the_source_proof_names_which_claim_check_refused_it() -> None:
 def test_a_missing_field_names_the_field_not_its_value() -> None:
     order = [_order()]
 
-    assert _reason([{**_projection(), "return_subtype": None}], order) == "return_subtype_required"
+    assert _reason([{**_projection(), "return_status": None}], order) == "return_status_required"
     assert _reason([{**_projection(), "stage": " "}], order) == "claim_stage_required"
     assert _reason([{**_projection(), "last_updated": "2026-05-14"}], order) == (
         "claim_last_updated_not_datetime"
@@ -228,3 +228,54 @@ def test_a_source_failure_reason_is_its_bounded_stage_and_family() -> None:
 
     assert devoluciones_failure_reason(refused) == "claim_detail_client_other"
     assert devoluciones_failure_reason(RuntimeError("payload 5500001")) == "source_failure"
+
+
+# The fingerprint of ``_projection()`` before 2026-10-14. Certificates store it
+# and renewal recomputes it from the stored rows, so a row with a subtype must
+# keep exactly this value.
+FINGERPRINT_WITH_SUBTYPE = "915a53c20b87197d45c85ec272b15a5ca476ec706c57e642274031f8af69dab0"
+
+
+def _fingerprint(projection: dict[str, Any]) -> str:
+    return devoluciones_read_model_fingerprint(
+        seller_id=SELLER, claims=[projection], orders=[_order()]
+    )
+
+
+def test_a_row_with_a_subtype_keeps_its_certified_fingerprint() -> None:
+    assert _fingerprint(_projection()) == FINGERPRINT_WITH_SUBTYPE
+
+
+@pytest.mark.parametrize("subtype", [None, "", "  "])
+def test_a_return_without_a_subtype_is_proven(subtype: str | None) -> None:
+    """Production, 2026-10-14: the pilot's year window of 2026-05-12 to 05-22
+    failed three times with ``return_subtype_required``. Mercado Libre answered
+    one return without a subtype; the claim model, the ``claims`` validator and
+    the projection keep it optional, no reader uses it, and DEVOLUCIONES counts
+    the v2 return's order row. Only the hydrated source proof required it.
+    """
+    projection = build_claim_projection(
+        seller_id=SELLER,
+        claim=_claim(),
+        returns={**_returns(), "subtype": subtype},
+        order=_order(),
+    )
+
+    assert "return_subtype" not in projection
+    assert projection["returned_quantity"] == 1
+    fingerprint = _fingerprint(projection)
+    # A subtype that appears later is still a change that the revalidation and
+    # the certificate renewal see.
+    assert fingerprint != FINGERPRINT_WITH_SUBTYPE
+    assert _fingerprint({**projection, "return_subtype": None}) == fingerprint
+
+
+def test_a_return_answered_without_the_subtype_key_is_proven() -> None:
+    returns = _returns()
+    del returns["subtype"]
+    projection = build_claim_projection(
+        seller_id=SELLER, claim=_claim(), returns=returns, order=_order()
+    )
+
+    assert "return_subtype" not in projection
+    assert _fingerprint(projection) != FINGERPRINT_WITH_SUBTYPE

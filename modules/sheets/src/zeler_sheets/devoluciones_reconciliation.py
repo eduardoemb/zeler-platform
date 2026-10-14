@@ -1840,7 +1840,11 @@ def devoluciones_read_model_fingerprint(
                 "return": {
                     "id": _required_text(claim.get("return_id"), field="return identity"),
                     "status": _required_text(claim.get("return_status"), field="return status"),
-                    "subtype": _required_text(claim.get("return_subtype"), field="return subtype"),
+                    # Mercado Libre answers some returns without a subtype
+                    # (2026-10-14); the claim model keeps it optional and no
+                    # reader uses it. A present subtype keeps its value, so
+                    # certified fingerprints do not change.
+                    "subtype": _optional_fingerprint_text(claim.get("return_subtype")),
                     "last_updated": _fingerprint_datetime(
                         claim.get("return_last_updated"), field="return last_updated"
                     ),

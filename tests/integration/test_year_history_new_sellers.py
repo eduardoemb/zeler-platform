@@ -107,6 +107,8 @@ class YearGateway:
         self.orders: dict[str, list[dict[str, Any]]] = {}
         self.questions: dict[str, list[dict[str, Any]]] = {}
         self.returns: dict[str, datetime] = {}
+        # Mercado Libre answers some v2 returns without a subtype (2026-10-14).
+        self.return_subtype: str | None = "return_total"
         settled = now - timedelta(hours=3)
         for number, seller_id in enumerate(sellers, start=1):
             suffix = seller_id[-4:]
@@ -220,7 +222,7 @@ class YearGateway:
             return {
                 "id": f"RETURN-{claim_id}",
                 "status": "delivered",
-                "subtype": "return_total",
+                "subtype": self.return_subtype,
                 "last_updated": created,
                 "orders": [
                     {
@@ -952,6 +954,75 @@ async def test_a_failed_window_fails_closed_under_the_runs_validator_without_its
     assert "failure_reason" not in failed
     (logged,) = [log for log in logs if log["event"] == "zelerdata.devoluciones_tail_failed"]
     assert logged["failure_reason"] == "claim_search_server"
+
+
+@pytest.mark.asyncio
+async def test_a_year_window_holding_a_return_without_subtype_certifies_and_the_walk_goes_on(
+    year_db: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production, 2026-10-14: the pilot's year window of 2026-05-12 to 05-22
+    failed three times with ``return_subtype_required``.
+
+    Mercado Libre answered one of its returns without a subtype. The claim
+    model, the ``claims`` validator and the projection keep it optional and no
+    reader uses it, but the hydrated source proof required it, so the window
+    could never close and the year walk stayed at 2026-05-22.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    from zeler_sheets.devoluciones_reconciliation import current_certificate_facts
+    from zeler_sheets.devoluciones_runner import (
+        YEAR_HISTORY_AUTHORIZATION,
+        advance_year_history_devoluciones,
+    )
+    from zeler_sheets.formulas.seller_scope import EligibleSellerGate
+    from zeler_sheets.formulas.year_history import year_history_status, year_history_target
+
+    db = year_db
+    now = datetime.now(UTC).replace(microsecond=datetime.now(UTC).microsecond // 1000 * 1000)
+    gateway = YearGateway(
+        now=now, sellers=(PILOT,), first=year_history_target(now) - timedelta(days=40)
+    )
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+    await _paused_pilot(db, gateway, now)
+    await _link(db, PILOT)
+    _enable_all_mode(monkeypatch)
+    oldest = (await db[CERTIFICATES].find_one({"seller_id": PILOT}, sort=[("date_from", 1)]))[
+        "date_from"
+    ]
+    # The next year window holds one return, answered without a subtype.
+    gateway.returns[PILOT] = oldest - timedelta(days=5) + timedelta(hours=10)
+    gateway.return_subtype = None
+
+    assert await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
+
+    (run,) = (
+        await db[RUNS]
+        .find({"seller_id": PILOT, "authorization_id": YEAR_HISTORY_AUTHORIZATION})
+        .to_list(None)
+    )
+    assert (run["state"], run.get("failure_reason")) == ("completed", None)
+    assert run["end"] == oldest
+    claim = await db.claims.find_one({"_id": f"55{PILOT[-4:]}01"})
+    assert claim["returned_quantity"] == 2 and claim["productive"] is True
+    assert "return_subtype" not in claim
+    # Certified once, and the renewal recomputes the same facts from the rows.
+    (certificate,) = (
+        await db[CERTIFICATES].find({"seller_id": PILOT, "date_to": oldest}).to_list(None)
+    )
+    assert certificate["date_from"] == run["start"]
+    facts = await current_certificate_facts(db, PILOT, run["start"], oldest)
+    assert facts["certified_count"] == 1
+    assert facts["current_read_model_fingerprint"] == certificate["current_read_model_fingerprint"]
+    await select_covering_proofs(db, PILOT, run["start"], oldest, datetime.now(UTC))
+    # The walk goes on from the new edge.
+    status = await year_history_status(db, PILOT, datetime.now(UTC))
+    assert status["sources"]["devoluciones"]["edge"] == run["start"].isoformat()
+    assert "retrying" not in status["sources"]["devoluciones"]
 
 
 async def _live_markers(db: Any, seller_id: str, now: datetime) -> None:

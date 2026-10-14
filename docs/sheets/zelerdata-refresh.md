@@ -366,6 +366,24 @@ and about 35 checks raise it. The runs validator must allow the field before
 it is stored (applying it is a separate production step). Until then, the run
 fails exactly as before and the reason is only in the log.
 
+##### A return without a subtype (2026-10-14)
+
+With that code, the pilot's window of 2026-05-12 to 05-22 failed a third time
+with `return_subtype_required`: Mercado Libre answered one of its v2 returns
+without a `subtype`. The claim model, the `claims` validator and the
+projection already kept the subtype optional, and no reader uses it.
+DEVOLUCIONES counts the return's order row (`return_quantity`), which is still
+required, unique and a positive integer. Only the hydrated source proof
+required the subtype, so the window could never close, in any run kind.
+
+The proof now takes the subtype when present and `null` otherwise. A present
+subtype keeps its exact value, so the fingerprints of certificates already
+published do not change. A subtype that appears or changes later still
+changes the fingerprint that revalidation and renewal compare. The other
+return fields the proof requires (`id`, `status`, `last_updated`) and the
+claim's `claim_version` and `last_updated` stay required. A window that one
+of them blocks names it in `failure_reason`.
+
 #### Initial coverage for a new seller (2026-10-12)
 
 Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage
@@ -844,6 +862,17 @@ replaced in the next free cycle (its 15-minute delay has long passed).
 `test_a_question_portion_the_source_cannot_complete_stops_at_an_honest_edge`).
 The questions source counts as covered once the target passes its edge, at
 the latest on 2026-10-20 for the 2025-10-18 23:00 edge.
+
+**The 2026-05-12 window (2026-10-14).** It kept failing after the fix above:
+three runs, the last at 00:06 UTC with `return_subtype_required` (see "A return
+without a subtype"). Once the proof accepts it, the next free cycle after the
+6-hour retry delay replaces it and the walk continues from 2026-05-12. No
+operator step: failed runs and prepared windows stay as they are. Skipping a
+window that can never be proven, leaving a declared gap, is not done.
+Certificates must join without a gap for `select_covering_proofs`, so every
+range across the gap, and the year itself, would stay unavailable. A stuck
+window costs at most four attempts a day and now names its check, so the
+check gets fixed instead.
 
 ### Switch and verification
 

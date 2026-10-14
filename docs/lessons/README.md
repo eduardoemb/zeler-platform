@@ -995,6 +995,10 @@ repeat failures, and promote stable knowledge to its proper operational form.
   (included 2026-10-13) walks questions and DEVOLUCIONES only, since its
   orders are already proven, and a portion never starts before the end of an
   older proof below a gap, so old proofs are joined, not read again.
+  A failed window logs and keeps on its run a `failure_reason` naming the
+  check. A proof requires only what the source's own model keeps required:
+  a v2 return without a subtype is proven, and a present subtype keeps its
+  fingerprint.
 - failed path: Reusing the question recovery's live union would make every
   15-minute sweep re-read the whole year. An exhausted local quota defers a
   range without an attempt, so a portion too large for the deadline restarts
@@ -1011,19 +1015,30 @@ repeat failures, and promote stable knowledge to its proper operational form.
   53 times in a day and never halved; and with only the admission day in a
   year run's identity, one window that failed at 03:06 held DEVOLUCIONES for
   the rest of the UTC day. Halving back to a whole span after a proven half
-  failed about twice as many portions as narrowing to the rest.
+  failed about twice as many portions as narrowing to the rest. The
+  2026-05-12 window then failed three times with only
+  `DevolucionesReadModelVerificationError`, which about 35 checks raise; once
+  it carried a reason, production named `return_subtype_required`. The
+  projection and the claim model kept the subtype optional, but the hydrated
+  source proof required it, so the window could never close. Skipping such a
+  window with a declared gap was rejected: certificates must join, so the year
+  would stay unavailable across it.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
   (new seller served beside the walking pilot, the pilot with production
   edges walked once across a restart into two workers with its plan and
   pending legacy scan untouched, failed portion halved while another seller
   continues, a failed window left prepared replaced once with no duplicate
   certificate, a question hour the source refuses narrowed to and retried at
-  most four times a day, switch off for both),
+  most four times a day, switch off for both, a window holding a return
+  without a subtype certified and renewed),
   `modules/sheets/tests/test_year_history.py`,
   `modules/sheets/tests/test_devoluciones_year_history.py`,
+  `modules/sheets/tests/test_devoluciones_failure_reason.py`,
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
   duration from code, "What a failure costs"). Walk observed in production on
-  2026-10-13 up to both stalls; the fix is not yet observed there.
+  2026-10-13 up to both stalls. Replacement runs of the failed window and
+  `failure_reason` observed there on 2026-10-13/14 (third run, 00:06 UTC,
+  `return_subtype_required`); the subtype fix is not yet observed there.
 - status: active
 
 ### L-057 — Start a controlled-clock test at the UTC day's beginning when it spans an hour
