@@ -2205,7 +2205,7 @@ async def _fetch_source_order(
     absolute_deadline: float | None,
     monotonic: Callable[[], float],
     heartbeat: Any,
-) -> Mapping[str, Any]:
+) -> dict[str, Any]:
     await _before_source_attempt(
         "order_detail",
         recorder=recorder,
