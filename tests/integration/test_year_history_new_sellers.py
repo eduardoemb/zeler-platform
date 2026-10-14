@@ -109,6 +109,9 @@ class YearGateway:
         self.returns: dict[str, datetime] = {}
         # Mercado Libre answers some v2 returns without a subtype (2026-10-14).
         self.return_subtype: str | None = "return_total"
+        # When set, the old claim is a closed mediation with these players whose
+        # v2 returns answer Mercado Libre's own 404 (2026-10-14).
+        self.mediation_players: list[dict[str, Any]] | None = None
         settled = now - timedelta(hours=3)
         for number, seller_id in enumerate(sellers, start=1):
             suffix = seller_id[-4:]
@@ -196,7 +199,7 @@ class YearGateway:
                 "id": claim_id,
                 "date_created": created,
                 "last_updated": created,
-                "type": "returns",
+                "type": "returns" if self.mediation_players is None else "mediations",
                 "status": "closed",
             }
             rows = [row] if start <= returned < end else []
@@ -218,6 +221,12 @@ class YearGateway:
                     }
                 ],
             }
+        if path.endswith("/returns") and self.mediation_players is not None:
+            raise httpx.HTTPStatusError(
+                "not found",
+                request=httpx.Request("GET", "https://gateway.test" + path),
+                response=httpx.Response(404, headers={"X-Zeler-Upstream-Attempts": "1"}),
+            )
         if path.endswith("/returns"):
             return {
                 "id": f"RETURN-{claim_id}",
@@ -233,6 +242,19 @@ class YearGateway:
                         "total_quantity": 2,
                     }
                 ],
+            }
+        if self.mediation_players is not None:
+            return {
+                "id": claim_id,
+                "claim_version": 1,
+                "date_created": created,
+                "last_updated": created,
+                "order_id": order_id,
+                "status": "closed",
+                "stage": "dispute",
+                "type": "mediations",
+                "players": self.mediation_players,
+                "related_entities": [],
             }
         return {
             "id": claim_id,
@@ -1021,6 +1043,95 @@ async def test_a_year_window_holding_a_return_without_subtype_certifies_and_the_
     await select_covering_proofs(db, PILOT, run["start"], oldest, datetime.now(UTC))
     # The walk goes on from the new edge.
     status = await year_history_status(db, PILOT, datetime.now(UTC))
+    assert status["sources"]["devoluciones"]["edge"] == run["start"].isoformat()
+    assert "retrying" not in status["sources"]["devoluciones"]
+
+
+@pytest.mark.parametrize(
+    ("players", "failure_reason"),
+    [
+        ([{"user_id": 90001, "role": "complainant", "type": "buyer"}], None),
+        (
+            [
+                {"user_id": 90001, "role": "complainant", "type": "buyer"},
+                {"user_id": 1, "role": "respondent", "type": "seller"},
+            ],
+            "safe_404_seller_respondent_conflict",
+        ),
+    ],
+    ids=("seller-not-listed", "another-seller-responds"),
+)
+@pytest.mark.asyncio
+async def test_a_year_window_holding_a_closed_mediation_whose_players_omit_the_seller(
+    year_db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    players: list[dict[str, Any]],
+    failure_reason: str | None,
+) -> None:
+    """Production, 2026-10-14: the pilot's year window of 2026-02-11 to 02-21
+    failed with ``safe_404_seller_respondent_unproven``.
+
+    One closed mediation's v2 returns answer Mercado Libre's own 404 and it
+    carries no return evidence, but its players do not name the seller as the
+    one respondent. The seller's own order for that claim proves it is the
+    seller's, so the 404 excludes it; players naming another respondent still
+    refuse it.
+    """
+    from infra.operations import zelerdata_read_model_reconcile as reconcile
+
+    from zeler_sheets.devoluciones_reconciliation import current_certificate_facts
+    from zeler_sheets.devoluciones_runner import (
+        YEAR_HISTORY_AUTHORIZATION,
+        advance_year_history_devoluciones,
+    )
+    from zeler_sheets.formulas.seller_scope import EligibleSellerGate
+    from zeler_sheets.formulas.year_history import year_history_status, year_history_target
+
+    db = year_db
+    now = datetime.now(UTC).replace(microsecond=datetime.now(UTC).microsecond // 1000 * 1000)
+    gateway = YearGateway(
+        now=now, sellers=(PILOT,), first=year_history_target(now) - timedelta(days=40)
+    )
+    monkeypatch.setattr(
+        reconcile,
+        "create_runtime_historical_meli_gateways",
+        lambda: SimpleNamespace(order_detail_gateway=gateway),
+    )
+    await _paused_pilot(db, gateway, now)
+    await _link(db, PILOT)
+    _enable_all_mode(monkeypatch)
+    oldest = (await db[CERTIFICATES].find_one({"seller_id": PILOT}, sort=[("date_from", 1)]))[
+        "date_from"
+    ]
+    certificates_before = await db[CERTIFICATES].count_documents({"seller_id": PILOT})
+    gateway.returns[PILOT] = oldest - timedelta(days=5) + timedelta(hours=10)
+    gateway.mediation_players = players
+    gateway.calls.clear()
+
+    await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
+
+    (run,) = (
+        await db[RUNS]
+        .find({"seller_id": PILOT, "authorization_id": YEAR_HISTORY_AUTHORIZATION})
+        .to_list(None)
+    )
+    assert await db.claims.find_one({"_id": f"55{PILOT[-4:]}01"}) is None
+    status = await year_history_status(db, PILOT, datetime.now(UTC))
+    if failure_reason is not None:
+        assert (run["state"], run.get("failure_reason")) == ("failed", failure_reason)
+        assert await db[CERTIFICATES].count_documents({"seller_id": PILOT}) == certificates_before
+        assert status["sources"]["devoluciones"]["edge"] == oldest.isoformat()
+        return
+    assert (run["state"], run.get("failure_reason")) == ("completed", None)
+    assert (PILOT, f"/orders/20{PILOT[-4:]}01") in gateway.calls
+    (certificate,) = (
+        await db[CERTIFICATES].find({"seller_id": PILOT, "date_to": oldest}).to_list(None)
+    )
+    assert certificate["date_from"] == run["start"]
+    facts = await current_certificate_facts(db, PILOT, run["start"], oldest)
+    assert facts["certified_count"] == 0
+    assert facts["current_read_model_fingerprint"] == certificate["current_read_model_fingerprint"]
+    await select_covering_proofs(db, PILOT, run["start"], oldest, datetime.now(UTC))
     assert status["sources"]["devoluciones"]["edge"] == run["start"].isoformat()
     assert "retrying" not in status["sources"]["devoluciones"]
 

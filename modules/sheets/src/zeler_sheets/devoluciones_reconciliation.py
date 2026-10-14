@@ -1046,6 +1046,28 @@ async def collect_devoluciones_snapshot(
                     claim=claim,
                     seller_id=seller_id,
                 )
+                if refusal == "safe_404_seller_respondent_unproven":
+                    order_id = str(claim.get("order_id") or claim.get("resource_id")).strip()
+                    owner_order = await _fetch_source_order(
+                        source,
+                        seller_id=seller_id,
+                        order_id=order_id,
+                        recorder=recorder,
+                        absolute_deadline=absolute_deadline,
+                        monotonic=monotonic,
+                        heartbeat=heartbeat,
+                    )
+                    # Evidence only: this order is not a DEVOLUCIONES row.
+                    refusal = _authoritative_no_return_mediation_refusal(
+                        entry=entry,
+                        claim=claim,
+                        seller_id=seller_id,
+                        seller_order_proven=_order_proves_seller(
+                            owner_order, seller_id=seller_id, order_id=order_id
+                        ),
+                    )
+                    if refusal == "safe_404_seller_respondent_unproven":
+                        refusal = "safe_404_order_seller_unproven"
                 if refusal is None:
                     exclusions.append(
                         InventoryExclusionEvidence(
@@ -1107,33 +1129,15 @@ async def collect_devoluciones_snapshot(
             continue
         order = orders_by_id.get(order_id)
         if order is None:
-            await _before_source_attempt(
-                "order_detail",
+            order = await _fetch_source_order(
+                source,
+                seller_id=seller_id,
+                order_id=order_id,
                 recorder=recorder,
                 absolute_deadline=absolute_deadline,
                 monotonic=monotonic,
                 heartbeat=heartbeat,
             )
-            try:
-                order = await _bounded_source_call(
-                    source.get_order(seller_id=seller_id, order_id=order_id),
-                    absolute_deadline=absolute_deadline,
-                    monotonic=monotonic,
-                )
-            except SourceCallBudgetError:
-                raise
-            except Exception as exc:
-                source_failure = _private_focused_devoluciones_failure(exc)
-                _tag_private_focused_devoluciones_failure(
-                    exc,
-                    (
-                        _FocusedDevolucionesFailure.SOURCE
-                        if source_failure is _FocusedDevolucionesFailure.SOURCE
-                        else _FocusedDevolucionesFailure.ORDER
-                    ),
-                    source_stage=_FocusedSourceStage.ORDER_DETAIL,
-                )
-                raise
             orders_by_id[order_id] = dict(order)
         projections.append(
             build_claim_projection(
@@ -2091,12 +2095,18 @@ def _authoritative_no_return_mediation_refusal(
     entry: ClaimInventoryEntry,
     claim: Mapping[str, Any],
     seller_id: str,
+    seller_order_proven: bool = False,
 ) -> str | None:
     """The first check that keeps a v2 returns 404 from excluding this claim.
 
     ``None`` means the claim is a closed mediation proven to have no return,
     so the 404 excludes it. Otherwise a stable code safe to log and store:
     never identities or source text.
+
+    The seller is proven by its being the one respondent in ``players``, or,
+    when ``players`` names no other respondent or seller, by the seller's own
+    order for the claim (``seller_order_proven``). Mercado Libre answered a
+    closed mediation of 2026-02 whose players did not list the seller so.
     """
     claim_id = str(claim.get("id") or claim.get("_id") or "").strip()
     last_updated = str(claim.get("last_updated") or "").strip()
@@ -2135,6 +2145,20 @@ def _authoritative_no_return_mediation_refusal(
         if isinstance(players, list)
         else []
     )
+    seller_respondent_listed = len(seller_respondents) == 1 and str(
+        seller_respondents[0].get("user_id")
+    ) == str(seller_id)
+    other_party_named = players is not None and (
+        not isinstance(players, list)
+        or any(
+            not isinstance(player, Mapping)
+            or (
+                (player.get("role") == "respondent" or player.get("type") == "seller")
+                and str(player.get("user_id")) != str(seller_id)
+            )
+            for player in players
+        )
+    )
     checks = (
         ("inventory_not_mediation", entry.trusted_type == "mediations"),
         ("inventory_not_closed", entry.trusted_status in {"", "closed"}),
@@ -2153,11 +2177,8 @@ def _authoritative_no_return_mediation_refusal(
             item_id is None or (isinstance(item_id, str) and not item_id.strip()),
         ),
         ("related_return_present", related_return_absent),
-        (
-            "seller_respondent_unproven",
-            len(seller_respondents) == 1
-            and str(seller_respondents[0].get("user_id")) == str(seller_id),
-        ),
+        ("seller_respondent_conflict", seller_respondent_listed or not other_party_named),
+        ("seller_respondent_unproven", seller_respondent_listed or seller_order_proven),
         (
             "return_evidence_present",
             all(
@@ -2173,6 +2194,57 @@ def _authoritative_no_return_mediation_refusal(
         ),
     )
     return next((f"safe_404_{code}" for code, holds in checks if not holds), None)
+
+
+async def _fetch_source_order(
+    source: Any,
+    *,
+    seller_id: str,
+    order_id: str,
+    recorder: Any,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+    heartbeat: Any,
+) -> Mapping[str, Any]:
+    await _before_source_attempt(
+        "order_detail",
+        recorder=recorder,
+        absolute_deadline=absolute_deadline,
+        monotonic=monotonic,
+        heartbeat=heartbeat,
+    )
+    try:
+        return await _bounded_source_call(
+            source.get_order(seller_id=seller_id, order_id=order_id),
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+        )
+    except SourceCallBudgetError:
+        raise
+    except Exception as exc:
+        source_failure = _private_focused_devoluciones_failure(exc)
+        _tag_private_focused_devoluciones_failure(
+            exc,
+            (
+                _FocusedDevolucionesFailure.SOURCE
+                if source_failure is _FocusedDevolucionesFailure.SOURCE
+                else _FocusedDevolucionesFailure.ORDER
+            ),
+            source_stage=_FocusedSourceStage.ORDER_DETAIL,
+        )
+        raise
+
+
+def _order_proves_seller(order: Any, *, seller_id: str, order_id: str) -> bool:
+    """The seller's own order for the claim: same order, sold by this seller."""
+    if not isinstance(order, Mapping):
+        return False
+    seller = order.get("seller")
+    return (
+        str(order.get("id") or "").strip() == order_id
+        and isinstance(seller, Mapping)
+        and str(seller.get("id") or "").strip() == str(seller_id)
+    )
 
 
 def _validated_utc_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:

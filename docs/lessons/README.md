@@ -999,7 +999,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
   check. A proof requires only what the source's own model keeps required:
   a v2 return without a subtype is proven, and a present subtype keeps its
   fingerprint. A v2 returns 404 that the safe exclusion refuses names its
-  first refusing check (`safe_404_*`); the checks stay as strict as before.
+  first refusing check (`safe_404_*`). A closed mediation whose `players` do
+  not name the seller as the one respondent, and name no one else, is proven
+  the seller's by its own order (evidence only, outside the fingerprints).
 - failed path: Reusing the question recovery's live union would make every
   15-minute sweep re-read the whole year. An exhausted local quota defers a
   range without an attempt, so a portion too large for the deadline restarts
@@ -1027,7 +1029,10 @@ repeat failures, and promote stable knowledge to its proper operational form.
   failed three times with only `safe_404_precondition_failure`, which twelve
   checks share, and production keeps no copy of a claim it does not count, so
   the check could not be read from stored data; widening the exclusion without
-  it could hide a real return.
+  it could hide a real return. Once named, it was
+  `safe_404_seller_respondent_unproven`: the seller-respondent check was the
+  only ownership proof, and Mercado Libre's players for that old mediation did
+  not satisfy it.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
   (new seller served beside the walking pilot, the pilot with production
   edges walked once across a restart into two workers with its plan and
@@ -1039,13 +1044,16 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_year_history.py`,
   `modules/sheets/tests/test_devoluciones_year_history.py`,
   `modules/sheets/tests/test_devoluciones_failure_reason.py`,
-  `modules/sheets/tests/test_devoluciones_reconciliation.py` (each `safe_404_*`),
+  `modules/sheets/tests/test_devoluciones_reconciliation.py` (each `safe_404_*`,
+  the seller proven by its order), `tests/integration/test_year_history_new_sellers.py`
+  (a year window holding such a mediation certified; another respondent refused),
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
   duration from code, "What a failure costs"). Walk observed in production on
   2026-10-13 up to both stalls. Replacement runs of the failed window and
   `failure_reason` observed there on 2026-10-13/14 (third run, 00:06 UTC,
   `return_subtype_required`); the subtype fix then certified nine windows
-  (05-12 to 02-21). The `safe_404_*` reasons are not yet observed there.
+  (05-12 to 02-21). `safe_404_seller_respondent_unproven` observed there on
+  2026-10-14 17:19 UTC; the order proof is not yet observed there.
 - status: active
 
 ### L-057 — Start a controlled-clock test at the UTC day's beginning when it spans an hour

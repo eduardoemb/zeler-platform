@@ -1207,9 +1207,9 @@ async def test_authoritative_returns_404_excludes_only_closed_unlinked_mediation
         {"item_id": "MLA2"},
         {"status": "opened"},
         {"related_entities": [{"type": "return", "id": "RETURN-1"}]},
-        {"players": []},
+        {"players": [{"user_id": "999", "role": "respondent", "type": "seller"}]},
     ],
-    ids=("item-present", "not-closed", "return-linked", "seller-unproven"),
+    ids=("item-present", "not-closed", "return-linked", "another-seller-responds"),
 )
 @pytest.mark.asyncio
 async def test_authoritative_returns_404_fails_closed_when_mediation_invariants_are_unsafe(
@@ -1298,7 +1298,16 @@ async def test_authoritative_returns_404_fails_closed_on_contradictory_evidence(
         ({"resource_id": "2999"}, None, "safe_404_order_identity_conflict"),
         ({"item_id": "MLA2"}, None, "safe_404_item_identity_present"),
         ({"related_entities": [{"type": "return"}]}, None, "safe_404_related_return_present"),
-        ({"players": []}, None, "safe_404_seller_respondent_unproven"),
+        (
+            {"players": [{"user_id": "999", "role": "respondent", "type": "buyer"}]},
+            None,
+            "safe_404_seller_respondent_conflict",
+        ),
+        (
+            {"players": [{"user_id": "999", "role": "complainant", "type": "seller"}]},
+            None,
+            "safe_404_seller_respondent_conflict",
+        ),
         ({"returned_quantity": 1}, None, "safe_404_return_evidence_present"),
     ],
 )
@@ -1331,6 +1340,129 @@ async def test_authoritative_returns_404_names_the_check_that_refused_it(
         "failure_class": "safe_404_precondition_failure",
         "precondition_reason": reason,
     }
+
+
+# Production, 2026-10-14: the 2026-02-11 window's closed mediation passed every
+# check but ``safe_404_seller_respondent_unproven``. Players that do not name
+# the seller as the one respondent, without naming anyone else, are proven by
+# the seller's own order instead; that order is evidence, not a DEVOLUCIONES row.
+@pytest.mark.parametrize(
+    "players",
+    [
+        None,
+        [],
+        [{"user_id": 90001, "role": "complainant", "type": "buyer"}],
+        [{"user_id": 82453304, "role": "complainant", "type": "seller"}],
+        [
+            {"user_id": 82453304, "role": "respondent", "type": "seller"},
+            {"user_id": "82453304", "role": "respondent", "type": "seller"},
+        ],
+    ],
+    ids=("missing", "empty", "buyer-only", "seller-other-role", "seller-twice"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_proves_an_unlisted_seller_by_its_own_order(
+    players: list[dict[str, Any]] | None,
+) -> None:
+    source = GatewayReturns404Source()
+    mediation = source.claims["519988002"]
+    mediation.update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            "players": players,
+        }
+    )
+    if players is None:
+        mediation.pop("players")
+    baseline = GatewayReturns404Source()
+    baseline.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+        }
+    )
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source, seller_id="82453304", start=START, end=END
+    )
+    expected = await reconciliation_module.collect_devoluciones_snapshot(
+        source=baseline, seller_id="82453304", start=START, end=END
+    )
+
+    assert snapshot.exclusions[-1] == reconciliation_module.InventoryExclusionEvidence(
+        claim_id="519988002",
+        last_updated="2026-06-16T09:05:00.000Z",
+        reason=reconciliation_module.InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION,
+    )
+    assert ("order", "1999") in source.hydration_calls
+    assert ("order", "1999") not in baseline.hydration_calls
+    assert snapshot.read_model_fingerprint == expected.read_model_fingerprint
+    assert snapshot.exclusion_fingerprint == expected.exclusion_fingerprint
+    assert [str(order["id"]) for order in snapshot.orders] == ["2001"]
+
+
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_with_the_seller_listed_reads_no_order() -> None:
+    source = GatewayReturns404Source()
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            "players": [
+                {"user_id": 82453304, "role": "respondent", "type": "seller"},
+                {"user_id": 7, "role": "respondent", "type": "buyer"},
+            ],
+        }
+    )
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source, seller_id="82453304", start=START, end=END
+    )
+
+    assert snapshot.counters["excluded_authoritative_no_return_mediations"] == 1
+    assert ("order", "1999") not in source.hydration_calls
+
+
+@pytest.mark.parametrize(
+    "order",
+    [{"seller": {"id": 1}}, {"id": 2999}, {"seller": None}],
+    ids=("other-seller", "other-order", "no-seller"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_refuses_an_order_that_does_not_prove_the_seller(
+    order: dict[str, Any],
+) -> None:
+    source = GatewayReturns404Source()
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "closed",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            "players": [],
+        }
+    )
+    source.orders["1999"] = source.orders["1999"] | order
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == (
+        "safe_404_order_seller_unproven"
+    )
 
 
 @pytest.mark.asyncio

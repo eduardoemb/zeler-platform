@@ -398,11 +398,26 @@ now names the first check that refused, as `failure_reason` and as
 (`last_updated` differs from the search), `safe_404_claim_not_mediation`,
 `safe_404_claim_not_closed`, `safe_404_order_identity_not_numeric`,
 `safe_404_order_identity_conflict`, `safe_404_item_identity_present`,
-`safe_404_related_return_present`, `safe_404_seller_respondent_unproven`,
-`safe_404_return_evidence_present`. The checks themselves are unchanged: a 404
-never excludes a claim that may hold a return DEVOLUCIONES must count, so the
-window keeps failing, and the edge stays above it, until the named check shows
-whether that claim can be excluded safely.
+`safe_404_related_return_present`, `safe_404_seller_respondent_conflict`,
+`safe_404_seller_respondent_unproven` (or `safe_404_order_seller_unproven`,
+below), `safe_404_return_evidence_present`. A 404 never excludes a claim that
+may hold a return DEVOLUCIONES must count.
+
+Deployed at 16:28 UTC, the next retry named
+`safe_404_seller_respondent_unproven`: every check before it passed (closed
+mediation in the search and the detail, one numeric order, no item, no linked
+return), but its `players` did not name the seller as the one respondent.
+`players` only proves whose claim it is, so when it names no other respondent
+and no other seller, the claim is proven the seller's by its own order instead:
+one `GET /orders/{id}` with the seller's token, whose `id` is the claim's order
+and whose `seller.id` is the seller. That order is evidence only: it is not a
+DEVOLUCIONES row and does not change the read-model or exclusion fingerprints.
+It is the third detail call the candidate's budget already allows. Players that
+name another respondent or another seller refuse the 404
+(`safe_404_seller_respondent_conflict`), and an order that does not prove the
+seller refuses it as `safe_404_order_seller_unproven`. A claim whose players
+already name the seller reads no order, so certificates already published do
+not change. The other checks are unchanged.
 
 #### Initial coverage for a new seller (2026-10-12)
 
