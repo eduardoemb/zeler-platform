@@ -446,12 +446,38 @@ value is `absent`, and anything that is not a short lowercase token is
 `unrecognized`, so no identity or source text passes. They are only in the
 log, not on the run.
 
-The rejection is unchanged. An open mediation may still get a return, and its
-404 only says there is none yet, so it never excludes the claim. The window
-retries every 6 hours with the edge honestly above it; once the claim closes
-without a return, the next retry certifies the window and the walk goes on.
-If the log shows the search `opened` but the detail `closed` at the same
-`last_updated`, the search lags the detail, which is a separate decision.
+Deployed at 5bd1288, the retry at 20:49 UTC logged `opened` and `dispute` in
+both: the mediation is still open, nine months on, so waiting for it to close
+would hold the year at 2026-01-22 indefinitely.
+
+**Pending and watched (2026-10-15).** A year window now certifies such a
+mediation as pending instead of failing. Only a year window does it; the tail,
+intraday, initial and operator runs still refuse. The claim must be `opened`
+in the search and in the detail, Mercado Libre must answer its v2 returns with
+its own 404, and every other check of the safe exclusion must hold (identity
+and version, numeric order, no item, no linked return, no return evidence,
+the seller proven). Any other refusal is unchanged.
+
+- The claim is left out of the window like the closed case, with the
+  exclusion reason `pending_open_mediation`, which is part of the window's
+  source fingerprint. No DEVOLUCIONES row is written; nothing is hidden: today
+  Mercado Libre says it has no return.
+- It is visible as a count, never an identity:
+  `counters.pending_open_mediations` on the window (the `counters` object the
+  runs-windows validator already allows: no schema change and no validator to
+  apply), the log `zelerdata.devoluciones_pending_open_mediations`, and
+  `pending_open_mediations` under `devoluciones` in `--year-history`, the sum
+  over the windows whose certificates are current.
+- Certificate renewal reads no source, and the paused pilot gets no webhooks,
+  so the year walk watches it: 6 hours after a pending window's latest run, it
+  takes the cycle's window (before the walk, and also once the year is covered)
+  with a new run of the same range. Its certificate replaces the old one in the
+  same transaction (`retire_replaced_certificates`), so the range is never
+  without a proof. Still open: pending again, re-read 6 hours later. Closed
+  without a return: excluded as before, no longer pending. With a return: it is
+  written and counted in DEVOLUCIONES like any other. A failed re-read leaves
+  the old certificate in place and is tried again 6 hours later.
+- Cost: one window's calls (about 10) every 6 hours per pending window.
 
 #### Initial coverage for a new seller (2026-10-12)
 

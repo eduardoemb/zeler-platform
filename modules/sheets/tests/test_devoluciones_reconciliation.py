@@ -1408,6 +1408,89 @@ async def test_authoritative_returns_404_refusal_names_the_claim_state(
     assert not any("82453304" in value or "519988002" in value for value in diagnostic.values())
 
 
+# Production, 2026-10-15: that mediation was ``opened`` in ``dispute`` in both,
+# nine months on. A year window leaves such a mediation out as pending when
+# every other check holds; any other window, or any other check, still refuses.
+@pytest.mark.parametrize(
+    ("accept", "inventory_status", "claim_mutation", "reason"),
+    [
+        (True, "opened", {}, None),
+        (False, "opened", {}, "safe_404_inventory_not_closed"),
+        (True, "opened", {"status": "closed"}, "safe_404_inventory_not_closed"),
+        (True, None, {"status": "opened"}, "safe_404_claim_not_closed"),
+        (True, "opened", {"item_id": "MLA2"}, "safe_404_item_identity_present"),
+        (
+            True,
+            "opened",
+            {"related_entities": [{"type": "return"}]},
+            "safe_404_related_return_present",
+        ),
+        (True, "opened", {"returned_quantity": 1}, "safe_404_return_evidence_present"),
+        (
+            True,
+            "opened",
+            {"players": [{"user_id": "999", "role": "respondent", "type": "seller"}]},
+            "safe_404_seller_respondent_conflict",
+        ),
+    ],
+    ids=(
+        "pending",
+        "not-a-year-window",
+        "detail-closed",
+        "search-not-opened",
+        "item",
+        "related-return",
+        "return-evidence",
+        "another-seller",
+    ),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_leaves_an_open_mediation_pending_only_in_a_year_window(
+    accept: bool,
+    inventory_status: str | None,
+    claim_mutation: dict[str, Any],
+    reason: str | None,
+) -> None:
+    source = GatewayReturns404Source()
+    for response in source.responses:
+        response["data"][1]["status"] = inventory_status
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "status": "opened",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            **claim_mutation,
+        }
+    )
+
+    if reason is not None:
+        with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+            await reconciliation_module.collect_devoluciones_snapshot(
+                source=source,
+                seller_id="82453304",
+                start=START,
+                end=END,
+                accept_pending_open_mediations=accept,
+            )
+        assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
+        return
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source,
+        seller_id="82453304",
+        start=START,
+        end=END,
+        accept_pending_open_mediations=accept,
+    )
+    assert [(exclusion.claim_id, exclusion.reason.value) for exclusion in snapshot.exclusions] == [
+        ("519988002", "pending_open_mediation")
+    ]
+    assert snapshot.counters["pending_open_mediations"] == 1
+    assert "excluded_authoritative_no_return_mediations" not in snapshot.counters
+    assert "519988002" not in snapshot.expected_claim_ids
+
+
 # Production, 2026-10-14: the 2026-02-11 window's closed mediation passed every
 # check but ``safe_404_seller_respondent_unproven``. Players that do not name
 # the seller as the one respondent, without naming anyone else, are proven by

@@ -1004,8 +1004,11 @@ repeat failures, and promote stable knowledge to its proper operational form.
   the seller's by the resource the claim names (`resource`): its order, or
   its shipment's `sender_id` (evidence only, outside the fingerprints).
   A refused 404 also logs the claim's status and stage from the search and
-  the detail (bounded Mercado Libre tokens); an open mediation stays refused
-  until it closes, and the 6-hour retry then certifies its window.
+  the detail (bounded Mercado Libre tokens). A year window certifies an
+  `opened` mediation that passes every other check as pending
+  (`counters.pending_open_mediations`, log and `--year-history`), and reads
+  that window again every 6 hours; the new certificate replaces the old one in
+  its transaction until the mediation closes or its return is counted.
 - failed path: Reusing the question recovery's live union would make every
   15-minute sweep re-read the whole year. An exhausted local quota defers a
   range without an attempt, so a portion too large for the deadline restarts
@@ -1043,6 +1046,10 @@ repeat failures, and promote stable knowledge to its proper operational form.
   failed three times on 2026-10-15 with `safe_404_inventory_not_closed`: the
   search did not call that mediation closed, and with no stored copy nothing
   said whether it was open; excluding it on a guess could hide a return.
+  Once logged it was `opened` in `dispute` in both, nine months on: waiting
+  for it to close would hold the year indefinitely. Certificate renewal
+  reads no source and the paused pilot gets no webhooks, so only re-reading
+  the window can see its return appear.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
   (new seller served beside the walking pilot, the pilot with production
   edges walked once across a restart into two workers with its plan and
@@ -1057,8 +1064,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_devoluciones_reconciliation.py` (each `safe_404_*`,
   the seller proven by its order), `tests/integration/test_year_history_new_sellers.py`
   (a year window holding such a mediation certified, by order or shipment;
-  another respondent or resource refused; an open mediation refused with its
-  state logged, then certified once it closes),
+  another respondent or resource refused; an open mediation certified as
+  pending, then re-read still open, closed, or with its return counted, every
+  certificate renewing),
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
   duration from code, "What a failure costs"). Walk observed in production on
   2026-10-13 up to both stalls. Replacement runs of the failed window and
@@ -1067,6 +1075,7 @@ repeat failures, and promote stable knowledge to its proper operational form.
   (05-12 to 02-21). `safe_404_seller_respondent_unproven` observed there on
   2026-10-14 17:19 UTC, and `order_failure` at 23:48 UTC (83b10ec); the
   shipment proof certified 02-11 to 01-22 there on 2026-10-15; the state log
+  named `opened`/`dispute` there at 20:49 UTC (5bd1288); pending and watched
   is not yet observed there.
 - status: active
 

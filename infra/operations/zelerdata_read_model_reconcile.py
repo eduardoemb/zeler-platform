@@ -1235,13 +1235,15 @@ async def execute_devoluciones_quota_window(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     quarantine_legacy_claims: bool = False,
     exclude_forbidden_claim_details: bool = False,
+    accept_pending_open_mediations: bool = False,
 ) -> dict[str, Any]:
     """Write and verify one exact quota window under an existing root lease.
 
     Only the ordinary tail sets ``quarantine_legacy_claims`` and
     ``exclude_forbidden_claim_details``. Operator and pilot runs keep failing
     closed on any non-canonical row in their range and on any claim detail
-    Mercado Libre refuses.
+    Mercado Libre refuses. Only a year window sets
+    ``accept_pending_open_mediations``.
     """
     from zeler_sheets.devoluciones_reconciliation import (
         MAX_SNAPSHOT_PHYSICAL_ATTEMPTS,
@@ -1285,6 +1287,7 @@ async def execute_devoluciones_quota_window(
         monotonic=monotonic,
         returns_pacer=returns_pacer,
         exclude_forbidden_claim_details=exclude_forbidden_claim_details,
+        accept_pending_open_mediations=accept_pending_open_mediations,
         clock=now,
     )
     window_operation = replace(operation, source_fingerprint=snapshot.source_fingerprint)
@@ -1330,6 +1333,7 @@ async def execute_devoluciones_quota_window(
             returns_pacer=returns_pacer,
             now=now,
             exclude_forbidden_claim_details=exclude_forbidden_claim_details,
+            accept_pending_open_mediations=accept_pending_open_mediations,
         )
         quarantined = 0
         if quarantine_legacy_claims:
@@ -1374,6 +1378,14 @@ async def execute_devoluciones_quota_window(
     if forbidden:
         proof["excluded_claim_detail_forbidden"] = len(forbidden)
         proof["forbidden_claim_ids"] = forbidden
+    # An open mediation left out as pending: its window is re-read until it
+    # closes or gets a return. A count only, never its identity.
+    pending = sum(
+        exclusion.reason is InventoryExclusionReason.PENDING_OPEN_MEDIATION
+        for exclusion in snapshot.exclusions
+    )
+    if pending:
+        proof["pending_open_mediations"] = pending
     return proof
 
 
@@ -1476,10 +1488,15 @@ async def advance_devoluciones_quota_run(
         aggregate_proof.update(
             {key: str(proof[key]) for key in ("source_fingerprint", "read_model_fingerprint")}
         )
-        excluded = proof.get("excluded_claim_detail_forbidden")
-        if isinstance(excluded, int) and excluded > 0:
-            # Durable trace of a listed claim the window could not read.
-            aggregate_proof["counters"] = {"excluded_claim_detail_forbidden": excluded}
+        counters = {
+            key: proof[key]
+            for key in ("excluded_claim_detail_forbidden", "pending_open_mediations")
+            # Durable trace of a listed claim the window could not read, or
+            # of an open mediation it left out as pending.
+            if isinstance(proof.get(key), int) and proof[key] > 0
+        }
+        if counters:
+            aggregate_proof["counters"] = counters
         await db["sheets_devoluciones_run_windows"].update_one(
             {"_id": window["_id"]},
             {"$set": {"state": "completed", **aggregate_proof, "updated_at": current}},

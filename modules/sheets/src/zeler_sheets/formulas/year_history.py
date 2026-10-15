@@ -113,7 +113,10 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
     ``retrying``; its edge stays where the proofs end, never covered.
     """
     from zeler_platform_core.devoluciones_certificates import CERTIFICATES, coverage_control
-    from zeler_sheets.devoluciones_runner import year_history_retrying
+    from zeler_sheets.devoluciones_runner import (
+        year_history_pending_windows,
+        year_history_retrying,
+    )
 
     target = year_history_target(now)
     sources: dict[str, dict[str, Any]] = {}
@@ -145,6 +148,17 @@ async def year_history_status(db: Any, seller_id: str, now: datetime) -> dict[st
     window = await year_history_retrying(db, seller_id, oldest, now=now)
     if window is not None:
         sources["devoluciones"]["retrying"] = window
+    if control.get("coverage_mode") == "active":
+        # Open mediations certified windows leave out as pending, watched
+        # until they close or get a return: a count, never an identity.
+        pending = sum(
+            int(window["counters"]["pending_open_mediations"])
+            for window in await year_history_pending_windows(
+                db, seller_id, control.get("coverage_epoch")
+            )
+        )
+        if pending:
+            sources["devoluciones"]["pending_open_mediations"] = pending
     portions: dict[str, int] = {}
     async for job in db["sheets_formula_recovery_jobs"].find(
         {"seller_id": seller_id, "year_history": True}, {"state": 1}

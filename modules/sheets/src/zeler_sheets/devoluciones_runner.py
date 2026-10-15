@@ -1217,6 +1217,9 @@ YEAR_HISTORY_RETRY_AFTER: tuple[timedelta, ...] = (
     timedelta(hours=1),
     timedelta(hours=6),
 )
+# A certified year window that left an open mediation out as pending is read
+# again this long after its latest run, until it closes or gets a return.
+YEAR_HISTORY_PENDING_RECHECK_AFTER = timedelta(hours=6)
 AUTOMATIC_AUTHORIZATIONS: frozenset[str] = frozenset(
     {
         ORDINARY_TAIL_AUTHORIZATION,
@@ -1665,16 +1668,67 @@ def _year_run_in_time(run: Mapping[str, Any], current: datetime) -> bool:
 
 def year_history_retry_at(runs: list[dict[str, Any]]) -> datetime:
     """When the next run of a window may be admitted, after its latest run ended."""
-    latest = runs[0]
-    stamps = [latest.get("created_at"), latest.get("updated_at")]
-    if latest.get("state") in ADVANCEABLE_RUN_STATES:
-        # Abandoned in time, it ended at its deadline.
-        stamps.append(latest.get("expires_at"))
-    ended = max(
+    # Abandoned in time, a run ended at its deadline.
+    ended = _year_run_ended(runs[0])
+    return ended + YEAR_HISTORY_RETRY_AFTER[min(len(runs), len(YEAR_HISTORY_RETRY_AFTER)) - 1]
+
+
+async def year_history_pending_windows(
+    db: Any, seller_id: str, coverage_epoch: Any
+) -> list[dict[str, Any]]:
+    """Certified windows that left an open mediation out as pending, oldest first."""
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+
+    run_ids = [
+        row["source_identity"]
+        async for row in db[CERTIFICATES].find(
+            {"seller_id": seller_id, "coverage_epoch": coverage_epoch, "kind": "quota_run"},
+            {"source_identity": 1},
+        )
+    ]
+    if not run_ids:
+        return []
+    windows: list[dict[str, Any]] = (
+        await db["sheets_devoluciones_run_windows"]
+        .find(
+            {"run_id": {"$in": run_ids}, "counters.pending_open_mediations": {"$gt": 0}},
+            {"start": 1, "end": 1, "counters": 1},
+        )
+        .sort([("start", 1)])
+        .to_list(length=None)
+    )
+    return windows
+
+
+async def year_history_pending_recheck(
+    db: Any, seller_id: str, coverage_epoch: Any, *, now: datetime
+) -> tuple[datetime, datetime] | None:
+    """The pending window to read again now, if any.
+
+    Its latest run is still going, or ended at least
+    ``YEAR_HISTORY_PENDING_RECHECK_AFTER`` ago. The new run publishes a
+    certificate of the same range, which replaces the old one in the same
+    transaction: the mediation, still open, closed, or with a return counted.
+    """
+    current = _onboarding_utc(now)
+    for window in await year_history_pending_windows(db, seller_id, coverage_epoch):
+        start, end = _onboarding_utc(window["start"]), _onboarding_utc(window["end"])
+        runs = await year_history_window_runs(db, seller_id, end)
+        if runs and _year_run_in_time(runs[0], current):
+            return start, end
+        if not runs or current >= _year_run_ended(runs[0]) + YEAR_HISTORY_PENDING_RECHECK_AFTER:
+            return start, end
+    return None
+
+
+def _year_run_ended(run: Mapping[str, Any]) -> datetime:
+    stamps = [run.get("created_at"), run.get("updated_at")]
+    if run.get("state") in ADVANCEABLE_RUN_STATES:
+        stamps.append(run.get("expires_at"))
+    return max(
         (_onboarding_utc(stamp) for stamp in stamps if isinstance(stamp, datetime)),
         default=datetime.min.replace(tzinfo=UTC),
     )
-    return ended + YEAR_HISTORY_RETRY_AFTER[min(len(runs), len(YEAR_HISTORY_RETRY_AFTER)) - 1]
 
 
 async def year_history_retrying(
@@ -1728,24 +1782,32 @@ async def advance_year_history_devoluciones(
         return False
     if not await eligible(seller_id):
         return False
-    oldest = await db[CERTIFICATES].find_one(
-        {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
-        {"date_from": 1},
-        sort=[("date_from", 1)],
+    # A watched window takes the cycle's turn before the walk goes on, and
+    # is still read once the year is covered.
+    pending = await year_history_pending_recheck(
+        db, seller_id, control["coverage_epoch"], now=current
     )
-    bounds = year_history_bounds(
-        oldest.get("date_from") if isinstance(oldest, Mapping) else None, now=current
-    )
-    if bounds is None:
-        return False
-    start, end = bounds
+    if pending is not None:
+        start, end = pending
+    else:
+        oldest = await db[CERTIFICATES].find_one(
+            {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
+            {"date_from": 1},
+            sort=[("date_from", 1)],
+        )
+        bounds = year_history_bounds(
+            oldest.get("date_from") if isinstance(oldest, Mapping) else None, now=current
+        )
+        if bounds is None:
+            return False
+        start, end = bounds
     runs = await year_history_window_runs(db, seller_id, end)
     if runs and _year_run_in_time(runs[0], current):
         # Still in time, after a restart too: the same run goes on.
         run: Mapping[str, Any] | None = runs[0]
         run_id = str(runs[0]["_id"])
     else:
-        if runs and current < year_history_retry_at(runs):
+        if pending is None and runs and current < year_history_retry_at(runs):
             # Failed or abandoned: its replacement waits, and the cycle's
             # window stays free for nothing.
             return False
@@ -1851,6 +1913,9 @@ async def advance_ordinary_devoluciones_tail(
                 now=clock,
                 quarantine_legacy_claims=True,
                 exclude_forbidden_claim_details=True,
+                # An open mediation a year window leaves out stays pending and
+                # watched until it closes or gets a return (2026-10-15).
+                accept_pending_open_mediations=kind == "year_history",
             )
         except HistoryPolicyWaitError:
             raise
@@ -1887,6 +1952,14 @@ async def advance_ordinary_devoluciones_tail(
                 window_index=window.get("index"),
                 count=proof["excluded_claim_detail_forbidden"],
                 claim_ids=proof.get("forbidden_claim_ids"),
+            )
+        if proof.get("pending_open_mediations"):
+            logger.warning(
+                "zelerdata.devoluciones_pending_open_mediations",
+                seller_id=seller_id,
+                run_id=run_id,
+                window_index=window.get("index"),
+                pending_open_mediations=proof["pending_open_mediations"],
             )
         return proof
 

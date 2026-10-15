@@ -151,6 +151,7 @@ class InventoryExclusionReason(StrEnum):
     LOW_COST_NO_AUTHORITATIVE_ITEM_IDENTITY = "low_cost_no_authoritative_item_identity"
     OUTSIDE_REQUESTED_RANGE = "outside_requested_range"
     CLAIM_DETAIL_FORBIDDEN = "claim_detail_forbidden"
+    PENDING_OPEN_MEDIATION = "pending_open_mediation"
 
 
 class ClaimInventoryError(RuntimeError):
@@ -921,12 +922,16 @@ async def collect_devoluciones_snapshot(
     returns_pacer: ReturnsAttemptPacer | None = None,
     heartbeat: Callable[[], Awaitable[None]] | None = None,
     exclude_forbidden_claim_details: bool = False,
+    accept_pending_open_mediations: bool = False,
     clock: Callable[[], datetime] | None = None,
 ) -> CollectedDevolucionesSnapshot:
     """Collect one window; only the ordinary tail excludes forbidden claim details.
 
     ``clock`` stamps ``captured_at`` when the collection ends; the executor
     passes the same clock it later checks the publication age against.
+    ``accept_pending_open_mediations`` (year windows only) lets a 404 leave an
+    open mediation out as pending when every other check holds; the year
+    walk re-reads that window until it closes or gets a return.
     """
     from zeler_sheets.claim_projection import (
         ReturnEvidenceDisposition,
@@ -1052,10 +1057,18 @@ async def collect_devoluciones_snapshot(
             except SourceCallBudgetError:
                 raise
             except AuthoritativeReturnsNotFoundError:
+                # An open mediation may still get a return: only a year window
+                # leaves it out, as pending and watched (2026-10-15).
+                pending = (
+                    accept_pending_open_mediations
+                    and entry.trusted_status == "opened"
+                    and _normalized_relevance_value(claim.get("status")) == "opened"
+                )
                 refusal = _authoritative_no_return_mediation_refusal(
                     entry=entry,
                     claim=claim,
                     seller_id=seller_id,
+                    open_accepted=pending,
                 )
                 if refusal == "safe_404_seller_respondent_unproven":
                     # Evidence only: the resource read is not a DEVOLUCIONES row.
@@ -1072,13 +1085,18 @@ async def collect_devoluciones_snapshot(
                         claim=claim,
                         seller_id=seller_id,
                         seller_owner_proven=True,
+                        open_accepted=pending,
                     )
                 if refusal is None:
                     exclusions.append(
                         InventoryExclusionEvidence(
                             claim_id=entry.claim_id,
                             last_updated=entry.last_updated,
-                            reason=InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION,
+                            reason=(
+                                InventoryExclusionReason.PENDING_OPEN_MEDIATION
+                                if pending
+                                else InventoryExclusionReason.AUTHORITATIVE_NO_RETURN_MEDIATION
+                            ),
                         )
                     )
                     excluded_by_authoritative_404 = True
@@ -1184,6 +1202,10 @@ async def collect_devoluciones_snapshot(
         exclusion.reason is InventoryExclusionReason.CLAIM_DETAIL_FORBIDDEN
         for exclusion in exclusions
     )
+    pending_open_mediations = sum(
+        exclusion.reason is InventoryExclusionReason.PENDING_OPEN_MEDIATION
+        for exclusion in exclusions
+    )
     return CollectedDevolucionesSnapshot(
         seller_id=str(seller_id),
         start=normalized_start,
@@ -1217,6 +1239,11 @@ async def collect_devoluciones_snapshot(
                 **(
                     {"excluded_claim_detail_forbidden": forbidden_detail_exclusions}
                     if forbidden_detail_exclusions
+                    else {}
+                ),
+                **(
+                    {"pending_open_mediations": pending_open_mediations}
+                    if pending_open_mediations
                     else {}
                 ),
                 **(
@@ -1259,6 +1286,7 @@ async def revalidate_devoluciones_snapshot(
     returns_pacer: ReturnsAttemptPacer | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
     exclude_forbidden_claim_details: bool = False,
+    accept_pending_open_mediations: bool = False,
 ) -> CollectedDevolucionesSnapshot:
     if recorder.total != 0:
         raise SourceCallBudgetError("publication revalidation requires a fresh snapshot ledger")
@@ -1289,6 +1317,7 @@ async def revalidate_devoluciones_snapshot(
         returns_pacer=returns_pacer,
         heartbeat=heartbeat,
         exclude_forbidden_claim_details=exclude_forbidden_claim_details,
+        accept_pending_open_mediations=accept_pending_open_mediations,
     )
     change = _revalidation_change(current=current, snapshot=snapshot)
     if change is not None:
@@ -1306,6 +1335,7 @@ _REVALIDATED_COUNTERS = (
     "excluded_low_cost_no_authoritative_item_identity",
     "excluded_outside_requested_range",
     "excluded_claim_detail_forbidden",
+    "pending_open_mediations",
 )
 
 
@@ -2100,8 +2130,12 @@ def _authoritative_no_return_mediation_refusal(
     claim: Mapping[str, Any],
     seller_id: str,
     seller_owner_proven: bool = False,
+    open_accepted: bool = False,
 ) -> str | None:
     """The first check that keeps a v2 returns 404 from excluding this claim.
+
+    ``open_accepted`` checks a mediation open in the search and the detail
+    (``opened``) instead of closed, with every other check unchanged.
 
     ``None`` means the claim is a closed mediation proven to have no return,
     so the 404 excludes it. Otherwise a stable code safe to log and store:
@@ -2166,11 +2200,20 @@ def _authoritative_no_return_mediation_refusal(
     )
     checks = (
         ("inventory_not_mediation", entry.trusted_type == "mediations"),
-        ("inventory_not_closed", entry.trusted_status in {"", "closed"}),
+        (
+            "inventory_not_closed",
+            entry.trusted_status == "opened"
+            if open_accepted
+            else entry.trusted_status in {"", "closed"},
+        ),
         ("claim_identity_differs", claim_id == entry.claim_id),
         ("claim_version_differs", last_updated == entry.last_updated),
         ("claim_not_mediation", str(claim.get("type") or "").strip().lower() == "mediations"),
-        ("claim_not_closed", str(claim.get("status") or "").strip().lower() == "closed"),
+        (
+            "claim_not_closed",
+            str(claim.get("status") or "").strip().lower()
+            == ("opened" if open_accepted else "closed"),
+        ),
         (
             "order_identity_not_numeric",
             bool(order_id)
@@ -2426,6 +2469,32 @@ async def publish_quota_certificate(
     )
     await publish_certificate(db, operation, document, session=session)
     await retire_superseded_intraday_certificates(db, document, session=session)
+    await retire_replaced_certificates(db, document, session=session)
+
+
+async def retire_replaced_certificates(
+    db: Any, certificate: Mapping[str, Any], *, session: Any
+) -> int:
+    """Remove older certificates of exactly this range, in its own transaction.
+
+    A year window holding a pending open mediation is read again, and its new
+    certificate covers the same range, so removing the old one together with
+    that publication never opens a gap. Run and window evidence stays.
+    """
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+
+    result = await db[CERTIFICATES].delete_many(
+        {
+            "seller_id": str(certificate["seller_id"]),
+            "kind": "quota_run",
+            "coverage_epoch": certificate["coverage_epoch"],
+            "_id": {"$ne": certificate["_id"]},
+            "date_from": certificate["date_from"],
+            "date_to": certificate["date_to"],
+        },
+        session=session,
+    )
+    return int(result.deleted_count)
 
 
 async def retire_superseded_intraday_certificates(
