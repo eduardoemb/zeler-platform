@@ -160,6 +160,7 @@ class ClaimInventoryError(RuntimeError):
         *,
         private_failure: _FocusedDevolucionesFailure | None = None,
         precondition_reason: str | None = None,
+        claim_state: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self._focused_devoluciones_private_failure = (
@@ -167,6 +168,8 @@ class ClaimInventoryError(RuntimeError):
         )
         # The safe-404 check that refused the exclusion; a stable code only.
         self.precondition_reason = precondition_reason
+        # Mercado Libre's status and stage of the refused claim, bounded tokens.
+        self.claim_state = dict(claim_state or {})
 
 
 class DevolucionesReadModelVerificationError(RuntimeError):
@@ -334,6 +337,7 @@ def _private_focused_devoluciones_diagnostic(exc: Exception) -> dict[str, str]:
         reason = getattr(exc, "precondition_reason", None)
         if isinstance(reason, str):
             diagnostic["precondition_reason"] = reason
+        diagnostic.update(getattr(exc, "claim_state", None) or {})
         return diagnostic
     if (
         failure is not _FocusedDevolucionesFailure.PARSER
@@ -1083,6 +1087,7 @@ async def collect_devoluciones_snapshot(
                         "v2 returns source_issue",
                         private_failure=_FocusedDevolucionesFailure.SAFE_404_PRECONDITION,
                         precondition_reason=refusal,
+                        claim_state=_refused_claim_state(entry=entry, claim=claim),
                     ) from None
                 break
             except Exception as exc:  # noqa: BLE001 - source exception text is unsafe evidence.
@@ -2194,6 +2199,29 @@ def _authoritative_no_return_mediation_refusal(
         ),
     )
     return next((f"safe_404_{code}" for code, holds in checks if not holds), None)
+
+
+def _refused_claim_state(*, entry: ClaimInventoryEntry, claim: Mapping[str, Any]) -> dict[str, str]:
+    """The search's and the detail's status and stage, safe to log.
+
+    Mercado Libre's own short values (``opened``, ``dispute``); anything else is
+    ``unrecognized`` and a missing value ``absent``, so no identity or source
+    text can pass. The 2026-01-12 window refused a 404 as
+    ``safe_404_inventory_not_closed`` with no copy of the claim to say why.
+    """
+
+    def token(value: Any) -> str:
+        text = _normalized_relevance_value(value)
+        if not text:
+            return "absent"
+        return text if re.fullmatch(r"[a-z][a-z_]{0,31}", text) else "unrecognized"
+
+    return {
+        "inventory_status": token(entry.source.get("status")),
+        "inventory_stage": token(entry.source.get("stage")),
+        "claim_status": token(claim.get("status")),
+        "claim_stage": token(claim.get("stage")),
+    }
 
 
 async def _fetch_source_detail(

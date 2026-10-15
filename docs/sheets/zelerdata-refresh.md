@@ -433,6 +433,26 @@ Mercado Libre's 404 for the resource is `safe_404_order_not_found` or
 `safe_404_order_seller_unproven` or `safe_404_shipment_seller_unproven`; any
 other error stays a source failure (`order_detail_*`).
 
+##### An open mediation's returns 404 (2026-10-15)
+
+With the shipment proof (c80f01f), the windows back to 2026-01-22 were
+certified, and 2026-01-12 to 01-22 failed three times with
+`safe_404_inventory_not_closed`: the claims search did not call the mediation
+closed. Production keeps no copy of a claim it does not count, so nothing said
+whether it was still open. The failure log now also names the claim's state,
+Mercado Libre's own short values, as `inventory_status` and `inventory_stage`
+(the search row) and `claim_status` and `claim_stage` (the detail); a missing
+value is `absent`, and anything that is not a short lowercase token is
+`unrecognized`, so no identity or source text passes. They are only in the
+log, not on the run.
+
+The rejection is unchanged. An open mediation may still get a return, and its
+404 only says there is none yet, so it never excludes the claim. The window
+retries every 6 hours with the edge honestly above it; once the claim closes
+without a return, the next retry certifies the window and the walk goes on.
+If the log shows the search `opened` but the detail `closed` at the same
+`last_updated`, the search lags the detail, which is a separate decision.
+
 #### Initial coverage for a new seller (2026-10-12)
 
 Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage

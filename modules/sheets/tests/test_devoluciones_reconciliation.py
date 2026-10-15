@@ -1336,10 +1336,76 @@ async def test_authoritative_returns_404_names_the_check_that_refused_it(
         )
 
     assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
+    claim = source.claims["519988002"]
     assert reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value) == {
         "failure_class": "safe_404_precondition_failure",
         "precondition_reason": reason,
+        "inventory_status": inventory_status or "absent",
+        "inventory_stage": "absent",
+        "claim_status": claim["status"],
+        "claim_stage": claim["stage"],
     }
+
+
+# Production, 2026-10-15: the pilot's 2026-01-12 window failed three times with
+# ``safe_404_inventory_not_closed``, and production keeps no copy of the claim,
+# so nothing said whether the search and the detail called it open. The refusal
+# now names both states and stages, Mercado Libre's own stable values, bounded
+# to a short token; never identities or source text. The rejection is unchanged.
+@pytest.mark.parametrize(
+    ("inventory", "detail", "expected"),
+    [
+        (
+            {"status": "opened", "stage": "dispute"},
+            {"status": "opened", "stage": "dispute"},
+            ("opened", "dispute", "opened", "dispute"),
+        ),
+        (
+            {"status": "opened", "stage": "claim"},
+            {"status": "closed", "stage": "dispute"},
+            ("opened", "claim", "closed", "dispute"),
+        ),
+        (
+            {"status": "Opened ", "stage": None},
+            {"status": "opened 82453304", "stage": "x" * 40},
+            ("opened", "absent", "unrecognized", "unrecognized"),
+        ),
+    ],
+    ids=("open-in-both", "search-open-detail-closed", "bounded"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_refusal_names_the_claim_state(
+    inventory: dict[str, Any], detail: dict[str, Any], expected: tuple[str, str, str, str]
+) -> None:
+    source = GatewayReturns404Source()
+    for response in source.responses:
+        response["data"][1].update(inventory)
+    source.claims["519988002"].update(
+        {
+            "type": "mediations",
+            "order_id": "1999",
+            "item_id": None,
+            "related_entities": [],
+            **detail,
+        }
+    )
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == (
+        "safe_404_inventory_not_closed"
+    )
+    diagnostic = reconciliation_module._private_focused_devoluciones_diagnostic(exc_info.value)
+    assert (
+        diagnostic["inventory_status"],
+        diagnostic["inventory_stage"],
+        diagnostic["claim_status"],
+        diagnostic["claim_stage"],
+    ) == expected
+    assert not any("82453304" in value or "519988002" in value for value in diagnostic.values())
 
 
 # Production, 2026-10-14: the 2026-02-11 window's closed mediation passed every

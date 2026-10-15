@@ -1003,6 +1003,9 @@ repeat failures, and promote stable knowledge to its proper operational form.
   not name the seller as the one respondent, and name no one else, is proven
   the seller's by the resource the claim names (`resource`): its order, or
   its shipment's `sender_id` (evidence only, outside the fingerprints).
+  A refused 404 also logs the claim's status and stage from the search and
+  the detail (bounded Mercado Libre tokens); an open mediation stays refused
+  until it closes, and the 6-hour retry then certifies its window.
 - failed path: Reusing the question recovery's live union would make every
   15-minute sweep re-read the whole year. An exhausted local quota defers a
   range without an attempt, so a portion too large for the deadline restarts
@@ -1036,7 +1039,10 @@ repeat failures, and promote stable knowledge to its proper operational form.
   not satisfy it. Proving it by the order then failed as an unhandled
   `order_failure`: the claim's `resource_id` was an 11-digit shipment, and
   `GET /orders/{id}` answered 404. Read `resource` before treating
-  `resource_id` as an order.
+  `resource_id` as an order. With the shipment proof, 2026-01-12 to 01-22
+  failed three times on 2026-10-15 with `safe_404_inventory_not_closed`: the
+  search did not call that mediation closed, and with no stored copy nothing
+  said whether it was open; excluding it on a guess could hide a return.
 - verification/source: `tests/integration/test_year_history_new_sellers.py`
   (new seller served beside the walking pilot, the pilot with production
   edges walked once across a restart into two workers with its plan and
@@ -1051,7 +1057,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `modules/sheets/tests/test_devoluciones_reconciliation.py` (each `safe_404_*`,
   the seller proven by its order), `tests/integration/test_year_history_new_sellers.py`
   (a year window holding such a mediation certified, by order or shipment;
-  another respondent or resource refused),
+  another respondent or resource refused; an open mediation refused with its
+  state logged, then certified once it closes),
   `docs/sheets/zelerdata-refresh.md` ("Twelve months of history"; cost and
   duration from code, "What a failure costs"). Walk observed in production on
   2026-10-13 up to both stalls. Replacement runs of the failed window and
@@ -1059,7 +1066,8 @@ repeat failures, and promote stable knowledge to its proper operational form.
   `return_subtype_required`); the subtype fix then certified nine windows
   (05-12 to 02-21). `safe_404_seller_respondent_unproven` observed there on
   2026-10-14 17:19 UTC, and `order_failure` at 23:48 UTC (83b10ec); the
-  shipment proof is not yet observed there.
+  shipment proof certified 02-11 to 01-22 there on 2026-10-15; the state log
+  is not yet observed there.
 - status: active
 
 ### L-057 — Start a controlled-clock test at the UTC day's beginning when it spans an hour
