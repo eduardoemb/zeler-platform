@@ -419,6 +419,20 @@ seller refuses it as `safe_404_order_seller_unproven`. A claim whose players
 already name the seller reads no order, so certificates already published do
 not change. The other checks are unchanged.
 
+Deployed at 83b10ec, the retry at 23:48 UTC failed with `order_failure`
+(`HTTPStatusError`): `GET /orders/{resource_id}` answered Mercado Libre's own
+404 for an 11-digit id, the format of a shipment, not an order. The claim
+names its resource in `resource`, so ownership is now proven by the resource
+the claim names: `order` (or a claim with `order_id`, or no `resource`) by
+the order's `seller.id`; `shipment` by `GET /shipments/{id}`, whose `id` is
+the claim's and whose `sender_id` (or `sender.id`) is the seller. The gateway
+already allows that path, and the read counts as the candidate's order detail.
+Any other resource refuses the 404 as `safe_404_owner_resource_unsupported`.
+Mercado Libre's 404 for the resource is `safe_404_order_not_found` or
+`safe_404_shipment_not_found`, a resource naming someone else is
+`safe_404_order_seller_unproven` or `safe_404_shipment_seller_unproven`; any
+other error stays a source failure (`order_detail_*`).
+
 #### Initial coverage for a new seller (2026-10-12)
 
 Until 2026-10-12 only the pilot advanced. A new seller's bootstrap claims stage

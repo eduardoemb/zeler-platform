@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import re
@@ -72,6 +73,12 @@ class GatewayDevolucionesSource:
         return await self._fetch(
             seller_id=seller_id,
             path=f"/orders/{_numeric_id(order_id, field='order_id')}",
+        )
+
+    async def get_shipment(self, *, seller_id: str, shipment_id: str) -> dict[str, Any]:
+        return await self._fetch(
+            seller_id=seller_id,
+            path=f"/shipments/{_numeric_id(shipment_id, field='shipment_id')}",
         )
 
 
@@ -1047,27 +1054,21 @@ async def collect_devoluciones_snapshot(
                     seller_id=seller_id,
                 )
                 if refusal == "safe_404_seller_respondent_unproven":
-                    order_id = str(claim.get("order_id") or claim.get("resource_id")).strip()
-                    owner_order = await _fetch_source_order(
+                    # Evidence only: the resource read is not a DEVOLUCIONES row.
+                    refusal = await _owner_resource_refusal(
                         source,
+                        claim=claim,
                         seller_id=seller_id,
-                        order_id=order_id,
                         recorder=recorder,
                         absolute_deadline=absolute_deadline,
                         monotonic=monotonic,
                         heartbeat=heartbeat,
-                    )
-                    # Evidence only: this order is not a DEVOLUCIONES row.
-                    refusal = _authoritative_no_return_mediation_refusal(
+                    ) or _authoritative_no_return_mediation_refusal(
                         entry=entry,
                         claim=claim,
                         seller_id=seller_id,
-                        seller_order_proven=_order_proves_seller(
-                            owner_order, seller_id=seller_id, order_id=order_id
-                        ),
+                        seller_owner_proven=True,
                     )
-                    if refusal == "safe_404_seller_respondent_unproven":
-                        refusal = "safe_404_order_seller_unproven"
                 if refusal is None:
                     exclusions.append(
                         InventoryExclusionEvidence(
@@ -1129,10 +1130,8 @@ async def collect_devoluciones_snapshot(
             continue
         order = orders_by_id.get(order_id)
         if order is None:
-            order = await _fetch_source_order(
-                source,
-                seller_id=seller_id,
-                order_id=order_id,
+            order = await _fetch_source_detail(
+                functools.partial(source.get_order, seller_id=seller_id, order_id=order_id),
                 recorder=recorder,
                 absolute_deadline=absolute_deadline,
                 monotonic=monotonic,
@@ -2095,7 +2094,7 @@ def _authoritative_no_return_mediation_refusal(
     entry: ClaimInventoryEntry,
     claim: Mapping[str, Any],
     seller_id: str,
-    seller_order_proven: bool = False,
+    seller_owner_proven: bool = False,
 ) -> str | None:
     """The first check that keeps a v2 returns 404 from excluding this claim.
 
@@ -2105,8 +2104,9 @@ def _authoritative_no_return_mediation_refusal(
 
     The seller is proven by its being the one respondent in ``players``, or,
     when ``players`` names no other respondent or seller, by the seller's own
-    order for the claim (``seller_order_proven``). Mercado Libre answered a
-    closed mediation of 2026-02 whose players did not list the seller so.
+    order or shipment for the claim (``seller_owner_proven``). Mercado Libre
+    answered a closed mediation of 2026-02 whose players did not list the
+    seller so, and whose resource was a shipment.
     """
     claim_id = str(claim.get("id") or claim.get("_id") or "").strip()
     last_updated = str(claim.get("last_updated") or "").strip()
@@ -2178,7 +2178,7 @@ def _authoritative_no_return_mediation_refusal(
         ),
         ("related_return_present", related_return_absent),
         ("seller_respondent_conflict", seller_respondent_listed or not other_party_named),
-        ("seller_respondent_unproven", seller_respondent_listed or seller_order_proven),
+        ("seller_respondent_unproven", seller_respondent_listed or seller_owner_proven),
         (
             "return_evidence_present",
             all(
@@ -2196,11 +2196,9 @@ def _authoritative_no_return_mediation_refusal(
     return next((f"safe_404_{code}" for code, holds in checks if not holds), None)
 
 
-async def _fetch_source_order(
-    source: Any,
+async def _fetch_source_detail(
+    read: Callable[[], Awaitable[dict[str, Any]]],
     *,
-    seller_id: str,
-    order_id: str,
     recorder: Any,
     absolute_deadline: float | None,
     monotonic: Callable[[], float],
@@ -2215,9 +2213,7 @@ async def _fetch_source_order(
     )
     try:
         return await _bounded_source_call(
-            source.get_order(seller_id=seller_id, order_id=order_id),
-            absolute_deadline=absolute_deadline,
-            monotonic=monotonic,
+            read(), absolute_deadline=absolute_deadline, monotonic=monotonic
         )
     except SourceCallBudgetError:
         raise
@@ -2235,15 +2231,71 @@ async def _fetch_source_order(
         raise
 
 
-def _order_proves_seller(order: Any, *, seller_id: str, order_id: str) -> bool:
-    """The seller's own order for the claim: same order, sold by this seller."""
-    if not isinstance(order, Mapping):
+async def _owner_resource_refusal(
+    source: Any,
+    *,
+    claim: Mapping[str, Any],
+    seller_id: str,
+    recorder: Any,
+    absolute_deadline: float | None,
+    monotonic: Callable[[], float],
+    heartbeat: Any,
+) -> str | None:
+    """Prove the claim is the seller's by the resource it names, or say why not.
+
+    ``None`` when the seller's own order (``resource`` ``order``, or an
+    ``order_id``) or shipment (``resource`` ``shipment``: its 11-digit id is no
+    order) names this seller. Mercado Libre's 404 for that resource is a stable
+    code, not a source failure; any other error stays a source failure.
+    """
+    resource = str(claim.get("resource") or "").strip().lower()
+    direct_order_id = str(claim.get("order_id") or "").strip()
+    resource_id = direct_order_id or str(claim.get("resource_id") or "").strip()
+    if direct_order_id or resource in {"", "order"}:
+        kind, read = "order", getattr(source, "get_order", None)
+        arguments = {"order_id": resource_id}
+        seller_path = ("seller", "id")
+    elif resource == "shipment":
+        kind, read = "shipment", getattr(source, "get_shipment", None)
+        arguments = {"shipment_id": resource_id}
+        seller_path = ("sender", "id")
+    else:
+        return "safe_404_owner_resource_unsupported"
+    if not callable(read):
+        return "safe_404_owner_resource_unsupported"
+    try:
+        document = await _fetch_source_detail(
+            functools.partial(read, seller_id=seller_id, **arguments),
+            recorder=recorder,
+            absolute_deadline=absolute_deadline,
+            monotonic=monotonic,
+            heartbeat=heartbeat,
+        )
+    except SourceCallBudgetError:
+        raise
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        if getattr(response, "status_code", None) == 404:
+            return f"safe_404_{kind}_not_found"
+        raise
+    if _resource_names_seller(
+        document, resource_id=resource_id, seller_id=seller_id, seller_path=seller_path
+    ):
+        return None
+    return f"safe_404_{kind}_seller_unproven"
+
+
+def _resource_names_seller(
+    document: Any, *, resource_id: str, seller_id: str, seller_path: tuple[str, str]
+) -> bool:
+    """Same resource, and its seller (``seller.id``; a shipment's ``sender_id``)."""
+    if not isinstance(document, Mapping):
         return False
-    seller = order.get("seller")
-    return (
-        str(order.get("id") or "").strip() == order_id
-        and isinstance(seller, Mapping)
-        and str(seller.get("id") or "").strip() == str(seller_id)
+    parent, key = seller_path
+    nested = document.get(parent)
+    owner = nested.get(key) if isinstance(nested, Mapping) else document.get(f"{parent}_{key}")
+    return str(document.get("id") or "").strip() == resource_id and str(owner or "").strip() == str(
+        seller_id
     )
 
 

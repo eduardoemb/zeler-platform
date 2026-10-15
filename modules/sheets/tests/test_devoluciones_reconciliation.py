@@ -1433,6 +1433,135 @@ async def test_authoritative_returns_404_with_the_seller_listed_reads_no_order()
     assert ("order", "1999") not in source.hydration_calls
 
 
+def _meli_404() -> Exception:
+    response = type(
+        "Response", (), {"status_code": 404, "headers": {"X-Zeler-Upstream-Attempts": "1"}}
+    )()
+    error = RuntimeError("unsafe raw order URL and identifiers")
+    error.response = response  # type: ignore[attr-defined]
+    return error
+
+
+class ShipmentResourceSource(GatewayReturns404Source):
+    """A closed mediation whose resource is a shipment (production, 2026-10-14).
+
+    Its ``resource_id`` (11 digits) is not an order: ``GET /orders/{id}``
+    answered Mercado Libre's own 404.
+    """
+
+    def __init__(self, shipment: dict[str, Any] | None) -> None:
+        super().__init__()
+        self.shipment = shipment
+        self.claims["519988002"].update(
+            {
+                "type": "mediations",
+                "status": "closed",
+                "resource": "shipment",
+                "resource_id": "46400000001",
+                "order_id": None,
+                "item_id": None,
+                "related_entities": [],
+                "players": [{"user_id": 90001, "role": "complainant", "type": "buyer"}],
+            }
+        )
+
+    async def get_order(self, *, seller_id: str, order_id: str) -> dict[str, Any]:
+        if order_id == "46400000001":
+            self.hydration_calls.append(("order", order_id))
+            raise _meli_404()
+        return await super().get_order(seller_id=seller_id, order_id=order_id)
+
+    async def get_shipment(self, *, seller_id: str, shipment_id: str) -> dict[str, Any]:
+        self.hydration_calls.append(("shipment", shipment_id))
+        if self.shipment is None:
+            raise _meli_404()
+        return deepcopy(self.shipment)
+
+
+@pytest.mark.parametrize(
+    "shipment",
+    [
+        {"id": 46400000001, "sender_id": 82453304, "receiver_id": 90001},
+        {"id": "46400000001", "sender": {"id": "82453304"}},
+    ],
+    ids=("sender-id", "sender-object"),
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_proves_a_shipment_resource_by_the_seller_shipment(
+    shipment: dict[str, Any],
+) -> None:
+    source = ShipmentResourceSource(shipment)
+
+    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+        source=source, seller_id="82453304", start=START, end=END
+    )
+
+    assert snapshot.counters["excluded_authoritative_no_return_mediations"] == 1
+    assert ("shipment", "46400000001") in source.hydration_calls
+    assert ("order", "46400000001") not in source.hydration_calls
+    assert [str(order["id"]) for order in snapshot.orders] == ["2001"]
+
+
+@pytest.mark.parametrize(
+    ("resource", "shipment", "reason"),
+    [
+        ("shipment", None, "safe_404_shipment_not_found"),
+        ("shipment", {"id": 46400000001, "sender_id": 1}, "safe_404_shipment_seller_unproven"),
+        ("shipment", {"id": 1, "sender_id": 82453304}, "safe_404_shipment_seller_unproven"),
+        ("order", None, "safe_404_order_not_found"),
+        ("purchase", None, "safe_404_owner_resource_unsupported"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_authoritative_returns_404_names_why_the_owner_resource_does_not_prove_the_seller(
+    resource: str, shipment: dict[str, Any] | None, reason: str
+) -> None:
+    source = ShipmentResourceSource(shipment)
+    source.claims["519988002"]["resource"] = resource
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
+
+
+@pytest.mark.asyncio
+async def test_a_source_without_shipment_detail_refuses_a_shipment_resource() -> None:
+    source = ShipmentResourceSource({"id": 46400000001, "sender_id": 82453304})
+    source.get_shipment = None  # type: ignore[assignment,method-assign]
+
+    with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+        await reconciliation_module.collect_devoluciones_snapshot(
+            source=source, seller_id="82453304", start=START, end=END
+        )
+
+    assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == (
+        "safe_404_owner_resource_unsupported"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_source_reads_a_shipment_by_its_numeric_id() -> None:
+    class Client(_SingleAttemptOnlyGatewayClient):
+        paths: list[str] = []
+
+        async def fetch_resource_once(self, *, seller_id: str, path: str) -> dict[str, Any]:
+            self.paths.append(path)
+            return {"id": 46400000001}
+
+    client = Client()
+    gateway = reconciliation_module.GatewayDevolucionesSource(client, single_attempt=True)
+
+    assert await gateway.get_shipment(seller_id="82453304", shipment_id="46400000001") == {
+        "id": 46400000001
+    }
+    assert client.paths == ["/shipments/46400000001"]
+    with pytest.raises(ValueError):
+        await gateway.get_shipment(seller_id="82453304", shipment_id="../orders/1")
+
+
 @pytest.mark.parametrize(
     "order",
     [{"seller": {"id": 1}}, {"id": 2999}, {"seller": None}],

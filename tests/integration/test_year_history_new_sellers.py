@@ -112,6 +112,9 @@ class YearGateway:
         # When set, the old claim is a closed mediation with these players whose
         # v2 returns answer Mercado Libre's own 404 (2026-10-14).
         self.mediation_players: list[dict[str, Any]] | None = None
+        # Its resource: "order", or "shipment", whose 11-digit id is no order
+        # (``GET /orders/{id}`` answers Mercado Libre's own 404).
+        self.mediation_resource = "order"
         settled = now - timedelta(hours=3)
         for number, seller_id in enumerate(sellers, start=1):
             suffix = seller_id[-4:]
@@ -204,6 +207,15 @@ class YearGateway:
             }
             rows = [row] if start <= returned < end else []
             return {"data": rows, "paging": {"offset": 0, "limit": 100, "total": len(rows)}}
+        shipment_id = f"464{suffix}0001"
+        if path in {f"/shipments/{shipment_id}", f"/orders/{shipment_id}"}:
+            if path.startswith("/orders/") or self.mediation_resource != "shipment":
+                raise httpx.HTTPStatusError(
+                    "not found",
+                    request=httpx.Request("GET", "https://gateway.test" + path),
+                    response=httpx.Response(404, headers={"X-Zeler-Upstream-Attempts": "1"}),
+                )
+            return {"id": int(shipment_id), "sender_id": int(seller_id), "receiver_id": 90001}
         if path.startswith("/orders/"):
             return {
                 "id": int(order_id),
@@ -244,12 +256,14 @@ class YearGateway:
                 ],
             }
         if self.mediation_players is not None:
+            resource_id = order_id if self.mediation_resource == "order" else shipment_id
             return {
                 "id": claim_id,
                 "claim_version": 1,
                 "date_created": created,
                 "last_updated": created,
-                "order_id": order_id,
+                "resource": self.mediation_resource,
+                "resource_id": resource_id,
                 "status": "closed",
                 "stage": "dispute",
                 "type": "mediations",
@@ -1048,24 +1062,32 @@ async def test_a_year_window_holding_a_return_without_subtype_certifies_and_the_
 
 
 @pytest.mark.parametrize(
-    ("players", "failure_reason"),
+    ("players", "resource", "failure_reason"),
     [
-        ([{"user_id": 90001, "role": "complainant", "type": "buyer"}], None),
+        ([{"user_id": 90001, "role": "complainant", "type": "buyer"}], "order", None),
+        ([{"user_id": 90001, "role": "complainant", "type": "buyer"}], "shipment", None),
         (
             [
                 {"user_id": 90001, "role": "complainant", "type": "buyer"},
                 {"user_id": 1, "role": "respondent", "type": "seller"},
             ],
+            "order",
             "safe_404_seller_respondent_conflict",
         ),
+        (
+            [{"user_id": 90001, "role": "complainant", "type": "buyer"}],
+            "purchase",
+            "safe_404_owner_resource_unsupported",
+        ),
     ],
-    ids=("seller-not-listed", "another-seller-responds"),
+    ids=("seller-not-listed", "shipment-resource", "another-seller-responds", "other-resource"),
 )
 @pytest.mark.asyncio
 async def test_a_year_window_holding_a_closed_mediation_whose_players_omit_the_seller(
     year_db: Any,
     monkeypatch: pytest.MonkeyPatch,
     players: list[dict[str, Any]],
+    resource: str,
     failure_reason: str | None,
 ) -> None:
     """Production, 2026-10-14: the pilot's year window of 2026-02-11 to 02-21
@@ -1075,7 +1097,9 @@ async def test_a_year_window_holding_a_closed_mediation_whose_players_omit_the_s
     carries no return evidence, but its players do not name the seller as the
     one respondent. The seller's own order for that claim proves it is the
     seller's, so the 404 excludes it; players naming another respondent still
-    refuse it.
+    refuse it. The next retry then failed with ``order_failure``: that claim's
+    resource was a shipment, whose id ``GET /orders/{id}`` answered 404, so the
+    seller's own shipment proves it instead.
     """
     from infra.operations import zelerdata_read_model_reconcile as reconcile
 
@@ -1106,6 +1130,7 @@ async def test_a_year_window_holding_a_closed_mediation_whose_players_omit_the_s
     certificates_before = await db[CERTIFICATES].count_documents({"seller_id": PILOT})
     gateway.returns[PILOT] = oldest - timedelta(days=5) + timedelta(hours=10)
     gateway.mediation_players = players
+    gateway.mediation_resource = resource
     gateway.calls.clear()
 
     await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
@@ -1123,7 +1148,11 @@ async def test_a_year_window_holding_a_closed_mediation_whose_players_omit_the_s
         assert status["sources"]["devoluciones"]["edge"] == oldest.isoformat()
         return
     assert (run["state"], run.get("failure_reason")) == ("completed", None)
-    assert (PILOT, f"/orders/20{PILOT[-4:]}01") in gateway.calls
+    proof = (
+        f"/orders/20{PILOT[-4:]}01" if resource == "order" else f"/shipments/464{PILOT[-4:]}0001"
+    )
+    assert (PILOT, proof) in gateway.calls
+    assert (PILOT, f"/orders/464{PILOT[-4:]}0001") not in gateway.calls
     (certificate,) = (
         await db[CERTIFICATES].find({"seller_id": PILOT, "date_to": oldest}).to_list(None)
     )
