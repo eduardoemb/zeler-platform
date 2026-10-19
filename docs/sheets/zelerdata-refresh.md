@@ -472,7 +472,8 @@ the seller proven). Any other refusal is unchanged.
   so the year walk watches it: 6 hours after a pending window's latest run, it
   takes the cycle's window (before the walk, and also once the year is covered)
   with a new run of the same range. Its certificate replaces the old one in the
-  same transaction (`retire_replaced_certificates`), so the range is never
+  same transaction (`retire_superseded_intraday_certificates`, which also
+  retires a certificate of exactly the same range), so the range is never
   without a proof. Still open: pending again, re-read 6 hours later. Closed
   without a return: excluded as before, no longer pending. With a return: it is
   written and counted in DEVOLUCIONES like any other. A failed re-read leaves
