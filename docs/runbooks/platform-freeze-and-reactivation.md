@@ -46,18 +46,17 @@ the VM boots until someone starts them (B.5).
 
 ### A.3 Pending items outside this freeze
 
-- **Alert policies are still enabled.** They will email about the missing VM.
-  Disable them in Cloud Console → Monitoring → Alerting, or:
-  ```bash
-  for id in $(gcloud alpha monitoring policies list --project=zeler-platform-dev --format="value(name)"); do
-    gcloud alpha monitoring policies update "$id" --no-enabled --project=zeler-platform-dev
-  done
-  ```
+- **Alert policies are disabled** (all six, 2026-10-19). Re-enable them in B.6.
   The two uptime checks (`zeler-gateway-availability`, `zeler-sheets-availability`)
-  stay within the free quota; delete them only if their failures bother you.
-- **CloudAMQP:** if the instance is on a paid plan, downgrade or delete it. The
-  free "Little Lemur" plan may drop idle queues; workers and the topology
-  scripts redeclare them on start (B.6).
+  stay within the free quota and keep failing while frozen.
+- **CloudAMQP:** if the instance is on a paid plan, move it to the free
+  "Little Lemur" plan. Shared plans change in place; a dedicated instance cannot
+  move to a shared plan, so create a new Little Lemur instance and delete the
+  old one. A new instance has new URLs: before reactivating, add new versions of
+  the `cloudamqp-url` and `cloudamqp-management-url` secrets. Little Lemur
+  (about 1 M messages per month, 20 connections) may be too small once ZelerData
+  runs again; review the plan at reactivation. Free instances may drop idle
+  queues; the consumers and topology scripts redeclare them on start (B.6).
 - **Vercel (`zeler-app`):** free on the Hobby plan; on a paid team plan, consider
   pausing the project.
 - **Domain `zeler.ai`:** keep renewing it in Squarespace.
@@ -159,7 +158,12 @@ using `/var/lib/zeler-mongo-freeze-20261019.archive.gz` as the archive and
    consumers declare their own queues on start; if DLQs, delay queues or the
    DEVOLUCIONES topology are missing, reapply them with
    `infra/rabbitmq/apply_topology.py` and the `docs/deploy.md` §5d topology step.
-4. Re-enable the alert policies disabled in A.3.
+4. Re-enable the alert policies disabled in A.3:
+   ```bash
+   for id in $(gcloud alpha monitoring policies list --project=$PROJECT --format="value(name)"); do
+     gcloud alpha monitoring policies update "$id" --enabled --project=$PROJECT
+   done
+   ```
 5. App smoke with pilot seller `82453304` (`docs/deploy.md` §5c).
 
 ### B.7 Things that may have expired while frozen
