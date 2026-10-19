@@ -1465,24 +1465,19 @@ async def test_authoritative_returns_404_leaves_an_open_mediation_pending_only_i
         }
     )
 
-    if reason is not None:
-        with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
-            await reconciliation_module.collect_devoluciones_snapshot(
-                source=source,
-                seller_id="82453304",
-                start=START,
-                end=END,
-                accept_pending_open_mediations=accept,
-            )
-        assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
-        return
-    snapshot = await reconciliation_module.collect_devoluciones_snapshot(
+    collect = reconciliation_module.collect_devoluciones_snapshot(
         source=source,
         seller_id="82453304",
         start=START,
         end=END,
         accept_pending_open_mediations=accept,
     )
+    if reason is not None:
+        with pytest.raises(ClaimInventoryError, match="source_issue") as exc_info:
+            await collect
+        assert reconciliation_module.devoluciones_failure_reason(exc_info.value) == reason
+        return
+    snapshot = await collect
     assert [(exclusion.claim_id, exclusion.reason.value) for exclusion in snapshot.exclusions] == [
         ("519988002", "pending_open_mediation")
     ]

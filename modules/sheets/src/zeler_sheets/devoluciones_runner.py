@@ -1668,7 +1668,6 @@ def _year_run_in_time(run: Mapping[str, Any], current: datetime) -> bool:
 
 def year_history_retry_at(runs: list[dict[str, Any]]) -> datetime:
     """When the next run of a window may be admitted, after its latest run ended."""
-    # Abandoned in time, a run ended at its deadline.
     ended = _year_run_ended(runs[0])
     return ended + YEAR_HISTORY_RETRY_AFTER[min(len(runs), len(YEAR_HISTORY_RETRY_AFTER)) - 1]
 
@@ -1702,8 +1701,8 @@ async def year_history_pending_windows(
 
 async def year_history_pending_recheck(
     db: Any, seller_id: str, coverage_epoch: Any, *, now: datetime
-) -> tuple[datetime, datetime] | None:
-    """The pending window to read again now, if any.
+) -> tuple[datetime, datetime, list[dict[str, Any]]] | None:
+    """The pending window to read again now, if any, with its runs newest first.
 
     Its latest run is still going, or ended at least
     ``YEAR_HISTORY_PENDING_RECHECK_AFTER`` ago. The new run publishes a
@@ -1714,16 +1713,19 @@ async def year_history_pending_recheck(
     for window in await year_history_pending_windows(db, seller_id, coverage_epoch):
         start, end = _onboarding_utc(window["start"]), _onboarding_utc(window["end"])
         runs = await year_history_window_runs(db, seller_id, end)
-        if runs and _year_run_in_time(runs[0], current):
-            return start, end
-        if not runs or current >= _year_run_ended(runs[0]) + YEAR_HISTORY_PENDING_RECHECK_AFTER:
-            return start, end
+        if (
+            not runs
+            or _year_run_in_time(runs[0], current)
+            or current >= _year_run_ended(runs[0]) + YEAR_HISTORY_PENDING_RECHECK_AFTER
+        ):
+            return start, end, runs
     return None
 
 
 def _year_run_ended(run: Mapping[str, Any]) -> datetime:
     stamps = [run.get("created_at"), run.get("updated_at")]
     if run.get("state") in ADVANCEABLE_RUN_STATES:
+        # Abandoned in time, a run ended at its deadline.
         stamps.append(run.get("expires_at"))
     return max(
         (_onboarding_utc(stamp) for stamp in stamps if isinstance(stamp, datetime)),
@@ -1788,7 +1790,7 @@ async def advance_year_history_devoluciones(
         db, seller_id, control["coverage_epoch"], now=current
     )
     if pending is not None:
-        start, end = pending
+        start, end, runs = pending
     else:
         oldest = await db[CERTIFICATES].find_one(
             {"seller_id": seller_id, "coverage_epoch": control["coverage_epoch"]},
@@ -1801,7 +1803,7 @@ async def advance_year_history_devoluciones(
         if bounds is None:
             return False
         start, end = bounds
-    runs = await year_history_window_runs(db, seller_id, end)
+        runs = await year_history_window_runs(db, seller_id, end)
     if runs and _year_run_in_time(runs[0], current):
         # Still in time, after a restart too: the same run goes on.
         run: Mapping[str, Any] | None = runs[0]

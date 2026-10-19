@@ -2134,8 +2134,9 @@ def _authoritative_no_return_mediation_refusal(
 ) -> str | None:
     """The first check that keeps a v2 returns 404 from excluding this claim.
 
-    ``open_accepted`` checks a mediation open in the search and the detail
-    (``opened``) instead of closed, with every other check unchanged.
+    The caller passes ``open_accepted`` only for a mediation open in the
+    search and the detail (``opened``), so both status checks pass and every
+    other check is unchanged.
 
     ``None`` means the claim is a closed mediation proven to have no return,
     so the 404 excludes it. Otherwise a stable code safe to log and store:
@@ -2200,19 +2201,13 @@ def _authoritative_no_return_mediation_refusal(
     )
     checks = (
         ("inventory_not_mediation", entry.trusted_type == "mediations"),
-        (
-            "inventory_not_closed",
-            entry.trusted_status == "opened"
-            if open_accepted
-            else entry.trusted_status in {"", "closed"},
-        ),
+        ("inventory_not_closed", open_accepted or entry.trusted_status in {"", "closed"}),
         ("claim_identity_differs", claim_id == entry.claim_id),
         ("claim_version_differs", last_updated == entry.last_updated),
         ("claim_not_mediation", str(claim.get("type") or "").strip().lower() == "mediations"),
         (
             "claim_not_closed",
-            str(claim.get("status") or "").strip().lower()
-            == ("opened" if open_accepted else "closed"),
+            open_accepted or str(claim.get("status") or "").strip().lower() == "closed",
         ),
         (
             "order_identity_not_numeric",
@@ -2469,45 +2464,21 @@ async def publish_quota_certificate(
     )
     await publish_certificate(db, operation, document, session=session)
     await retire_superseded_intraday_certificates(db, document, session=session)
-    await retire_replaced_certificates(db, document, session=session)
-
-
-async def retire_replaced_certificates(
-    db: Any, certificate: Mapping[str, Any], *, session: Any
-) -> int:
-    """Remove older certificates of exactly this range, in its own transaction.
-
-    A year window holding a pending open mediation is read again, and its new
-    certificate covers the same range, so removing the old one together with
-    that publication never opens a gap. Run and window evidence stays.
-    """
-    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
-
-    result = await db[CERTIFICATES].delete_many(
-        {
-            "seller_id": str(certificate["seller_id"]),
-            "kind": "quota_run",
-            "coverage_epoch": certificate["coverage_epoch"],
-            "_id": {"$ne": certificate["_id"]},
-            "date_from": certificate["date_from"],
-            "date_to": certificate["date_to"],
-        },
-        session=session,
-    )
-    return int(result.deleted_count)
 
 
 async def retire_superseded_intraday_certificates(
     db: Any, certificate: Mapping[str, Any], *, session: Any
 ) -> int:
-    """Remove the intraday cuts a new proof covers entirely, in its own transaction.
+    """Remove the certificates a new proof replaces, in its own transaction.
 
     An intraday certificate proves only part of a day. The next cut, and then
     the daily tail, cover its whole interval, so removing it together with that
     publication never opens a gap, and at most one cut per open day is kept
-    and renewed. Run and window evidence stays.
+    and renewed. A year window holding a pending open mediation is read again,
+    and its new certificate covers exactly the old one's range, which goes too.
+    Run and window evidence stays.
     """
-    from zeler_platform_core.devoluciones_certificates import CERTIFICATES
+    from zeler_platform_core.devoluciones_certificates import CERTIFICATES, utc
     from zeler_sheets.devoluciones_runner import is_intraday_certificate
 
     seller_id = str(certificate["seller_id"])
@@ -2527,7 +2498,12 @@ async def retire_superseded_intraday_certificates(
     ]
     retired = 0
     for candidate in candidates:
-        if await is_intraday_certificate(db, seller_id, candidate, session=session):
+        # Mongo decodes naive UTC dates; the new certificate's are aware.
+        same_range = (utc(candidate["date_from"]), utc(candidate["date_to"])) == (
+            utc(certificate["date_from"]),
+            utc(certificate["date_to"]),
+        )
+        if same_range or await is_intraday_certificate(db, seller_id, candidate, session=session):
             await db[CERTIFICATES].delete_one({"_id": candidate["_id"]}, session=session)
             retired += 1
     return retired

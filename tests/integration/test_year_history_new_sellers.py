@@ -1225,6 +1225,11 @@ async def test_a_year_window_holding_an_open_mediation_is_certified_pending_and_
     ]
     gateway.mediation_status = "opened"
 
+    async def renew_all() -> None:
+        await db[CERTIFICATES].update_many({"seller_id": PILOT}, {"$set": {"next_check_at": now}})
+        renewed = await renew_due_certificates(db, PILOT)
+        assert renewed["failed"] == 0 and renewed["renewed"] == renewed["attempted"] > 0
+
     with capture_logs() as logs:
         assert await advance_year_history_devoluciones(db, PILOT, eligible=EligibleSellerGate(db))
 
@@ -1242,9 +1247,7 @@ async def test_a_year_window_holding_an_open_mediation_is_certified_pending_and_
     assert status["sources"]["devoluciones"]["edge"] == first["start"].isoformat()
     assert status["sources"]["devoluciones"]["pending_open_mediations"] == 1
     # Every certificate, the pending window's too, keeps renewing.
-    await db[CERTIFICATES].update_many({"seller_id": PILOT}, {"$set": {"next_check_at": now}})
-    renewed = await renew_due_certificates(db, PILOT)
-    assert renewed["failed"] == 0 and renewed["renewed"] == renewed["attempted"] > 0
+    await renew_all()
 
     # Six hours later the watched window is read again, before the walk.
     if later == "closed":
@@ -1290,9 +1293,7 @@ async def test_a_year_window_holding_an_open_mediation_is_certified_pending_and_
         assert claim["returned_quantity"] == 2
     elif later == "closed":
         assert facts["certified_count"] == 0
-    await db[CERTIFICATES].update_many({"seller_id": PILOT}, {"$set": {"next_check_at": now}})
-    renewed = await renew_due_certificates(db, PILOT)
-    assert renewed["failed"] == 0 and renewed["renewed"] == renewed["attempted"] > 0
+    await renew_all()
 
 
 async def _live_markers(db: Any, seller_id: str, now: datetime) -> None:

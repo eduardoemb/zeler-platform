@@ -1380,10 +1380,7 @@ async def execute_devoluciones_quota_window(
         proof["forbidden_claim_ids"] = forbidden
     # An open mediation left out as pending: its window is re-read until it
     # closes or gets a return. A count only, never its identity.
-    pending = sum(
-        exclusion.reason is InventoryExclusionReason.PENDING_OPEN_MEDIATION
-        for exclusion in snapshot.exclusions
-    )
+    pending = snapshot.counters.get("pending_open_mediations", 0)
     if pending:
         proof["pending_open_mediations"] = pending
     return proof
