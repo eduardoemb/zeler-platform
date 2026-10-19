@@ -1333,6 +1333,7 @@ async def test_quota_window_executor_reuses_root_fence_and_returns_markerless_pr
         expected_claim_ids=frozenset({"claim-1"}),
         source_fingerprint="source-window",
         read_model_fingerprint="read-window",
+        counters={},
         exclusions=(),
     )
     events: list[tuple[str, Any]] = []
