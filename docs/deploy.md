@@ -1,5 +1,9 @@
 # Platform GCE VM Deploy — Operator Runbook
 
+> **Production is frozen since 2026-10-19.** The VM, its disks and its static IP
+> were deleted. Reactivate with `docs/runbooks/platform-freeze-and-reactivation.md`
+> before using any section below.
+
 > **Stack**: Ubuntu 22.04 LTS · Docker Compose · Caddy auto-TLS · MongoDB 7.0 RS  
 > **VM**: `platform-vm` · Zone: `us-central1-a` · Project: `zeler-platform-dev`  
 > **Domain**: `zeler.ai` · DNS: Squarespace · 5 public subdomains

@@ -255,7 +255,14 @@ Python 3.11 + uv workspace + FastAPI + MongoDB + RabbitMQ/CloudAMQP + GCP.
   `conftest.py` accepts the environment's `MONGO_URI`, so do not assume the full
   suite is isolated or uses disposable data. Never use production for local tests.
 
-Production currently runs in GCP project `zeler-platform-dev`, VM
+**Production is frozen since Oct 19, 2026 (user decision, to stop spending).**
+`platform-vm`, its disks and its static IP no longer exist. Until the user asks
+to reactivate it, do not build, deploy, or inspect production, and skip the
+end-of-session image drift rule. Reactivation and the no-cost alternative live
+in `docs/runbooks/platform-freeze-and-reactivation.md`. Never destroy the
+`zeler-platform` KMS keys or the `*-freeze-20261019` snapshots.
+
+When active, production runs in GCP project `zeler-platform-dev`, VM
 `platform-vm`, zone `us-central1-a`, with Docker Compose-managed services,
 MongoDB, Caddy, and Artifact Registry images. Production Mongo must not be
 queried from the local assistant environment; validate or repair production
